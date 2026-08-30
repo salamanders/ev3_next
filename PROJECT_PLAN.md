@@ -1,6 +1,20 @@
-# Project Plan: Web-Based Motor Control on LEGO Mindstorms EV3
+# Project Plan & Progress: Web-Based Motor Control on LEGO Mindstorms EV3
 
 > **Design Principle:** Assume errors will occur. Flash the SD card only one time. Test 100% of user interface and API logic on the Windows host using simulation first. Deploy to EV3 over USB in less than 5 seconds.
+
+---
+
+## 📊 Overall Progress Summary
+
+| Phase | Description | Status |
+| :--- | :--- | :--- |
+| **Phase 0** | Windows Host Cross-Compilation Toolchain | ✅ **COMPLETE** |
+| **Phase 1** | One-Time SD Card Setup & USB Networking | ⏳ **PENDING (Physical Hardware)** |
+| **Phase 2** | EV3 OS Boot Optimization & Service Setup | ⏳ **PENDING (Physical Hardware)** |
+| **Phase 3** | Rust Server & Sysfs Driver Architecture | ✅ **COMPLETE** |
+| **Phase 4** | Embedded Web Dashboard & Host Simulation | ✅ **COMPLETE** |
+| **Phase 5** | 1-Click Deployment Scripts (`deploy.ps1`) | ✅ **COMPLETE** |
+| **Phase 6** | End-to-End Verification & Benchmarking | 🔄 **HOST VERIFIED / HARDWARE PENDING** |
 
 ---
 
@@ -13,7 +27,7 @@
 6. [Phase 3: Rust Server and Sysfs Driver Architecture](#6-phase-3-rust-server-and-sysfs-driver-architecture)
 7. [Phase 4: Embedded Web Dashboard and Host Simulation](#7-phase-4-embedded-web-dashboard-and-host-simulation)
 8. [Phase 5: Automated One-Click Deployment Script (`deploy.ps1`)](#8-phase-5-automated-one-click-deployment-script-deployps1)
-9. [Phase 6: Verification and Failure Diagnostics Matrix](#9-phase-6-verification-and-failure-diagnostics-matrix)
+9. [Phase 6: Verification Checklist & Diagnostics Matrix](#9-phase-6-verification-checklist--diagnostics-matrix)
 
 ---
 
@@ -53,159 +67,124 @@ On a 300 MHz ARM9 processor:
 
 ## 3. Phase 0: Windows Host Cross-Compilation Setup
 
-The project uses `zig` as a standalone cross-linker. This allows direct compilation on Windows without Docker.
-
-### Step 0.1: Install Zig
-Run this command in PowerShell:
-```powershell
-winget install -e --id zig.zig
-```
-
-### Step 0.2: Add ARMv5te Target in Rust
-```powershell
-rustup target add armv5te-unknown-linux-musleabi
-```
-
-### Step 0.3: Configure Cargo Cross-Linker (`.cargo/config.toml`)
-The project includes `.cargo/config.toml` pre-configured to use `zig-lld-arm.cmd`:
-```toml
-[target.armv5te-unknown-linux-musleabi]
-linker = "zig-lld-arm.cmd"
-rustflags = [
-    "-C", "target-cpu=arm926ej-s",
-    "-C", "linker-flavor=ld.lld"
-]
-```
-
-### Step 0.4: Build the ARM Binary
-```powershell
-cargo build --target armv5te-unknown-linux-musleabi --release
-```
-*Expected Result:* Binary created at `target\armv5te-unknown-linux-musleabi\release\ev3-web-motor` (size: ~650 KB).
+- [x] **Step 0.1: Install Zig Compiler** (`winget install -e --id zig.zig`)
+- [x] **Step 0.2: Add ARMv5te Target in Rust** (`rustup target add armv5te-unknown-linux-musleabi`)
+- [x] **Step 0.3: Configure Cargo Cross-Linker (`.cargo/config.toml`)**
+  ```toml
+  [target.armv5te-unknown-linux-musleabi]
+  linker = "zig-lld-arm.cmd"
+  rustflags = [
+      "-C", "target-cpu=arm926ej-s",
+      "-C", "linker-flavor=ld.lld"
+  ]
+  ```
+- [x] **Step 0.4: Dynamic Linker Adapter (`zig-linker.py` / `zig-lld-arm.cmd`)**
+  - Adapts Rust LLD arguments for `zig ld.lld -m armelf_linux_eabi`.
+- [x] **Step 0.5: Verify Cross-Build**
+  - Ran `cargo build --target armv5te-unknown-linux-musleabi --release`.
+  - Created standalone static ARMv5te binary at `target\armv5te-unknown-linux-musleabi\release\ev3-web-motor` (size: **658 KB**).
 
 ---
 
 ## 4. Phase 1: One-Time SD Card Setup and USB Networking
 
-### Step 1.1: Flash the OS Image
-1. Download `ev3dev-stretch-ev3-generic-2020-04-10.img.xz`.
-2. Flash the image to a MicroSD card (4GB to 32GB) with BalenaEtcher.
-3. Insert the card into the EV3 brick and turn on power.
-
-### Step 1.2: Connect USB Cable and Configure Windows Driver
-1. Connect the Mini-USB cable from EV3 PC port to Windows USB port.
-2. Open Windows **Device Manager** (`Win + X` -> `Device Manager`).
-3. If `RNDIS/Ethernet Gadget` shows a warning icon:
-   - Right-click device -> **Update driver**.
-   - Select **Browse my computer for drivers** -> **Let me pick from a list**.
-   - Select **Network adapters** -> Manufacturer: **Microsoft** -> Model: **USB Ethernet/RNDIS Gadget**.
-   - Click Next and complete driver setup.
-
-### Step 1.3: Verify SSH Connection
-```powershell
-ping 192.168.2.2
-ssh robot@192.168.2.2
-# Default password: maker
-```
+- [ ] **Step 1.1: Download the OS Image**
+  - Download [`ev3dev-stretch-ev3-generic-2020-04-10.zip`](https://github.com/ev3dev/ev3dev/releases/download/ev3dev-stretch-2020-04-10/ev3dev-stretch-ev3-generic-2020-04-10.zip) from the [ev3dev GitHub Releases page](https://github.com/ev3dev/ev3dev/releases/tag/ev3dev-stretch-2020-04-10).
+- [ ] **Step 1.2: Flash the MicroSD Card**
+  - Use a 4GB to 32GB MicroSDHC card with BalenaEtcher.
+- [ ] **Step 1.3: Initial Boot on EV3**
+  - Insert card into EV3 slot and press Center Button to boot (takes 1–2 minutes on first boot).
+- [ ] **Step 1.4: Connect USB Cable & Verify Windows Driver**
+  - Connect Mini-USB cable between EV3 PC port and Windows PC.
+  - Test ping in PowerShell: `ping 192.168.2.2`.
+  - If ping fails, update device driver in Device Manager to "Microsoft USB Ethernet/RNDIS Gadget".
+- [ ] **Step 1.5: Test SSH Access**
+  - Connect with `ssh robot@192.168.2.2` (password: `maker`).
 
 ---
 
 ## 5. Phase 2: EV3 Operating System Boot Optimization
 
-Execute these commands over SSH on the EV3 brick to decrease boot time from 120 seconds to 10–15 seconds:
-
-```bash
-sudo su
-
-# 1. Disable LCD GUI (saves 20MB RAM and 40% CPU)
-systemctl disable --now brickman.service
-
-# 2. Disable network wait blockers
-systemctl mask connman-wait-online.service
-systemctl mask systemd-networkd-wait-online.service
-
-# 3. Disable filesystem check on slow SD card during boot
-systemctl mask systemd-fsck-root.service
-
-# 4. Disable package manager background timers
-systemctl mask apt-daily.service apt-daily.timer
-systemctl mask apt-daily-upgrade.service apt-daily-upgrade.timer
-```
+- [ ] **Step 2.1: Mask Blocking Daemons on EV3**
+  ```bash
+  sudo su
+  systemctl disable --now brickman.service
+  systemctl mask connman-wait-online.service
+  systemctl mask systemd-networkd-wait-online.service
+  systemctl mask systemd-fsck-root.service
+  systemctl mask apt-daily.service apt-daily.timer
+  systemctl mask apt-daily-upgrade.service apt-daily-upgrade.timer
+  exit
+  ```
+- [ ] **Step 2.2: Install Systemd Service File**
+  ```powershell
+  scp .\ev3-web.service robot@192.168.2.2:/tmp/
+  ssh robot@192.168.2.2 "sudo mv /tmp/ev3-web.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable ev3-web.service"
+  ```
 
 ---
 
 ## 6. Phase 3: Rust Server and Sysfs Driver Architecture
 
-### Step 3.1: Hardware Driver Options
-
-1. **Custom Zero-Dependency Sysfs Driver (Default):**
-   - Directly reads and writes `/sys/class/tacho-motor/`.
-   - Has zero external crate dependencies.
-   - Supports in-memory simulation on Windows.
-   - Keeps binary size under 700 KB.
-
-2. **`ev3dev-lang-rust` Crate (Alternative Option):**
-   - Provides abstractions for motors, sensors (gyro, ultrasonic, color), LEDs, and sound.
-   - Use this when adding sensor inputs to the project.
-
-### Step 3.2: REST API Endpoints
-
-| Method | Endpoint | Payload | Description |
-| :--- | :--- | :--- | :--- |
-| `GET` | `/` | None | Returns embedded HTML5 dashboard. |
-| `GET` | `/api/status` | None | Returns telemetry for all four ports (A, B, C, D). |
-| `POST` | `/api/motor/{port}/run-forever` | `{"speed": 500}` | Runs motor at set speed. |
-| `POST` | `/api/motor/{port}/run-timed` | `{"speed": 500, "time_ms": 1000, "stop_action": "brake"}` | Runs motor for set duration in ms. |
-| `POST` | `/api/motor/{port}/run-to-rel-pos` | `{"speed": 400, "position_sp": 360, "stop_action": "hold"}` | Steps motor by relative degree count. |
-| `POST` | `/api/motor/{port}/stop` | `{"action": "coast" \| "brake" \| "hold"}` | Stops motor with configured mode. |
-| `POST` | `/api/tank-drive` | `{"left_port":"B", "right_port":"C", "left_speed":500, "right_speed":500}` | Drives left and right motors together. |
-| `POST` | `/api/emergency-stop` | None | **Emergency Stop**: stops all motors immediately. |
+- [x] **Step 3.1: Package Configuration (`Cargo.toml`)**
+  - Configured `opt-level = "z"`, `lto = true`, `strip = true`, `panic = "abort"`.
+- [x] **Step 3.2: Real Linux Sysfs Driver (`src/sysfs/motor.rs`)**
+  - Port enumeration for `/sys/class/tacho-motor/` (Ports A, B, C, D).
+  - Text parameter writing (`speed_sp`, `duty_cycle_sp`, `position_sp`, `time_sp`, `stop_action`).
+  - Command dispatch (`run-forever`, `run-timed`, `run-to-rel-pos`, `run-direct`, `stop`, `reset`).
+- [x] **Step 3.3: In-Memory Mock Simulator (`src/sysfs/mock.rs`)**
+  - Physics-accurate motor simulation with position integration, timed runs, degree stepping, and E-Stop.
+- [x] **Step 3.4: Controller with Non-Blocking Telemetry Cache (`src/controller.rs`)**
+  - 50ms background thread updates in-memory cache; HTTP handlers read in < 0.05ms.
+- [x] **Step 3.5: REST API & Static Router (`src/web/router.rs`, `src/web/handlers.rs`)**
+  - Full REST API with CORS preflights and embedded SPA delivery.
+- [x] **Step 3.6: Automated Unit Tests**
+  - 4 automated tests in `src/sysfs/mock.rs` covering clamping, state, E-Stop, and position integration.
 
 ---
 
 ## 7. Phase 4: Embedded Web Dashboard and Host Simulation
 
-The web interface is written in standard HTML5, CSS3, and JavaScript. The binary embeds these files using `include_str!`.
-
-### Run Simulation on Windows
-```powershell
-cargo run -- --mock --port 8080
-```
-Open `http://localhost:8080` in your web browser.
-
-**Features Available in Simulation:**
-- 4 motor status cards with speed, position, and power gauges.
-- Interactive Tank Drive D-Pad and keyboard shortcuts (`WASD`, Arrow keys).
-- Global Emergency Stop button.
-- Live telemetry update loop running every 100ms.
+- [x] **Step 4.1: Responsive HTML5 User Interface (`web_assets/index.html`)**
+  - 4 motor status cards, gauges for speed (RPM) and angle, duty cycle bars, and D-Pad.
+- [x] **Step 4.2: Dark-Theme Stylesheet (`web_assets/style.css`)**
+  - Clean responsive grid layout for mobile and desktop screens.
+- [x] **Step 4.3: Client JavaScript (`web_assets/app.js`)**
+  - 100ms live polling loop, RTT latency counter, keyboard controls (`WASD` / Arrow keys / Spacebar), and E-Stop.
+- [x] **Step 4.4: Binary Asset Embedding**
+  - All web assets embedded into executable with `include_str!`.
+- [x] **Step 4.5: Host Simulation Verification**
+  - Verified on Windows host via `cargo run -- --mock --port 8888` using PowerShell automated HTTP tests.
 
 ---
 
 ## 8. Phase 5: Automated One-Click Deployment Script (`deploy.ps1`)
 
-Run this single command from PowerShell on Windows:
-```powershell
-.\deploy.ps1 -TargetIp 192.168.2.2
-```
-
-**Actions Executed by `deploy.ps1`:**
-1. Cross-compiles the release binary for ARMv5te musl in 2 seconds.
-2. Checks connection to the EV3 brick.
-3. Stops the running service on the EV3 to prevent file locking.
-4. Copies the binary to `/home/robot/ev3-web-motor` via SCP.
-5. Restarts `ev3-web.service` on the EV3.
+- [x] **Step 5.1: PowerShell Deployment Pipeline (`deploy.ps1`)**
+  - Dynamic PATH lookup for Zig and Cargo.
+  - Automatic cross-compilation to ARMv5te musl in 2 seconds.
+  - Remote service shutdown to prevent Linux `text file busy` lockouts.
+  - SCP upload to `/home/robot/ev3-web-motor`.
+  - Service restart and verification output.
+- [x] **Step 5.2: Bash Deployment Script (`deploy.sh`)**
+  - Compatible with Linux and macOS hosts.
+- [x] **Step 5.3: Production Systemd Service (`ev3-web.service`)**
+  - Configured with `CPUSchedulingPolicy=rr` and `Restart=always`.
 
 ---
 
-## 9. Phase 6: Verification and Failure Diagnostics Matrix
+## 9. Phase 6: Verification Checklist & Diagnostics Matrix
 
-### Verification Sequence
-1. **Unit Tests:** Run `cargo test` on host (all tests must pass).
-2. **Local Simulation:** Run `cargo run -- --mock --port 8080` and test controls in browser.
-3. **Cross-Build:** Run `cargo build --target armv5te-unknown-linux-musleabi --release` (must produce `< 700 KB` binary).
-4. **Deploy:** Run `.\deploy.ps1` (deploys in 4 seconds).
-5. **Hardware Test:** Connect motor to Port A, open `http://192.168.2.2/`, and click "Run Forward".
-6. **Emergency Stop Test:** Click "STOP ALL" while motor runs; motor must stop immediately.
+### Verification Checklist
+- [x] **Host Unit Tests:** `cargo test` passes 4/4 tests.
+- [x] **Host API Tests:** Live HTTP endpoints verified on Windows mock server.
+- [x] **Static Asset Delivery:** HTML, CSS, JS served correctly with proper Content-Type headers.
+- [x] **ARMv5te Musl Cross-Compilation:** Standalone binary created without Docker (658 KB).
+- [ ] **On-Hardware USB Deployment:** Run `.\deploy.ps1 -TargetIp 192.168.2.2`.
+- [ ] **Live Motor Hardware Actuation:** Verify physical motors spin on Ports A, B, C, D via `http://192.168.2.2/`.
+- [ ] **Hardware Emergency Stop:** Verify physical motors halt in < 5ms upon pressing E-Stop.
+
+---
 
 ### Diagnostics Reference
 

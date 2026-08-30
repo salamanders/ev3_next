@@ -1,7 +1,9 @@
 Instructions for AGENT development.
 
 1. Check INTEGRATE.md for any new or updated instructions.
+
 2. Always reply in, and write or edit docs using: https://en.wikipedia.org/wiki/Simplified_Technical_English
+
 3. Things will not go right the first time. This is very old hardware being asked to do modern things. Expect exceptions that need logging and incompatibilities that need investigation. **Never** swallow exceptions, and **always** check that new features and libraries are compatible.
 
 4. **Host-First Simulation Rule:**
@@ -21,3 +23,15 @@ Instructions for AGENT development.
 7. **Windows Cross-Compilation Pipeline:**
    Cross-compilation for `armv5te-unknown-linux-musleabi` on Windows uses the local Zig LLD linker (`zig-lld-arm.cmd` / `zig-linker.py`).
    Do not add dependencies that require Docker or external C toolchains unless verified compatible.
+
+8. **Generic Environment & Paths Rule:**
+   - Never write hardcoded user profiles or machine-specific absolute paths (for example, `C:\Users\Admin`).
+   - Always use dynamic environment variables and discovery tools (for example, `$env:LOCALAPPDATA`, `%LOCALAPPDATA%`, `shutil.which()`, `$PSScriptRoot`, `%~dp0`).
+
+9. **Plan Checklists & Decision Tagging Rule:**
+   - Always maintain `PROJECT_PLAN.md` with explicit checklists (`[x]` completed vs `[ ]` pending) and a summary table so any agent can immediately resume work without losing context.
+   - Tag all architectural options in technical reports with clear status labels: `[ADOPTED]`, `[IMPLEMENTED]`, `[REJECTED]`, or `[NOT USED in Phase X]` with exact file links and technical rationales.
+
+10. **External Link & Asset Verification Rule:**
+    - Never assume external download URLs, release tag names, or file extensions from legacy notes or memory.
+    - Always verify that external links and asset names are live and correct before documenting them.

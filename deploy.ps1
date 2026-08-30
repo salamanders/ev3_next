@@ -30,10 +30,14 @@ Write-Host ""
 Write-Host "[1/4] Cross-compiling for ARMv5te (musl)..." -ForegroundColor Yellow
 
 # Ensure PATH has zig and cargo
-$ZigPkg = Get-ChildItem -Path "C:\Users\Admin\AppData\Local\Microsoft\WinGet\Packages" -Recurse -Filter "zig.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($ZigPkg) {
-    $ZigDir = Split-Path $ZigPkg.FullName
-    $env:PATH = "$PSScriptRoot;$ZigDir;$env:USERPROFILE\.cargo\bin;$env:PATH"
+if (-not (Get-Command "zig" -ErrorAction SilentlyContinue)) {
+    $ZigPkg = Get-ChildItem -Path "$env:LOCALAPPDATA\Microsoft\WinGet\Packages" -Recurse -Filter "zig.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($ZigPkg) {
+        $ZigDir = Split-Path $ZigPkg.FullName
+        $env:PATH = "$PSScriptRoot;$ZigDir;$env:USERPROFILE\.cargo\bin;$env:PATH"
+    } else {
+        $env:PATH = "$PSScriptRoot;$env:USERPROFILE\.cargo\bin;$env:PATH"
+    }
 } else {
     $env:PATH = "$PSScriptRoot;$env:USERPROFILE\.cargo\bin;$env:PATH"
 }

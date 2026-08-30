@@ -54,41 +54,78 @@ http://localhost:8080/
 
 ---
 
-## Phase 1: USB Cross-Compilation and Deployment
+## Step-by-Step Hardware Setup & Deployment (Phase 1)
 
-### 1. Initial SD Card Setup (One Time Only)
-1. Flash `ev3dev-stretch` onto a MicroSD card (4GB to 32GB).
-2. Insert the card into the EV3 brick and turn on the power.
-3. Connect the EV3 to the PC with the Mini-USB cable.
-4. Verify the SSH connection:
-   ```bash
-   ssh robot@192.168.2.2  # (password: maker)
+Follow this setup **one time**. After initial setup, you never remove the MicroSD card again.
+
+### 1. Prepare the MicroSD Card
+1. Use a **MicroSDHC card between 4 GB and 32 GB** (Class 10 recommended).
+   > Do not use cards larger than 32 GB (SDXC). The EV3 hardware cannot read them.
+2. Download the official operating system release:
+   - **Release Page:** [ev3dev GitHub Releases (2020-04-10)](https://github.com/ev3dev/ev3dev/releases/tag/ev3dev-stretch-2020-04-10)
+   - **Direct Download:** [`ev3dev-stretch-ev3-generic-2020-04-10.zip`](https://github.com/ev3dev/ev3dev/releases/download/ev3dev-stretch-2020-04-10/ev3dev-stretch-ev3-generic-2020-04-10.zip)
+3. Download and open [BalenaEtcher](https://etcher.balena.io/).
+4. Select the downloaded `.zip` file, select your MicroSD card drive, and click **Flash!**.
+
+### 2. First Boot & USB Connection
+1. Insert the MicroSD card into the EV3 brick.
+2. Press the **Center Button** to power on. Wait 1 to 2 minutes for the initial boot.
+3. Connect the Mini-USB cable between the EV3 **PC port** and your Windows PC.
+4. Open Windows PowerShell and verify the network connection:
+   ```powershell
+   ping 192.168.2.2
    ```
 
-### 2. Boot Acceleration (10 to 15 Second Boot Time)
-Run these commands on the EV3 over SSH:
-```bash
-sudo su
-# Disable heavy services and GUI to free 20MB RAM:
-systemctl disable --now brickman.service
-systemctl mask connman-wait-online.service
-systemctl mask systemd-fsck-root.service
-systemctl mask apt-daily.service apt-daily.timer
+> [!TIP]
+> **Windows USB Driver Fix (if ping fails):**
+> 1. Open Windows **Device Manager** (`Win + X` -> `Device Manager`).
+> 2. Right-click `RNDIS/Ethernet Gadget` -> **Update driver**.
+> 3. Select **Browse my computer for drivers** -> **Let me pick from a list**.
+> 4. Select **Network adapters** -> Manufacturer: **Microsoft** -> Model: **USB Ethernet/RNDIS Gadget**.
+> 5. Complete driver setup.
+
+### 3. One-Time Boot Acceleration & Service Setup
+Connect to the EV3 with SSH (default password is `maker`):
+```powershell
+ssh robot@192.168.2.2
 ```
 
-### 3. Install Systemd Service
-Copy `ev3-web.service` to the EV3:
+Run these commands to decrease future boot times to **10–15 seconds** and free 20 MB of RAM:
 ```bash
-scp ev3-web.service robot@192.168.2.2:/tmp/
+sudo su
+
+# 1. Disable the LCD GUI:
+systemctl disable --now brickman.service
+
+# 2. Mask blocking startup services:
+systemctl mask connman-wait-online.service
+systemctl mask systemd-networkd-wait-online.service
+systemctl mask systemd-fsck-root.service
+systemctl mask apt-daily.service apt-daily.timer
+systemctl mask apt-daily-upgrade.service apt-daily-upgrade.timer
+
+exit
+exit
+```
+
+Install the auto-start background service:
+```powershell
+scp .\ev3-web.service robot@192.168.2.2:/tmp/
 ssh robot@192.168.2.2 "sudo mv /tmp/ev3-web.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable ev3-web.service"
 ```
 
-### 4. 1-Click Deploy from Windows
-Run this command from the project root on Windows:
+### 4. Deploy the Application (1-Click)
+Run this command from Windows PowerShell in the project directory:
 ```powershell
 .\deploy.ps1 -TargetIp 192.168.2.2
 ```
-*This command cross-compiles for ARMv5te, uploads the binary, and restarts the service in 4 seconds.*
+*This cross-compiles for ARMv5te, uploads the binary to `/home/robot/ev3-web-motor`, and restarts the service in 4 seconds.*
+
+### 5. Access the Web Dashboard
+Open your web browser and navigate to:
+```
+http://192.168.2.2/
+```
 
 ---
 
