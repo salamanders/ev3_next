@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>EV3 Web Motor Control</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Top Navigation Bar -->
+    <header class="navbar">
+        <div class="logo-group">
+            <span class="logo-icon">⚡</span>
+            <div class="logo-text">
+                <span class="title">MINDSTORMS <strong>EV3</strong></span>
+                <span class="subtitle">Web Motor Control System</span>
+            </div>
+        </div>
+
+        <div class="status-group">
+            <div id="conn-badge" class="badge badge-connecting">
+                <span class="dot"></span>
+                <span id="conn-text">Connecting...</span>
+            </div>
+            <div id="latency-badge" class="badge badge-info">
+                <span>RTT: <strong id="latency-val">--</strong> ms</span>
+            </div>
+            <button id="btn-estop-header" class="btn btn-danger btn-estop" title="Emergency Stop All Motors (Spacebar)">
+                🛑 STOP ALL
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Container -->
+    <main class="container">
+        <!-- Tank Drive / Mobile Robot Section -->
+        <section class="card section-drive">
+            <div class="card-header">
+                <h2>🎮 Robot Drive Control</h2>
+                <div class="drive-config">
+                    <label>Left Port:
+                        <select id="drive-left-port">
+                            <option value="A">Port A</option>
+                            <option value="B" selected>Port B</option>
+                            <option value="C">Port C</option>
+                            <option value="D">Port D</option>
+                        </select>
+                    </label>
+                    <label>Right Port:
+                        <select id="drive-right-port">
+                            <option value="A">Port A</option>
+                            <option value="B">Port B</option>
+                            <option value="C" selected>Port C</option>
+                            <option value="D">Port D</option>
+                        </select>
+                    </label>
+                </div>
+            </div>
+
+            <div class="drive-body">
+                <!-- D-Pad Controls -->
+                <div class="dpad-container">
+                    <div class="dpad-grid">
+                        <button class="btn btn-dpad" id="btn-fwd-left" data-dir="fwd-left">↖</button>
+                        <button class="btn btn-dpad" id="btn-fwd" data-dir="fwd">▲</button>
+                        <button class="btn btn-dpad" id="btn-fwd-right" data-dir="fwd-right">↗</button>
+
+                        <button class="btn btn-dpad" id="btn-spin-left" data-dir="spin-left">↺</button>
+                        <button class="btn btn-dpad btn-dpad-stop" id="btn-drive-stop" data-dir="stop">■</button>
+                        <button class="btn btn-dpad" id="btn-spin-right" data-dir="spin-right">↻</button>
+
+                        <button class="btn btn-dpad" id="btn-rev-left" data-dir="rev-left">↙</button>
+                        <button class="btn btn-dpad" id="btn-rev" data-dir="rev">▼</button>
+                        <button class="btn btn-dpad" id="btn-rev-right" data-dir="rev-right">↘</button>
+                    </div>
+                </div>
+
+                <!-- Drive Speed & Instructions -->
+                <div class="drive-settings">
+                    <div class="setting-item">
+                        <label for="drive-speed-slider">Drive Speed: <span id="drive-speed-val">600</span> ticks/s (<span id="drive-speed-pct">60</span>%)</label>
+                        <input type="range" id="drive-speed-slider" min="100" max="1050" value="600" step="50">
+                    </div>
+                    <div class="drive-tips">
+                        <p><strong>Keyboard Shortcuts:</strong></p>
+                        <ul>
+                            <li><kbd>W</kbd> / <kbd>▲</kbd> Forward &nbsp;|&nbsp; <kbd>S</kbd> / <kbd>▼</kbd> Reverse</li>
+                            <li><kbd>A</kbd> / <kbd>◄</kbd> Spin Left &nbsp;|&nbsp; <kbd>D</kbd> / <kbd>►</kbd> Spin Right</li>
+                            <li><kbd>Space</kbd> Emergency Stop</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Individual Motors Grid -->
+        <section class="motors-section">
+            <h2 class="section-title">⚙️ Individual Motor Ports</h2>
+            <div class="motors-grid">
+                <!-- Port A -->
+                <div class="card motor-card" id="card-motor-A" data-port="A">
+                    <div class="card-header">
+                        <div class="port-title">
+                            <span class="port-badge">Port A</span>
+                            <span class="motor-driver" id="driver-A">--</span>
+                        </div>
+                        <span class="motor-state-badge badge-offline" id="state-badge-A">Offline</span>
+                    </div>
+
+                    <div class="telemetry-grid">
+                        <div class="telemetry-box">
+                            <span class="telem-label">Speed</span>
+                            <span class="telem-value" id="speed-A">0</span>
+                            <span class="telem-unit">ticks/s (<span id="rpm-A">0</span> RPM)</span>
+                        </div>
+                        <div class="telemetry-box">
+                            <span class="telem-label">Position</span>
+                            <span class="telem-value" id="pos-A">0</span>
+                            <span class="telem-unit">deg (<span id="rot-A">0.0</span> rot)</span>
+                        </div>
+                    </div>
+
+                    <div class="duty-bar-container">
+                        <div class="duty-bar-fill" id="duty-bar-A" style="width: 0%;"></div>
+                        <span class="duty-bar-label">Power: <span id="duty-val-A">0</span>%</span>
+                    </div>
+
+                    <div class="motor-controls">
+                        <div class="control-row">
+                            <label>Target Speed: <span id="target-speed-A-val">500</span></label>
+                            <input type="range" class="target-speed-slider" data-port="A" min="50" max="1050" value="500" step="50">
+                        </div>
+
+                        <div class="button-row">
+                            <button class="btn btn-primary btn-run-fwd" data-port="A">Run ⏵</button>
+                            <button class="btn btn-primary btn-run-rev" data-port="A">Rev ⏴</button>
+                            <button class="btn btn-warning btn-stop-coast" data-port="A">Coast</button>
+                            <button class="btn btn-danger btn-stop-brake" data-port="A">Hold</button>
+                        </div>
+
+                        <div class="preset-row">
+                            <span class="preset-label">Step:</span>
+                            <button class="btn btn-sm btn-secondary btn-step" data-port="A" data-deg="-90">-90°</button>
+                            <button class="btn btn-sm btn-secondary btn-step" data-port="A" data-deg="90">+90°</button>
+                            <button class="btn btn-sm btn-secondary btn-step" data-port="A" data-deg="360">+360°</button>
+                            <button class="btn btn-sm btn-secondary btn-zero" data-port="A">Zero</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Port B -->
+                <div class="card motor-card" id="card-motor-B" data-port="B">
+                    <div class="card-header">
+                        <div class="port-title">
+                            <span class="port-badge">Port B</span>
+                            <span class="motor-driver" id="driver-B">--</span>
+                        </div>
+                        <span class="motor-state-badge badge-offline" id="state-badge-B">Offline</span>
+                    </div>
+
+                    <div class="telemetry-grid">
+                        <div class="telemetry-box">
+                            <span class="telem-label">Speed</span>
+                            <span class="telem-value" id="speed-B">0</span>
+                            <span class="telem-unit">ticks/s (<span id="rpm-B">0</span> RPM)</span>
+                        </div>
+                        <div class="telemetry-box">
+                            <span class="telem-label">Position</span>
+                            <span class="telem-value" id="pos-B">0</span>
+                            <span class="telem-unit">deg (<span id="rot-B">0.0</span> rot)</span>
+                        </div>
+                    </div>
+
+                    <div class="duty-bar-container">
+                        <div class="duty-bar-fill" id="duty-bar-B" style="width: 0%;"></div>
+                        <span class="duty-bar-label">Power: <span id="duty-val-B">0</span>%</span>
+                    </div>
+
+                    <div class="motor-controls">
+                        <div class="control-row">
+                            <label>Target Speed: <span id="target-speed-B-val">500</span></label>
+                            <input type="range" class="target-speed-slider" data-port="B" min="50" max="1050" value="500" step="50">
+                        </div>
+
+                        <div class="button-row">
+                            <button class="btn btn-primary btn-run-fwd" data-port="B">Run ⏵</button>
+                            <button class="btn btn-primary btn-run-rev" data-port="B">Rev ⏴</button>
+                            <button class="btn btn-warning btn-stop-coast" data-port="B">Coast</button>
+                            <button class="btn btn-danger btn-stop-brake" data-port="B">Hold</button>
+                        </div>
+
+                        <div class="preset-row">
+                            <span class="preset-label">Step:</span>
+                            <button class="btn btn-sm btn-secondary btn-step" data-port="B" data-deg="-90">-90°</button>
+                            <button class="btn btn-sm btn-secondary btn-step" data-port="B" data-deg="90">+90°</button>
+                            <button class="btn btn-sm btn-secondary btn-step" data-port="B" data-deg="360">+360°</button>
+                            <button class="btn btn-sm btn-secondary btn-zero" data-port="B">Zero</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Port C -->
+                <div class="card motor-card" id="card-motor-C" data-port="C">
+                    <div class="card-header">
+                        <div class="port-title">
+                            <span class="port-badge">Port C</span>
+                            <span class="motor-driver" id="driver-C">--</span>
+                        </div>
+                        <span class="motor-state-badge badge-offline" id="state-badge-C">Offline</span>
+                    </div>
+
+                    <div class="telemetry-grid">
+                        <div class="telemetry-box">
+                            <span class="telem-label">Speed</span>
+                            <span class="telem-value" id="speed-C">0</span>
+                            <span class="telem-unit">ticks/s (<span id="rpm-C">0</span> RPM)</span>
+                        </div>
+                        <div class="telemetry-box">
+                            <span class="telem-label">Position</span>
+                            <span class="telem-value" id="pos-C">0</span>
+                            <span class="telem-unit">deg (<span id="rot-C">0.0</span> rot)</span>
+                        </div>
+                    </div>
+
+                    <div class="duty-bar-container">
+                        <div class="duty-bar-fill" id="duty-bar-C" style="width: 0%;"></div>
+                        <span class="duty-bar-label">Power: <span id="duty-val-C">0</span>%</span>
+                    </div>
+
+                    <div class="motor-controls">
+                        <div class="control-row">
+                            <label>Target Speed: <span id="target-speed-C-val">500</span></label>
+                            <input type="range" class="target-speed-slider" data-port="C" min="50" max="1560" value="500" step="50">
+                        </div>
+
+                        <div class="button-row">
+                            <button class="btn btn-primary btn-run-fwd" data-port="C">Run ⏵</button>
+                            <button class="btn btn-primary btn-run-rev" data-port="C">Rev ⏴</button>
+                            <button class="btn btn-warning btn-stop-coast" data-port="C">Coast</button>
+                            <button class="btn btn-danger btn-stop-brake" data-port="C">Hold</button>
+                        </div>
+
+                        <div class="preset-row">
+                            <span class="preset-label">Step:</span>
+                            <button class="btn btn-sm btn-secondary btn-step" data-port="C" data-deg="-90">-90°</button>
+                            <button class="btn btn-sm btn-secondary btn-step" data-port="C" data-deg="90">+90°</button>
+                            <button class="btn btn-sm btn-secondary btn-step" data-port="C" data-deg="360">+360°</button>
+                            <button class="btn btn-sm btn-secondary btn-zero" data-port="C">Zero</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Port D -->
+                <div class="card motor-card" id="card-motor-D" data-port="D">
+                    <div class="card-header">
+                        <div class="port-title">
+                            <span class="port-badge">Port D</span>
+                            <span class="motor-driver" id="driver-D">--</span>
+                        </div>
+                        <span class="motor-state-badge badge-offline" id="state-badge-D">Offline</span>
+                    </div>
+
+                    <div class="telemetry-grid">
+                        <div class="telemetry-box">
+                            <span class="telem-label">Speed</span>
+                            <span class="telem-value" id="speed-D">0</span>
+                            <span class="telem-unit">ticks/s (<span id="rpm-D">0</span> RPM)</span>
+                        </div>
+                        <div class="telemetry-box">
+                            <span class="telem-label">Position</span>
+                            <span class="telem-value" id="pos-D">0</span>
+                            <span class="telem-unit">deg (<span id="rot-D">0.0</span> rot)</span>
+                        </div>
+                    </div>
+
+                    <div class="duty-bar-container">
+                        <div class="duty-bar-fill" id="duty-bar-D" style="width: 0%;"></div>
+                        <span class="duty-bar-label">Power: <span id="duty-val-D">0</span>%</span>
+                    </div>
+
+                    <div class="motor-controls">
+                        <div class="control-row">
+                            <label>Target Speed: <span id="target-speed-D-val">500</span></label>
+                            <input type="range" class="target-speed-slider" data-port="D" min="50" max="1560" value="500" step="50">
+                        </div>
+
+                        <div class="button-row">
+                            <button class="btn btn-primary btn-run-fwd" data-port="D">Run ⏵</button>
+                            <button class="btn btn-primary btn-run-rev" data-port="D">Rev ⏴</button>
+                            <button class="btn btn-warning btn-stop-coast" data-port="D">Coast</button>
+                            <button class="btn btn-danger btn-stop-brake" data-port="D">Hold</button>
+                        </div>
+
+                        <div class="preset-row">
+                            <span class="preset-label">Step:</span>
+                            <button class="btn btn-sm btn-secondary btn-step" data-port="D" data-deg="-90">-90°</button>
+                            <button class="btn btn-sm btn-secondary btn-step" data-port="D" data-deg="90">+90°</button>
+                            <button class="btn btn-sm btn-secondary btn-step" data-port="D" data-deg="360">+360°</button>
+                            <button class="btn btn-sm btn-secondary btn-zero" data-port="D">Zero</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Live Activity Log -->
+        <section class="card log-section">
+            <div class="card-header">
+                <h3>📜 System & Command Log</h3>
+                <button id="btn-clear-log" class="btn btn-sm btn-secondary">Clear</button>
+            </div>
+            <div id="log-box" class="log-box">
+                <div class="log-entry log-info">[System] Dashboard initialized. Waiting for telemetry...</div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="footer">
+        <p>LEGO Mindstorms EV3 Web Distribution &bull; Powered by Rust &bull; Zero external JS dependencies</p>
+    </footer>
+
+    <script src="app.js"></script>
+</body>
+</html>

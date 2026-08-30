@@ -1,0 +1,18 @@
+[package]
+name = "ev3-web-motor"
+version = "0.1.0"
+edition = "2021"
+authors = ["EV3 Web Team"]
+description = "Lightweight, low-latency web-based motor control server for LEGO Mindstorms EV3"
+
+[dependencies]
+tiny_http = "0.12"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[profile.release]
+opt-level = "z"     # Optimize aggressively for binary size
+lto = true          # Link Time Optimization across all crates
+codegen-units = 1   # Single codegen unit for best optimization
+panic = "abort"     # Remove panic unwinding tables to save memory & flash
+strip = true        # Strip symbols from final binary
