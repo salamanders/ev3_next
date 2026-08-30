@@ -29,6 +29,15 @@ Write-Host ""
 # 1. Build Phase
 Write-Host "[1/4] Cross-compiling for ARMv5te (musl)..." -ForegroundColor Yellow
 
+# Ensure PATH has zig and cargo
+$ZigPkg = Get-ChildItem -Path "C:\Users\Admin\AppData\Local\Microsoft\WinGet\Packages" -Recurse -Filter "zig.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($ZigPkg) {
+    $ZigDir = Split-Path $ZigPkg.FullName
+    $env:PATH = "$PSScriptRoot;$ZigDir;$env:USERPROFILE\.cargo\bin;$env:PATH"
+} else {
+    $env:PATH = "$PSScriptRoot;$env:USERPROFILE\.cargo\bin;$env:PATH"
+}
+
 $BuiltWith = ""
 if (Get-Command "cargo-zigbuild" -ErrorAction SilentlyContinue) {
     Write-Host "      Using cargo-zigbuild..." -ForegroundColor Gray
@@ -39,9 +48,9 @@ if (Get-Command "cargo-zigbuild" -ErrorAction SilentlyContinue) {
     cross build --target armv5te-unknown-linux-musleabi --release
     $BuiltWith = "cross"
 } else {
-    Write-Host "      Attempting standard cargo build --target armv5te-unknown-linux-musleabi..." -ForegroundColor Gray
+    Write-Host "      Using standard cargo with Zig LLD linker..." -ForegroundColor Gray
     cargo build --target armv5te-unknown-linux-musleabi --release
-    $BuiltWith = "cargo"
+    $BuiltWith = "cargo+zig"
 }
 
 $BinaryPath = "target\armv5te-unknown-linux-musleabi\release\ev3-web-motor"
