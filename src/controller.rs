@@ -11,27 +11,29 @@ pub enum HardwareBackend {
 pub struct MotorController {
     backend: HardwareBackend,
     cached_status: Arc<RwLock<Vec<MotorStatus>>>,
+    cached_motors: Arc<RwLock<Vec<Motor>>>,
     poll_interval_ms: u64,
 }
 
 impl MotorController {
     pub fn new(mock_mode: bool, poll_interval_ms: u64) -> Arc<Self> {
-        let backend = if mock_mode {
+        let (backend, initial_motors) = if mock_mode {
             println!("[CONTROLLER] Initializing in MOCK mode (simulated motors).");
-            HardwareBackend::Mock(MockController::new())
+            (HardwareBackend::Mock(MockController::new()), Vec::new())
         } else {
             println!("[CONTROLLER] Initializing in REAL hardware mode (sysfs /sys/class/tacho-motor).");
-            HardwareBackend::Real
+            (HardwareBackend::Real, Motor::find_all())
         };
 
         let initial_status = match &backend {
             HardwareBackend::Mock(mock) => mock.poll_and_get_all_status(),
-            HardwareBackend::Real => Self::query_real_motors(),
+            HardwareBackend::Real => Self::query_real_motors(&initial_motors),
         };
 
         let controller = Arc::new(Self {
             backend,
             cached_status: Arc::new(RwLock::new(initial_status)),
+            cached_motors: Arc::new(RwLock::new(initial_motors)),
             poll_interval_ms,
         });
 
@@ -47,8 +49,7 @@ impl MotorController {
         controller
     }
 
-    fn query_real_motors() -> Vec<MotorStatus> {
-        let motors = Motor::find_all();
+    fn query_real_motors(motors: &[Motor]) -> Vec<MotorStatus> {
         let mut statuses = Vec::new();
         for port_letter in ["A", "B", "C", "D"] {
             if let Some(m) = motors.iter().find(|m| m.port == port_letter) {
@@ -74,10 +75,24 @@ impl MotorController {
 
     fn run_poller_loop(&self) {
         let interval = Duration::from_millis(self.poll_interval_ms);
+        let mut ticks_since_discovery: u64 = 0;
+        let discovery_interval_ticks = (2000 / self.poll_interval_ms).max(1);
+
         loop {
             let statuses = match &self.backend {
                 HardwareBackend::Mock(mock) => mock.poll_and_get_all_status(),
-                HardwareBackend::Real => Self::query_real_motors(),
+                HardwareBackend::Real => {
+                    ticks_since_discovery += 1;
+                    if ticks_since_discovery >= discovery_interval_ticks {
+                        ticks_since_discovery = 0;
+                        if let Ok(mut motors_guard) = self.cached_motors.write() {
+                            *motors_guard = Motor::find_all();
+                        }
+                    }
+
+                    let motors = self.cached_motors.read().unwrap().clone();
+                    Self::query_real_motors(&motors)
+                }
             };
 
             if let Ok(mut cache) = self.cached_status.write() {
@@ -86,6 +101,24 @@ impl MotorController {
 
             thread::sleep(interval);
         }
+    }
+
+    fn get_real_motor(&self, port: &str) -> Result<Motor, String> {
+        // Fast path: check cached motors without disk I/O
+        if let Ok(guard) = self.cached_motors.read() {
+            if let Some(motor) = guard.iter().find(|m| m.port.eq_ignore_ascii_case(port)) {
+                return Ok(motor.clone());
+            }
+        }
+
+        // Slow path fallback: motor was newly connected, scan once and cache
+        let refreshed = Motor::find_all();
+        let found = refreshed.iter().find(|m| m.port.eq_ignore_ascii_case(port)).cloned();
+        if let Ok(mut guard) = self.cached_motors.write() {
+            *guard = refreshed;
+        }
+
+        found.ok_or_else(|| format!("Motor on Port {} not connected", port))
     }
 
     /// Read cached status from memory in <0.05ms (zero sysfs file I/O overhead)
@@ -100,15 +133,11 @@ impl MotorController {
                 Ok(())
             }
             HardwareBackend::Real => {
-                let motors = Motor::find_all();
-                if let Some(motor) = motors.iter().find(|m| m.port.eq_ignore_ascii_case(port)) {
-                    motor.set_stop_action("coast").map_err(|e| e.to_string())?;
-                    motor.set_speed_sp(speed).map_err(|e| e.to_string())?;
-                    motor.send_command("run-forever").map_err(|e| e.to_string())?;
-                    Ok(())
-                } else {
-                    Err(format!("Motor on Port {} not connected", port))
-                }
+                let motor = self.get_real_motor(port)?;
+                motor.set_stop_action("coast").map_err(|e| e.to_string())?;
+                motor.set_speed_sp(speed).map_err(|e| e.to_string())?;
+                motor.send_command("run-forever").map_err(|e| e.to_string())?;
+                Ok(())
             }
         }
     }
@@ -121,16 +150,12 @@ impl MotorController {
                 Ok(())
             }
             HardwareBackend::Real => {
-                let motors = Motor::find_all();
-                if let Some(motor) = motors.iter().find(|m| m.port.eq_ignore_ascii_case(port)) {
-                    motor.set_stop_action(&action).map_err(|e| e.to_string())?;
-                    motor.set_speed_sp(speed).map_err(|e| e.to_string())?;
-                    motor.set_time_sp(time_ms).map_err(|e| e.to_string())?;
-                    motor.send_command("run-timed").map_err(|e| e.to_string())?;
-                    Ok(())
-                } else {
-                    Err(format!("Motor on Port {} not connected", port))
-                }
+                let motor = self.get_real_motor(port)?;
+                motor.set_stop_action(&action).map_err(|e| e.to_string())?;
+                motor.set_speed_sp(speed).map_err(|e| e.to_string())?;
+                motor.set_time_sp(time_ms).map_err(|e| e.to_string())?;
+                motor.send_command("run-timed").map_err(|e| e.to_string())?;
+                Ok(())
             }
         }
     }
@@ -143,16 +168,12 @@ impl MotorController {
                 Ok(())
             }
             HardwareBackend::Real => {
-                let motors = Motor::find_all();
-                if let Some(motor) = motors.iter().find(|m| m.port.eq_ignore_ascii_case(port)) {
-                    motor.set_stop_action(&action).map_err(|e| e.to_string())?;
-                    motor.set_speed_sp(speed).map_err(|e| e.to_string())?;
-                    motor.set_position_sp(rel_pos).map_err(|e| e.to_string())?;
-                    motor.send_command("run-to-rel-pos").map_err(|e| e.to_string())?;
-                    Ok(())
-                } else {
-                    Err(format!("Motor on Port {} not connected", port))
-                }
+                let motor = self.get_real_motor(port)?;
+                motor.set_stop_action(&action).map_err(|e| e.to_string())?;
+                motor.set_speed_sp(speed).map_err(|e| e.to_string())?;
+                motor.set_position_sp(rel_pos).map_err(|e| e.to_string())?;
+                motor.send_command("run-to-rel-pos").map_err(|e| e.to_string())?;
+                Ok(())
             }
         }
     }
@@ -164,14 +185,10 @@ impl MotorController {
                 Ok(())
             }
             HardwareBackend::Real => {
-                let motors = Motor::find_all();
-                if let Some(motor) = motors.iter().find(|m| m.port.eq_ignore_ascii_case(port)) {
-                    motor.set_duty_cycle_sp(duty_cycle).map_err(|e| e.to_string())?;
-                    motor.send_command("run-direct").map_err(|e| e.to_string())?;
-                    Ok(())
-                } else {
-                    Err(format!("Motor on Port {} not connected", port))
-                }
+                let motor = self.get_real_motor(port)?;
+                motor.set_duty_cycle_sp(duty_cycle).map_err(|e| e.to_string())?;
+                motor.send_command("run-direct").map_err(|e| e.to_string())?;
+                Ok(())
             }
         }
     }
@@ -184,14 +201,10 @@ impl MotorController {
                 Ok(())
             }
             HardwareBackend::Real => {
-                let motors = Motor::find_all();
-                if let Some(motor) = motors.iter().find(|m| m.port.eq_ignore_ascii_case(port)) {
-                    let _ = motor.set_stop_action(&action_str);
-                    motor.send_command("stop").map_err(|e| e.to_string())?;
-                    Ok(())
-                } else {
-                    Err(format!("Motor on Port {} not connected", port))
-                }
+                let motor = self.get_real_motor(port)?;
+                motor.set_stop_action(&action_str).map_err(|e| e.to_string())?;
+                motor.send_command("stop").map_err(|e| e.to_string())?;
+                Ok(())
             }
         }
     }
@@ -203,13 +216,9 @@ impl MotorController {
                 Ok(())
             }
             HardwareBackend::Real => {
-                let motors = Motor::find_all();
-                if let Some(motor) = motors.iter().find(|m| m.port.eq_ignore_ascii_case(port)) {
-                    motor.send_command("reset").map_err(|e| e.to_string())?;
-                    Ok(())
-                } else {
-                    Err(format!("Motor on Port {} not connected", port))
-                }
+                let motor = self.get_real_motor(port)?;
+                motor.send_command("reset").map_err(|e| e.to_string())?;
+                Ok(())
             }
         }
     }
@@ -227,12 +236,21 @@ impl MotorController {
                 Ok(())
             }
             HardwareBackend::Real => {
-                let motors = Motor::find_all();
+                let motors = self.cached_motors.read().unwrap().clone();
+                let mut errors = Vec::new();
                 for motor in &motors {
-                    let _ = motor.set_stop_action("hold");
-                    let _ = motor.send_command("stop");
+                    if let Err(e) = motor.set_stop_action("hold") {
+                        errors.push(format!("Port {} stop_action error: {}", motor.port, e));
+                    }
+                    if let Err(e) = motor.send_command("stop") {
+                        errors.push(format!("Port {} stop command error: {}", motor.port, e));
+                    }
                 }
-                Ok(())
+                if !errors.is_empty() {
+                    Err(errors.join("; "))
+                } else {
+                    Ok(())
+                }
             }
         }
     }

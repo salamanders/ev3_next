@@ -10,13 +10,13 @@ The LEGO Mindstorms EV3 programmable brick operates on a Texas Instruments Sitar
 
 | Component | Hardware Specification | Implementation Decision |
 | :--- | :--- | :--- |
-| **Processor** | TI Sitara AM1808 (ARM926EJ-S @ 300 MHz) | 🎯 **[ADOPTED]** Target CPU set to `arm926ej-s` in [`.cargo/config.toml`](file:///C:/Users/Admin/Documents/ev3_next/.cargo/config.toml#L4). |
+| **Processor** | TI Sitara AM1808 (ARM926EJ-S @ 300 MHz) | 🎯 **[ADOPTED]** Target CPU set to `arm926ej-s` in [`.cargo/config.toml`](.cargo/config.toml). |
 | **Architecture** | 32-bit ARMv5te RISC | 🎯 **[ADOPTED]** Cross-compiled with `armv5te-unknown-linux-musleabi`. |
 | **Main Memory** | 64 MB DRAM | 🎯 **[ADOPTED]** Keep binary RSS memory footprint **< 3 MB RAM**. |
 | **On-Board Storage** | 16 MB SPI Flash | ℹ️ **[NOT USED]** Reserved for bootloader; OS boots from MicroSD. |
 | **Storage Expansion** | MicroSDHC slot (up to 32 GB) | 🎯 **[ADOPTED]** Flashed with `ev3dev-stretch` (one time only). |
 | **Network Interfaces** | USB 2.0 Host port, USB Device | 🎯 **[ADOPTED]** Mini-USB RNDIS virtual Ethernet gadget (`192.168.2.2`). |
-| **Motor Outputs** | 4 Output Ports (Port A, B, C, D) | 🎯 **[IMPLEMENTED]** Controlled via `/sys/class/tacho-motor/` in [`src/sysfs/motor.rs`](file:///C:/Users/Admin/Documents/ev3_next/src/sysfs/motor.rs). |
+| **Motor Outputs** | 4 Output Ports (Port A, B, C, D) | 🎯 **[IMPLEMENTED]** Controlled via `/sys/class/tacho-motor/` in [`src/sysfs/motor.rs`](src/sysfs/motor.rs). |
 
 The ARMv5te instruction set lacks hardware floating-point units (FPU) and vector processing hardware. Modern Linux distributions have dropped support for ARMv5 architectures because of these hardware limits. Deploying a functional Linux system on the EV3 requires using patched legacy kernels, such as Linux kernel 4.4 from the ev3dev project.
 
@@ -28,9 +28,9 @@ Default boot sequences on Linux distributions like `ev3dev-stretch` take between
 
 | Boot Component | Default System Behavior | Optimization Strategy | Implementation Status in Project |
 | :--- | :--- | :--- | :--- |
-| **LCD Graphical UI (`brickman`)** | Runs graphical menu on brick LCD (~20MB RAM, 40% CPU). | Disable `brickman.service`. | 🎯 **[IMPLEMENTED]** Disabled in setup commands. See [`README.md:L86`](file:///C:/Users/Admin/Documents/ev3_next/README.md#L86). |
-| **Storage Integrity Check** | `systemd-fsck-root` scans the MicroSD card on boot (40–60s delay). | Mask `systemd-fsck-root.service`. | 🎯 **[IMPLEMENTED]** Masked in setup commands. See [`README.md:L90`](file:///C:/Users/Admin/Documents/ev3_next/README.md#L90). |
-| **Network Synchronization** | `connman-wait-online.service` delays boot until network connects (20–40s delay). | Mask wait-online services. | 🎯 **[IMPLEMENTED]** Masked in setup commands. See [`README.md:L88`](file:///C:/Users/Admin/Documents/ev3_next/README.md#L88). |
+| **LCD Graphical UI (`brickman`)** | Runs graphical menu on brick LCD (~20MB RAM, 40% CPU). | Disable `brickman.service`. | 🎯 **[IMPLEMENTED]** Disabled in setup commands. See [`README.md`](README.md#3-one-time-boot-acceleration--service-setup). |
+| **Storage Integrity Check** | Ext4 filesystem check on boot. | Keep active for unclean shutdown recovery. | 🛡️ **[REJECTED MASKING]** Masking fsck causes read-only root mounts after battery pulls. Kept active for recovery. |
+| **Network Synchronization** | `connman-wait-online.service` delays boot until network connects (20–40s delay). | Mask wait-online services. | 🎯 **[IMPLEMENTED]** Masked in setup commands. See [`README.md`](README.md#3-one-time-boot-acceleration--service-setup). |
 | **Init System Replacement** | systemd service dependency graph. | Replace systemd with BusyBox init script. | ⏸️ **[NOT USED in Phase 1]** Masking heavy systemd services achieved the target 10–15s boot time without rebuilding the kernel rootfs. |
 | **Total Cold Boot Time** | **90 to 180 seconds** | **Optimized: 10 to 15 seconds** | 🎯 **[ACHIEVED]** Target boot time is 10–15 seconds. |
 
@@ -57,15 +57,15 @@ The EV3 brick features four physical output ports labeled A, B, C, and D for int
 ### Architectural Decisions for Motor Control
 
 1. **Direct Sysfs File I/O:**
-   - 🎯 **[IMPLEMENTED]** Created a zero-dependency sysfs driver in [`src/sysfs/motor.rs:L25-L126`](file:///C:/Users/Admin/Documents/ev3_next/src/sysfs/motor.rs#L25-L126).
+   - 🎯 **[IMPLEMENTED]** Created a zero-dependency sysfs driver in [`src/sysfs/motor.rs`](src/sysfs/motor.rs).
    - Writes parameters (`speed_sp`, `duty_cycle_sp`, `stop_action`) and dispatches commands directly to sysfs file nodes.
 
 2. **Non-Blocking Background Telemetry Cache:**
    - 🎯 **[IMPLEMENTED]** Synchronous sysfs I/O is prohibited on the HTTP request thread to protect the 300 MHz CPU.
-   - A dedicated 50ms background thread in [`src/controller.rs:L75-L89`](file:///C:/Users/Admin/Documents/ev3_next/src/controller.rs#L75-L89) caches motor encoder values into memory, allowing HTTP `/api/status` requests to respond in `< 0.05ms`.
+   - A dedicated 50ms background thread in [`src/controller.rs`](src/controller.rs) caches motor encoder values into memory, allowing HTTP `/api/status` requests to respond in `< 0.05ms`.
 
 3. **In-Memory Host Simulation Layer:**
-   - 🎯 **[IMPLEMENTED]** Created [`src/sysfs/mock.rs:L1-L280`](file:///C:/Users/Admin/Documents/ev3_next/src/sysfs/mock.rs#L1-L280) to simulate motor physics, speed, position integration, and emergency stop on Windows without EV3 hardware.
+   - 🎯 **[IMPLEMENTED]** Created [`src/sysfs/mock.rs`](src/sysfs/mock.rs) to simulate motor physics, speed, position integration, and emergency stop on Windows without EV3 hardware.
 
 ---
 
@@ -77,7 +77,7 @@ The EV3 brick features four physical output ports labeled A, B, C, and D for int
 | **Embedded Java JRE (Java 8)** | 25 MB to 35 MB | ⚠️ Supported (leJOS) | 3 to 8 seconds | ❌ **[REJECTED]** Consumes over 50% of available RAM, risking Linux OOM process termination. |
 | **NanoHTTPD Engine (Java 8)** | 15 MB to 20 MB | ⚠️ Supported | 2 to 4 seconds | ❌ **[REJECTED]** High memory overhead compared to native compiled binaries. |
 | **Native C HTTP Server** | < 2 MB | ✅ Supported | < 10 ms | ℹ️ **[VIABLE ALTERNATIVE]** Highly efficient, but lacks Rust type and memory safety. |
-| **Native Rust Server (`tiny_http`)** | **< 3 MB** | ✅ **Fully Supported (`musleabi`)** | **< 10 ms** | 🎯 **[ADOPTED]** Best combination of safety, instant startup, zero dependencies, and < 3 MB RAM footprint. See [`Cargo.toml`](file:///C:/Users/Admin/Documents/ev3_next/Cargo.toml) and [`src/main.rs`](file:///C:/Users/Admin/Documents/ev3_next/src/main.rs). |
+| **Native Rust Server (`tiny_http`)** | **< 3 MB** | ✅ **Fully Supported (`musleabi`)** | **< 10 ms** | 🎯 **[ADOPTED]** Best combination of safety, instant startup, zero dependencies, and < 3 MB RAM footprint. See [`Cargo.toml`](Cargo.toml) and [`src/main.rs`](src/main.rs). |
 
 ---
 
@@ -91,22 +91,38 @@ The TI Sitara AM1808 processor does not contain hardware acceleration for crypto
    - ❌ **[REJECTED]** Software TLS handshakes occupy the 300 MHz ARMv5 CPU for 2 to 4 seconds per connection, introducing unacceptable latency into motor commands.
 
 2. **Plain HTTP on Local Network:**
-   - 🎯 **[ADOPTED]** The EV3 web server listens on plain HTTP port 80 (or 8080 in simulation) with CORS enabled. See [`src/web/router.rs:L28-L80`](file:///C:/Users/Admin/Documents/ev3_next/src/web/router.rs#L28-L80).
+   - 🎯 **[ADOPTED]** The EV3 web server listens on plain HTTP port 80 (or 8080 in simulation) with CORS enabled. See [`src/web/router.rs`](src/web/router.rs).
 
 3. **Edge Reverse Proxy for Remote HTTPS (Optional):**
-   - ℹ️ **[DOCUMENTED]** If remote HTTPS access is needed, terminate TLS on a secondary device (host PC or Raspberry Pi) running NGINX, forwarding unencrypted HTTP requests to the EV3. See [`PROJECT_PLAN.md:L160-L175`](file:///C:/Users/Admin/Documents/ev3_next/PROJECT_PLAN.md).
+   - ℹ️ **[DOCUMENTED]** If remote HTTPS access is needed, terminate TLS on a secondary device (host PC or Raspberry Pi) running NGINX, forwarding unencrypted HTTP requests to the EV3. See [`PROJECT_PLAN.md`](PROJECT_PLAN.md).
 
 ---
 
 ## 6. Rust Implementation Blueprint
 
 1. **Cross-Compilation Target:**
-   - 🎯 **[IMPLEMENTED]** Target `armv5te-unknown-linux-musleabi` configured in [`.cargo/config.toml`](file:///C:/Users/Admin/Documents/ev3_next/.cargo/config.toml) using the local Zig LLD linker ([`zig-lld-arm.cmd`](file:///C:/Users/Admin/Documents/ev3_next/zig-lld-arm.cmd) / [`zig-linker.py`](file:///C:/Users/Admin/Documents/ev3_next/zig-linker.py)).
+   - 🎯 **[IMPLEMENTED]** Target `armv5te-unknown-linux-musleabi` configured in [`.cargo/config.toml`](.cargo/config.toml) using the local Zig LLD linker ([`zig-lld-arm.cmd`](zig-lld-arm.cmd) / [`zig-linker.py`](zig-linker.py)).
    - Compiles a static release binary in **< 10 seconds** on Windows without Docker.
 
 2. **Embedded Single-Page Application:**
-   - 🎯 **[IMPLEMENTED]** HTML5, CSS3, and JavaScript are embedded directly into the executable using `include_str!` in [`src/web/router.rs:L8-L10`](file:///C:/Users/Admin/Documents/ev3_next/src/web/router.rs#L8-L10).
+   - 🎯 **[IMPLEMENTED]** HTML5, CSS3, and JavaScript are embedded directly into the executable using `include_str!` in [`src/web/router.rs`](src/web/router.rs).
    - Final statically linked executable size is only **658 KB**.
 
 3. **1-Click Automated Deployment:**
-   - 🎯 **[IMPLEMENTED]** Created [`deploy.ps1`](file:///C:/Users/Admin/Documents/ev3_next/deploy.ps1) and [`deploy.sh`](file:///C:/Users/Admin/Documents/ev3_next/deploy.sh) to cross-compile, upload over USB, and restart [`ev3-web.service`](file:///C:/Users/Admin/Documents/ev3_next/ev3-web.service) in **4 seconds**.
+   - 🎯 **[IMPLEMENTED]** Created [`deploy.ps1`](deploy.ps1) and [`deploy.sh`](deploy.sh) to cross-compile, upload over USB, and restart [`ev3-web.service`](ev3-web.service) in **4 seconds**.
+
+---
+
+## 7. Reality Check: Verified Hardware Facts vs. Architectural Assumptions
+
+This section records empirical hardware facts and corrects theoretical assumptions identified during technical review.
+
+| Component / Subsystem | Initial Assumption / Speculation | Verified Hardware Reality | Architectural Status |
+| :--- | :--- | :--- | :--- |
+| **Power & Battery** | High motor current causes battery voltage sags that brown-out and reboot the ARM9 processor. | EV3 hardware contains dedicated switching step-down regulators (3.3V and 1.8V) isolating the SoC from motor power. Heavy motor loads sag motor bus voltage, but do not reboot the processor with healthy batteries. | 🛡️ **[REJECTED SPECULATION]** Removed brown-out crash warning from [`BUGS.md`](BUGS.md). |
+| **macOS USB Networking** | Apple removed RNDIS, preventing macOS hosts from communicating over USB without custom kernel extensions. | `ev3dev-stretch` implements a dual composite USB gadget (RNDIS + CDC-ECM). macOS natively supports CDC-ECM devices and discovers the EV3 as `CDC Composite Gadget` without extra drivers. | 🎯 **[VERIFIED REALITY]** Documented native macOS CDC network setup in [`PROJECT_PLAN.md`](PROJECT_PLAN.md#4-phase-1-one-time-sd-card-setup-and-usb-networking). |
+| **LED Sysfs Paths** | LED paths contain side identifiers: `/sys/class/leds/led0:left:red:brick-status`. | Real ev3dev sysfs paths are `/sys/class/leds/led0:red:brick-status` (left) and `/sys/class/leds/led1:red:brick-status` (right). | 🎯 **[CORRECTED SPECIFICATION]** Corrected paths in [`PROJECT_PLAN.md`](PROJECT_PLAN.md#102-phase-7-checklist). |
+| **LCD Console Output** | Any text written to `/dev/tty1` displays cleanly and permanently on the brick screen. | Resolution is 178&times;128 pixels. An 8&times;8 console font provides only 22 columns and 16 rows. Text lines must stay under 20 characters. The kernel blanks the console after 10 minutes unless disabled with `setterm -blank 0`. | 🎯 **[ADOPTED SPECIFICATION]** Added line length limits and blanking prevention to [`PROJECT_PLAN.md`](PROJECT_PLAN.md#102-phase-7-checklist). |
+| **Sysfs Polling Overhead** | Polling sysfs files 20 times per second consumes 40% to 60% of CPU time. | The exact CPU percentage was an unbenchmarked projection. However, reading 4 attributes across 4 motors executes 320 file open/read/close syscalls per second. Reusing open file descriptors and seeking to byte 0 is confirmed standard best practice. | 🎯 **[ADOPTED OPTIMIZATION]** Logged persistent descriptor refactoring as [`BUG-15`](BUGS.md#L108-L114). |
+| **Motor Safety Watchdog** | Missing watchdog risks runaway robot if network drops during `run-forever`. | Code inspection of [`src/controller.rs`](src/controller.rs) confirms zero command timeouts exist. If network packets drop while driving, motors continue running indefinitely. | 🎯 **[ADOPTED REQUIREMENT]** Logged mandatory 400ms command timeout watchdog as [`BUG-14`](BUGS.md#L101-L107). |
+| **On-Device HTTPS / TLS** | Modern web encryption can run on the brick with optimized libraries. | The 300 MHz ARM9 processor lacks cryptographic hardware acceleration. Modern TLS handshakes introduce multi-second latency. Rust TLS crates (`ring`) do not support ARMv5te musl. | ❌ **[CONFIRMED REJECTED]** Plain HTTP on local network retained as the only viable architecture. |

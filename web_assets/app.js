@@ -53,10 +53,29 @@ class EV3App {
             this.driveSpeedPct.textContent = Math.round((val / 1050) * 100);
         });
 
-        // D-Pad Direction Buttons
+        // D-Pad Direction Buttons: Momentary drive on press/release
         this.dpadButtons.forEach(btn => {
             const dir = btn.dataset.dir;
-            btn.addEventListener("click", () => this.handleDriveDirection(dir));
+            if (dir === "stop") {
+                btn.addEventListener("click", () => this.handleDriveDirection("stop"));
+            } else {
+                const startDrive = (e) => {
+                    e.preventDefault();
+                    this.handleDriveDirection(dir);
+                };
+                const stopDrive = (e) => {
+                    e.preventDefault();
+                    this.handleDriveDirection("stop");
+                };
+
+                btn.addEventListener("pointerdown", startDrive);
+                btn.addEventListener("pointerup", stopDrive);
+                btn.addEventListener("pointercancel", stopDrive);
+                btn.addEventListener("pointerleave", (e) => {
+                    // Only stop if pointer was pressed
+                    if (e.buttons > 0) stopDrive(e);
+                });
+            }
         });
 
         // Clear Log
@@ -118,6 +137,15 @@ class EV3App {
         // Keyboard Controls
         window.addEventListener("keydown", (e) => this.handleKeyDown(e));
         window.addEventListener("keyup", (e) => this.handleKeyUp(e));
+
+        // Window Blur: prevent sticky keys when user switches tabs
+        window.addEventListener("blur", () => {
+            if (this.activeKeys.size > 0 || this.keyboardDriveActive) {
+                this.activeKeys.clear();
+                this.keyboardDriveActive = false;
+                this.handleDriveDirection("stop");
+            }
+        });
     }
 
     // --- API Calls ---
@@ -212,8 +240,10 @@ class EV3App {
         }
 
         if (dir === "stop") {
-            await this.sendMotorCommand(leftPort, "stop", { action: "brake" });
-            await this.sendMotorCommand(rightPort, "stop", { action: "brake" });
+            await Promise.allSettled([
+                this.sendMotorCommand(leftPort, "stop", { action: "brake" }),
+                this.sendMotorCommand(rightPort, "stop", { action: "brake" })
+            ]);
         } else {
             this.log(`[Drive] ${dir} (L:${leftSpeed}, R:${rightSpeed})`, "info");
             await this.apiPost("/api/tank-drive", {

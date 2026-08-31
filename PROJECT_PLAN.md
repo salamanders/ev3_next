@@ -15,6 +15,7 @@
 | **Phase 4** | Embedded Web Dashboard & Host Simulation | ✅ **COMPLETE** |
 | **Phase 5** | 1-Click Deployment Scripts (`deploy.ps1`) | ✅ **COMPLETE** |
 | **Phase 6** | End-to-End Verification & Benchmarking | 🔄 **HOST VERIFIED / HARDWARE PENDING** |
+| **Phase 7** | EV3 Brick LED Status & Screen Network Display | ⏳ **PENDING (Planned)** |
 
 ---
 
@@ -28,6 +29,7 @@
 7. [Phase 4: Embedded Web Dashboard and Host Simulation](#7-phase-4-embedded-web-dashboard-and-host-simulation)
 8. [Phase 5: Automated One-Click Deployment Script (`deploy.ps1`)](#8-phase-5-automated-one-click-deployment-script-deployps1)
 9. [Phase 6: Verification Checklist & Diagnostics Matrix](#9-phase-6-verification-checklist--diagnostics-matrix)
+10. [Phase 7: EV3 Brick LED Status and Screen Network Display](#10-phase-7-ev3-brick-led-status-and-screen-network-display)
 
 ---
 
@@ -94,10 +96,10 @@ On a 300 MHz ARM9 processor:
   - Use a 4GB to 32GB MicroSDHC card with BalenaEtcher.
 - [ ] **Step 1.3: Initial Boot on EV3**
   - Insert card into EV3 slot and press Center Button to boot (takes 1–2 minutes on first boot).
-- [ ] **Step 1.4: Connect USB Cable & Verify Windows Driver**
-  - Connect Mini-USB cable between EV3 PC port and Windows PC.
-  - Test ping in PowerShell: `ping 192.168.2.2`.
-  - If ping fails, update device driver in Device Manager to "Microsoft USB Ethernet/RNDIS Gadget".
+- [ ] **Step 1.4: Connect USB Cable & Verify Host Network**
+  - Connect Mini-USB cable between EV3 PC port and host computer.
+  - **Windows:** Test ping in PowerShell: `ping 192.168.2.2`. If ping fails, update device driver in Device Manager to "Microsoft USB Ethernet/RNDIS Gadget".
+  - **macOS:** macOS detects the "CDC Composite Gadget" natively in System Settings -> Network.
 - [ ] **Step 1.5: Test SSH Access**
   - Connect with `ssh robot@192.168.2.2` (password: `maker`).
 
@@ -111,7 +113,7 @@ On a 300 MHz ARM9 processor:
   systemctl disable --now brickman.service
   systemctl mask connman-wait-online.service
   systemctl mask systemd-networkd-wait-online.service
-  systemctl mask systemd-fsck-root.service
+  # Note: Do NOT mask systemd-fsck-root.service; unclean power-offs require fsck to prevent read-only mounts.
   systemctl mask apt-daily.service apt-daily.timer
   systemctl mask apt-daily-upgrade.service apt-daily-upgrade.timer
   exit
@@ -194,3 +196,49 @@ On a 300 MHz ARM9 processor:
 | Motor disconnected in UI | Cable not inserted completely into port. | Push RJ12 connector until it clicks into place. |
 | Motor stops immediately | Target speed is higher than motor maximum speed. | Set speed between -1050 and +1050 for Large Motor, or -1560 and +1560 for Medium Motor. |
 | UI stops updating | Browser tab throttled background JavaScript timer. | Focus the tab or click on the dashboard window. |
+
+---
+
+## 10. Phase 7: EV3 Brick LED Status and Screen Network Display
+
+### 10.1 Hardware Constraints and Strategy
+- **LED Indicator Limits:**
+  - The EV3 brick has two bi-color LEDs (Left and Right) under the buttons.
+  - Indicator LEDs cannot display alphanumeric text like IP addresses or port numbers.
+  - LEDs show operational readiness with colors (Amber, Green, Red).
+- **LCD Console Screen:**
+  - The EV3 brick has a 178x128 monochrome LCD screen.
+  - Optimization in Phase 2 disables `brickman.service`.
+  - The Linux console (`/dev/tty1`) is free for direct text output on the LCD screen.
+- **Architectural Decision 🎯 [ADOPTED]:**
+  - **Brick LEDs:** Set to Solid Green when the web server is ready for instructions (Amber during boot, Red on error).
+  - **Brick LCD Screen:** Write the detected IP address, port, and URL directly to `/dev/tty1` when ready.
+
+---
+
+### 10.2 Phase 7 Checklist
+
+- [ ] **Step 7.1: Sysfs LED Driver (`src/sysfs/led.rs`)**
+  - Control `/sys/class/leds/led0:red:brick-status`, `/sys/class/leds/led0:green:brick-status`, `/sys/class/leds/led1:red:brick-status`, and `/sys/class/leds/led1:green:brick-status`.
+  - Provide `set_color()`, `set_ready()`, `set_starting()`, and `set_error()`.
+  - Graceful fallback when sysfs nodes are missing.
+- [ ] **Step 7.2: Screen Console Display & IP Detection (`src/sysfs/display.rs`)**
+  - Detect active network IP address (USB RNDIS/CDC `192.168.2.2` or Wi-Fi).
+  - Write formatted ready banner and URL to `/dev/tty1` with ANSI clear screen codes (`\x1b[2J\x1b[H`).
+  - Disable console blanking (`TERM=linux setterm -blank 0 > /dev/tty1` or escape codes) to prevent display sleep.
+  - Fallback cleanly to stdout when `/dev/tty1` is unavailable.
+- [ ] **Step 7.3: Host Simulation Support (`src/sysfs/mock.rs`)**
+  - Add mock LED state tracking and banner logging for host testing (`cargo run -- --mock`).
+- [ ] **Step 7.4: Application Integration (`src/main.rs`)**
+  - Set LED to Amber at startup.
+  - Set LED to Solid Green and write IP banner to screen when server is ready.
+  - Set LED to Red on shutdown or panic.
+- [ ] **Step 7.5: Systemd Console Output Configuration (`ev3-web.service`)**
+  - Configure `TTYPath=/dev/tty1` and `StandardOutput=journal+console`.
+- [ ] **Step 7.6: Automated Unit Tests**
+  - Add unit tests for LED color calculations and IP/display formatting.
+- [ ] **Step 7.7: Verification on Physical EV3 Brick**
+  - Verify LEDs turn Amber on service boot.
+  - Verify LEDs turn Solid Green when ready.
+  - Verify LCD screen displays `http://192.168.2.2/`.
+

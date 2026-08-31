@@ -1,8 +1,7 @@
 [Unit]
 Description=LEGO Mindstorms EV3 Web Motor Control Server
 Documentation=https://github.com/ev3dev/ev3dev
-After=basic.target
-DefaultDependencies=no
+After=network.target
 
 [Service]
 Type=simple
@@ -10,14 +9,14 @@ User=root
 WorkingDirectory=/home/robot
 ExecStart=/home/robot/ev3-web-motor --port 80 --poll-interval 50
 Restart=always
-RestartSec=1
+RestartSec=2
 StandardOutput=journal
 StandardError=journal
 
-# Performance optimizations for 300MHz ARM9
-CPUSchedulingPolicy=rr
-CPUSchedulingPriority=50
+# Safe process priority for single-core 300MHz ARM9
+Nice=-5
 LimitNOFILE=1024
 
 [Install]
-WantedBy=basic.target
+WantedBy=multi-user.target
+

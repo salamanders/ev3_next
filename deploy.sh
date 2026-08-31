@@ -8,12 +8,14 @@ TARGET_IP="${1:-192.168.2.2}"
 USER="${2:-robot}"
 
 echo "==> [1/4] Cross-compiling ev3-web-motor for ARMv5te..."
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if command -v cargo-zigbuild &> /dev/null; then
     cargo zigbuild --target armv5te-unknown-linux-musleabi --release
 elif command -v cross &> /dev/null; then
     cross build --target armv5te-unknown-linux-musleabi --release
 else
-    cargo build --target armv5te-unknown-linux-musleabi --release
+    chmod +x "$SCRIPT_DIR/zig-lld-arm.sh" 2>/dev/null || true
+    RUSTFLAGS="-C linker=$SCRIPT_DIR/zig-lld-arm.sh" cargo build --target armv5te-unknown-linux-musleabi --release
 fi
 
 BINARY_PATH="target/armv5te-unknown-linux-musleabi/release/ev3-web-motor"

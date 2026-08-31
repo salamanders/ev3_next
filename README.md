@@ -100,7 +100,7 @@ systemctl disable --now brickman.service
 # 2. Mask blocking startup services:
 systemctl mask connman-wait-online.service
 systemctl mask systemd-networkd-wait-online.service
-systemctl mask systemd-fsck-root.service
+# Note: Keep systemd-fsck-root active to repair unclean shutdowns and prevent read-only mounts
 systemctl mask apt-daily.service apt-daily.timer
 systemctl mask apt-daily-upgrade.service apt-daily-upgrade.timer
 

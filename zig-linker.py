@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import sys
 import subprocess
 import shutil
@@ -19,14 +20,19 @@ for arg in sys.argv[1:]:
 # Locate zig executable dynamically
 zig_path = shutil.which("zig")
 if not zig_path:
-    # Search common winget package location
+    # Common Windows winget package location
     pattern = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Packages\*zig*\zig.exe")
     matches = glob.glob(pattern, recursive=True)
     if matches:
         zig_path = matches[0]
     else:
-        # Fallback to default
-        zig_path = "zig"
+        # Common Unix/macOS locations
+        for p in ["/opt/homebrew/bin/zig", "/usr/local/bin/zig", os.path.expanduser("~/.local/bin/zig")]:
+            if os.path.isfile(p) and os.access(p, os.X_OK):
+                zig_path = p
+                break
+        if not zig_path:
+            zig_path = "zig"
 
 cmd = [zig_path, "ld.lld", "-m", "armelf_linux_eabi"] + args
 res = subprocess.run(cmd)

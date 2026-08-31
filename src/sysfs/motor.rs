@@ -17,9 +17,14 @@ pub struct MotorStatus {
     pub connected: bool,
 }
 
+#[derive(Clone)]
 pub struct Motor {
     pub port: String,
     pub sysfs_path: PathBuf,
+    pub address: String,
+    pub driver_name: String,
+    pub max_speed: i32,
+    pub count_per_rot: i32,
 }
 
 impl Motor {
@@ -48,9 +53,26 @@ impl Motor {
                         continue;
                     };
 
+                    let address = addr.trim().to_string();
+                    let driver_name = fs::read_to_string(path.join("driver_name"))
+                        .map(|s| s.trim().to_string())
+                        .unwrap_or_else(|_| "tacho-motor".into());
+                    let max_speed = fs::read_to_string(path.join("max_speed"))
+                        .ok()
+                        .and_then(|s| s.trim().parse().ok())
+                        .unwrap_or(1050);
+                    let count_per_rot = fs::read_to_string(path.join("count_per_rot"))
+                        .ok()
+                        .and_then(|s| s.trim().parse().ok())
+                        .unwrap_or(360);
+
                     motors.push(Motor {
                         port: port.to_string(),
                         sysfs_path: path,
+                        address,
+                        driver_name,
+                        max_speed,
+                        count_per_rot,
                     });
                 }
             }
@@ -62,11 +84,13 @@ impl Motor {
     }
 
     pub fn set_speed_sp(&self, speed: i32) -> io::Result<()> {
-        self.write_attr("speed_sp", &speed.to_string())
+        let clamped = speed.clamp(-self.max_speed, self.max_speed);
+        self.write_attr("speed_sp", &clamped.to_string())
     }
 
     pub fn set_duty_cycle_sp(&self, duty: i32) -> io::Result<()> {
-        self.write_attr("duty_cycle_sp", &duty.to_string())
+        let clamped = duty.clamp(-100, 100);
+        self.write_attr("duty_cycle_sp", &clamped.to_string())
     }
 
     pub fn set_position_sp(&self, pos: i32) -> io::Result<()> {
@@ -85,29 +109,42 @@ impl Motor {
         self.write_attr("command", cmd)
     }
 
-    pub fn read_status(&self) -> MotorStatus {
-        let address = self.read_attr("address").unwrap_or_else(|_| format!("out{}", self.port));
-        let driver_name = self.read_attr("driver_name").unwrap_or_else(|_| "tacho-motor".into());
-        let position = self.read_attr("position").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+    /// Read dynamic telemetry using cached static properties
+    pub fn poll_dynamic_status(&self) -> Option<MotorStatus> {
+        let pos_str = self.read_attr("position").ok()?;
+        let position = pos_str.parse().ok()?;
         let speed = self.read_attr("speed").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
         let duty_cycle = self.read_attr("duty_cycle").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
-        let max_speed = self.read_attr("max_speed").ok().and_then(|s| s.parse().ok()).unwrap_or(1050);
-        let count_per_rot = self.read_attr("count_per_rot").ok().and_then(|s| s.parse().ok()).unwrap_or(360);
         let state_raw = self.read_attr("state").unwrap_or_default();
         let state: Vec<String> = state_raw.split_whitespace().map(String::from).collect();
 
-        MotorStatus {
+        Some(MotorStatus {
             port: self.port.clone(),
-            address,
-            driver_name,
+            address: self.address.clone(),
+            driver_name: self.driver_name.clone(),
             position,
             speed,
             duty_cycle,
             state,
-            max_speed,
-            count_per_rot,
+            max_speed: self.max_speed,
+            count_per_rot: self.count_per_rot,
             connected: true,
-        }
+        })
+    }
+
+    pub fn read_status(&self) -> MotorStatus {
+        self.poll_dynamic_status().unwrap_or_else(|| MotorStatus {
+            port: self.port.clone(),
+            address: self.address.clone(),
+            driver_name: self.driver_name.clone(),
+            position: 0,
+            speed: 0,
+            duty_cycle: 0,
+            state: vec![],
+            max_speed: self.max_speed,
+            count_per_rot: self.count_per_rot,
+            connected: false,
+        })
     }
 
     fn write_attr(&self, attr: &str, val: &str) -> io::Result<()> {
