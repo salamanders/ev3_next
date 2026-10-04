@@ -21,7 +21,7 @@ for arg in sys.argv[1:]:
 zig_path = shutil.which("zig")
 if not zig_path:
     # Common Windows winget package location
-    pattern = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Packages\*zig*\zig.exe")
+    pattern = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Packages\*zig*\**\zig.exe")
     matches = glob.glob(pattern, recursive=True)
     if matches:
         zig_path = matches[0]

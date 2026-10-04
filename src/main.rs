@@ -24,6 +24,22 @@ fn main() {
     let leds = sysfs::LedController::new(config.mock_mode);
     leds.set_starting();
 
+    // Check for wifi.txt before asking for Wi-Fi (User Request)
+    match sysfs::WifiManager::auto_provision(config.mock_mode) {
+        sysfs::WifiProvisionResult::Provisioned { ssid, path } => {
+            println!("[WIFI] Auto-provisioned Wi-Fi from {:?} for SSID '{}'", path, ssid);
+        }
+        sysfs::WifiProvisionResult::NotFound => {
+            println!("[WIFI] No wifi.txt detected in candidate root locations.");
+        }
+        sysfs::WifiProvisionResult::InvalidFormat(err) => {
+            eprintln!("[WIFI WARN] Invalid format in wifi.txt: {}", err);
+        }
+        sysfs::WifiProvisionResult::Error(err) => {
+            eprintln!("[WIFI ERROR] Failed provisioning Wi-Fi: {}", err);
+        }
+    }
+
     let display = sysfs::DisplayController::new(config.mock_mode);
 
     let controller = MotorController::new(config.mock_mode, config.poll_interval_ms);
@@ -48,6 +64,22 @@ fn main() {
     let active_ip = sysfs::DisplayController::detect_ip();
     let battery_v = controller.get_battery().voltage_v;
     display.show_ready(&active_ip, config.port, battery_v);
+
+    // Periodic LCD display refresh thread (every 5 seconds) (BUG-35)
+    let display_clone = sysfs::DisplayController::new(config.mock_mode);
+    let controller_disp = controller.clone();
+    let port = config.port;
+    thread::Builder::new()
+        .name("display-refresher".into())
+        .spawn(move || {
+            loop {
+                thread::sleep(std::time::Duration::from_secs(5));
+                let ip = sysfs::DisplayController::detect_ip();
+                let bat = controller_disp.get_battery().voltage_v;
+                display_clone.show_ready(&ip, port, bat);
+            }
+        })
+        .expect("Failed to spawn display refresh thread");
 
     // Worker pool for servicing requests concurrently on ARM/Host (2 workers for single-core CPU)
     let num_workers = 2;
@@ -79,6 +111,8 @@ fn main() {
     }
 
     for handle in handles {
-        let _ = handle.join();
+        if let Err(e) = handle.join() {
+            eprintln!("[ERROR] HTTP worker thread panicked: {:?}", e);
+        }
     }
 }

@@ -50,6 +50,22 @@ class EV3App {
         // Emergency Stop
         this.btnEstopHeader.addEventListener("click", () => this.emergencyStop());
 
+        // Safe Shutdown (BUG-29)
+        const btnShutdown = document.getElementById("btn-shutdown-header");
+        if (btnShutdown) {
+            btnShutdown.addEventListener("click", async () => {
+                if (confirm("Are you sure you want to safely power off the EV3 brick?")) {
+                    this.log("⚠️ Power off initiated...", "error");
+                    try {
+                        await this.apiPost("/api/shutdown", {});
+                        alert("EV3 shutdown command issued. Power will turn off once filesystem sync completes.");
+                    } catch (e) {
+                        this.log("Shutdown request failed: " + e.message, "error");
+                    }
+                }
+            });
+        }
+
         // Drive Speed Slider
         this.driveSpeedSlider.addEventListener("input", (e) => {
             const val = e.target.value;

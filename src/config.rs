@@ -8,6 +8,10 @@ pub struct Config {
 impl Config {
     pub fn parse_from_args() -> Self {
         let args: Vec<String> = std::env::args().collect();
+        Self::parse_from(&args)
+    }
+
+    pub fn parse_from(args: &[String]) -> Self {
         let mut host = "0.0.0.0".to_string();
         let mut port: u16 = 80;
         let mut port_explicit = false;
@@ -38,7 +42,7 @@ impl Config {
                 "--poll-interval" => {
                     if i + 1 < args.len() {
                         if let Ok(interval) = args[i + 1].parse::<u64>() {
-                            poll_interval_ms = interval;
+                            poll_interval_ms = interval.clamp(10, 1000);
                         }
                         i += 1;
                     }
@@ -77,5 +81,42 @@ impl Config {
             mock_mode,
             poll_interval_ms,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_poll_interval_clamping() {
+        let args = vec![
+            "ev3-web-motor".into(),
+            "--poll-interval".into(),
+            "0".into(),
+        ];
+        let cfg = Config::parse_from(&args);
+        assert_eq!(cfg.poll_interval_ms, 10, "Poll interval 0 must be clamped to 10ms");
+
+        let args_high = vec![
+            "ev3-web-motor".into(),
+            "--poll-interval".into(),
+            "5000".into(),
+        ];
+        let cfg_high = Config::parse_from(&args_high);
+        assert_eq!(cfg_high.poll_interval_ms, 1000, "Poll interval 5000 must be clamped to 1000ms");
+    }
+
+    #[test]
+    fn test_config_mock_mode_and_port() {
+        let args = vec![
+            "ev3-web-motor".into(),
+            "--mock".into(),
+            "--port".into(),
+            "9090".into(),
+        ];
+        let cfg = Config::parse_from(&args);
+        assert!(cfg.mock_mode);
+        assert_eq!(cfg.port, 9090);
     }
 }

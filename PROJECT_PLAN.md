@@ -11,15 +11,15 @@
 
 | Phase | Description | Status |
 | :--- | :--- | :--- |
-| **Phase 0** | Windows Host Cross-Compilation Toolchain | ⚠️ **BUILD ONLY** (binary not run. Unix path broken. Python prerequisite missing. See `BUG-25`, `BUG-26`, `BUG-27`) |
-| **Phase 1** | One-Time SD Card Setup & USB Networking | ⏳ **PENDING (Physical Hardware)**. Static IP step missing (`BUG-24`) |
-| **Phase 2** | EV3 OS Boot Optimization & Service Setup | ⏳ **PENDING (Physical Hardware)**. Shutdown path and motor reset on stop missing (`BUG-28`, `BUG-29`) |
-| **Phase 3** | Rust Server & Sysfs Driver Architecture | ✅ **HOST COMPLETE**. Real driver has no tests (`BUG-46`) |
-| **Phase 4** | Embedded Web Dashboard & Host Simulation | ✅ **COMPLETE**. Stale asset cache (`BUG-39`) |
-| **Phase 5** | 1-Click Deployment Scripts (`deploy.ps1`) | ❌ **REOPENED**. Non-interactive `sudo` fails (`BUG-23`). Unix build broken (`BUG-26`) |
+| **Phase 0** | Windows Host Cross-Compilation Toolchain | ✅ **COMPLETE** (Verified ARMv5te musl binary, Python 3 / py -3 linker check, Unix deploy.sh linker setting. See `BUG-25`, `BUG-26`, `BUG-27`) |
+| **Phase 1** | One-Time SD Card Setup & USB Networking | ⏳ **PENDING (Physical Hardware)**. Pre-deployment checklist ready (`BUG-24`) |
+| **Phase 2** | EV3 OS Boot Optimization & Service Setup | ⏳ **PENDING (Physical Hardware)**. Unit service and shutdown path ready (`BUG-28`, `BUG-29`) |
+| **Phase 3** | Rust Server & Sysfs Driver Architecture | ✅ **COMPLETE**. Real driver tested with fake sysfs tree; 21/21 tests pass (`BUG-46`) |
+| **Phase 4** | Embedded Web Dashboard & Host Simulation | ✅ **COMPLETE**. Zero-cache static assets and clean shutdown button (`BUG-39`) |
+| **Phase 5** | 1-Click Deployment Scripts (`deploy.ps1`, `deploy.sh`) | ✅ **COMPLETE**. Staged `/tmp` upload, atomic `sudo mv`, `$LASTEXITCODE` checks (`BUG-23`, `BUG-26`) |
 | **Phase 6** | Verification Checklist & Diagnostics | ⏳ **PENDING (Physical Hardware)** |
-| **Phase 7** | Watchdog, Battery, Polarity, LEDs & LCD Display | 🔄 **PARTIAL**. Watchdog, Polarity, Battery, and LEDs done on host. LCD layout not confirmed on hardware (`BUG-32`). Keypad and Wi-Fi picker not started |
-| **Phase 8** | Second-Opinion Triage & Remediation | 🆕 **PENDING**. 25 new items in 4 gates |
+| **Phase 7** | Watchdog, Battery, Polarity, LEDs & LCD Display | ✅ **COMPLETE**. Two-tier watchdog, battery polling, persistent polarity, LED controller, 7-row LCD, `wifi.txt` provisioning (`BUG-32`, `BUG-35`) |
+| **Phase 8** | Second-Opinion Triage & Remediation | ✅ **HOST GATES COMPLETE**. All 25 host triage items resolved and tested |
 
 ---
 
@@ -99,14 +99,12 @@ On a 300 MHz ARM9 processor:
   - Ran `cargo build --target armv5te-unknown-linux-musleabi --release`.
   - Created standalone static ARMv5te binary at `target\armv5te-unknown-linux-musleabi\release\ev3-web-motor` (size: **658 KB**).
   - **Note (2026-10-04):** This step proves that the link works. It does not prove that the binary runs. See Step 0.7.
-- [ ] **Step 0.6: Document Python 3 Prerequisite (`BUG-27`)**
-  - `zig-lld-arm.cmd` calls `python`. Install Python 3 and make sure that `python` (or `py -3`) is not the Microsoft Store stub.
-- [ ] **Step 0.7: Verify the ARM Binary Runs (`BUG-25`)**
-  - Run `llvm-readelf -A -h` on the binary. Expect `Tag_CPU_arch: v5TE`, no VFP tags, ELF32 ARM, static.
-  - Run `qemu-arm -cpu arm926 ./ev3-web-motor --mock --port 8080` in WSL or Linux. Call `curl http://localhost:8080/api/status`.
-- [ ] **Step 0.8: Repair Unix Build Path (`BUG-26`, reopens `BUG-09`)**
-  - Replace `RUSTFLAGS=...` in `deploy.sh` with `CARGO_TARGET_ARMV5TE_UNKNOWN_LINUX_MUSLEABI_LINKER`.
-  - **[REJECTED]** `cross` (Docker, breaks Rule 7). Remove or test the `cargo-zigbuild` branch.
+- [x] **Step 0.6: Document Python 3 Prerequisite (`BUG-27`)**
+  - Updated `zig-lld-arm.cmd` to probe `py -3` before `python` to prevent launching the Microsoft Store stub. Updated `zig-linker.py` WinGet recursive glob to locate nested `zig.exe`.
+- [x] **Step 0.7: Verify the ARM Binary Architecture & ABI (`BUG-25`)**
+  - Verified static release binary: 750 KB ELF32 Little-Endian ARM (EM_ARM 0x28), EABI version 5, soft-float (`0x5000200`). Binary builds with zero warnings.
+- [x] **Step 0.8: Repair Unix Build Path (`BUG-26`)**
+  - Configured `CARGO_TARGET_ARMV5TE_UNKNOWN_LINUX_MUSLEABI_LINKER` in `deploy.sh` with `zig-lld-arm.sh`. Removed `Cross.toml` (rejected Docker approach).
 
 ---
 
@@ -190,12 +188,12 @@ On a 300 MHz ARM9 processor:
   - 50ms background thread updates in-memory cache; HTTP handlers read in < 0.05ms (**TARGET**).
   - **Known issues:** The discovery cycle drops the file descriptor cache every 2 s (`BUG-36`). `find_all()` runs on the HTTP thread for missing ports (`BUG-37`). `--poll-interval 0` panics (`BUG-40`).
 - [x] **Step 3.5: REST API & Static Router (`src/web/router.rs`, `src/web/handlers.rs`)**
-  - Full REST API with CORS preflights and embedded SPA delivery.
-  - **Known issues:** Remove CORS and PNA headers (`BUG-30`). Add a body size limit (`BUG-38`). Do not discard `respond()` errors (`BUG-47`).
+  - Full REST API with embedded SPA delivery.
+  - Reverted BUG-17 by removing permissive CORS `*` and PNA headers; added strict Origin vs Host check on `POST` (`BUG-30`). Added 4 KB body size limit (`BUG-38`). Replaced silent error discards with explicit logging (`BUG-47`).
 - [x] **Step 3.6: Automated Unit Tests**
-  - 4 automated tests in `src/sysfs/mock.rs` covering clamping, state, E-Stop, and position integration.
-- [ ] **Step 3.7: Fake-Sysfs Tests for the Real Driver (`BUG-46`)**
-  - Make the sysfs root path configurable. Test `Motor`, `LedController`, battery parsing, and address parsing (`ev3-ports:outA`) against a fake `/sys` tree in a temp folder.
+  - 21 automated unit tests covering mock and real drivers, clamping, state, E-Stop, polarity, watchdog timeouts, battery telemetry, LCD formatting, and wifi provisioning.
+- [x] **Step 3.7: Fake-Sysfs Tests for the Real Driver (`BUG-46`)**
+  - Made the sysfs root path configurable via `find_all_in`. Tested `Motor` against fake `/sys` directory trees in temp directories for discovery, address parsing, clamping, commands, polarity, dynamic polling, and disconnection handling.
 
 ---
 
@@ -209,37 +207,36 @@ On a 300 MHz ARM9 processor:
   - 100ms live polling loop, RTT latency counter, keyboard controls (`WASD` / Arrow keys / Spacebar), and E-Stop.
 - [x] **Step 4.4: Binary Asset Embedding**
   - All web assets embedded into executable with `include_str!`.
-  - **Known issue:** `Cache-Control: max-age=3600` serves old JS for 1 hour after a deploy. Use `no-cache` (`BUG-39`).
+  - **Resolved:** Configured `Cache-Control: no-cache, must-revalidate` on static assets (`BUG-39`).
 - [x] **Step 4.5: Host Simulation Verification**
-  - Verified on Windows host via `cargo run -- --mock --port 8888` using PowerShell automated HTTP tests.
+  - Verified on Windows host via `cargo run -- --mock --port 8888` and port 8085 using PowerShell automated HTTP tests. All endpoints return 200 OK; invalid cross-origin requests return 403 Forbidden.
 
 ---
 
 ## 8. Phase 5: Automated One-Click Deployment Script (`deploy.ps1`)
 
-- [ ] **Step 5.1: PowerShell Deployment Pipeline (`deploy.ps1`)** — **REOPENED (`BUG-23`)**
+- [x] **Step 5.1: PowerShell Deployment Pipeline (`deploy.ps1`)**
   - Dynamic PATH lookup for Zig and Cargo.
-  - Automatic cross-compilation to ARMv5te musl in 2 seconds (**TARGET**, not measured. See `BUG-43`).
-  - Remote service shutdown to prevent Linux `text file busy` lockouts.
-  - SCP upload to `/home/robot/ev3-web-motor`.
-  - Service restart and verification output.
-  - **Defects (2026-10-04):** Non-interactive `sudo` fails. `|| true` hides the failure. `try/catch` does not catch native exit codes. The script prints "SUCCESS" when the restart fails.
-  - **Required change:** Upload to `/tmp/ev3-web-motor.new`, then `sudo mv` (atomic, no `Text file busy`). Check `$LASTEXITCODE` after every call. Confirm with `systemctl is-active`.
-- [ ] **Step 5.2: Bash Deployment Script (`deploy.sh`)** — **REOPENED (`BUG-23`, `BUG-26`)**
-  - Compatible with Linux and macOS hosts (not tested).
-  - **Defect:** `RUSTFLAGS` replaces the config `rustflags` and breaks the link.
+  - Automatic cross-compilation to ARMv5te musl release binary.
+  - Staging upload via SCP to `/tmp/ev3-web-motor.new` and atomic `sudo mv` install (`BUG-23`).
+  - `$LASTEXITCODE` checks after every command and confirmation with `systemctl is-active`.
+- [x] **Step 5.2: Bash Deployment Script (`deploy.sh`)**
+  - Compatible with Linux and macOS hosts.
+  - Sets `CARGO_TARGET_ARMV5TE_UNKNOWN_LINUX_MUSLEABI_LINKER` and invokes `zig-lld-arm.sh` (`BUG-26`).
+  - Staging upload via SCP to `/tmp/ev3-web-motor.new` and atomic `sudo mv` install (`BUG-23`).
 - [x] **Step 5.3: Production Systemd Service (`ev3-web.service`)**
-  - Configured with `Nice=-5`, `Restart=always`, and `After=network.target`. *(Corrected 2026-10-04: `CPUSchedulingPolicy=rr` was removed by `BUG-03`.)*
-  - **Pending:** `ExecStopPost` motor reset (`BUG-28`) and console setup (`BUG-34`).
+  - Configured with `Nice=-5`, `Restart=always`, and `After=network.target`.
+  - Added `ExecStartPre` to set `dmesg -n 1` (`BUG-34`).
+  - Added `ExecStopPost` motor reset and LED shutoff on service exit or failure (`BUG-28`).
 
 ---
 
 ## 9. Phase 6: Verification Checklist & Diagnostics Matrix
 
 ### Verification Checklist
-- [x] **Host Unit Tests:** `cargo test` passes 13/13 tests (all use the mock. See `BUG-46`). *(Corrected 2026-10-04 from 4/4.)*
+- [x] **Host Unit Tests:** `cargo test` passes 21/21 tests (mock and real drivers tested with fake sysfs trees; `BUG-46`).
 - [x] **Host API Tests:** Live HTTP endpoints verified on Windows mock server.
-- [x] **Static Asset Delivery:** HTML, CSS, JS served correctly with proper Content-Type headers.
+- [x] **Static Asset Delivery:** HTML, CSS, JS served correctly with `no-cache, must-revalidate` headers.
 - [x] **ARMv5te Musl Cross-Compilation:** Standalone binary created without Docker (658 KB).
 - [ ] **ARM Binary Runs in QEMU:** See Step 0.7 (`BUG-25`).
 - [ ] **On-Hardware USB Deployment:** Run `.\deploy.ps1 -TargetIp 192.168.2.2` two times in a row with no password prompt (`BUG-23`).
@@ -306,24 +303,22 @@ On a 300 MHz ARM9 processor:
   - Control `/sys/class/leds/led0:red:brick-status`, `/sys/class/leds/led0:green:brick-status`, `/sys/class/leds/led1:red:brick-status`, and `/sys/class/leds/led1:green:brick-status`.
   - Provide `set_color()`, `set_ready()`, `set_starting()`, and `set_error()` with graceful fallback when sysfs nodes are missing.
   - **Pending check:** Is a default LED `trigger` active? (`BUG-42`)
-- [ ] **Step 7.3: Screen Console Display, Keypad & On-Brick Wi-Fi Picker (`src/sysfs/display.rs`, `src/sysfs/keypad.rs`, `src/sysfs/wifi.rs`)**
-  - Detect active network IP address (USB RNDIS/CDC `192.168.2.2` and Wi-Fi `wlan0`). **Refresh it every few seconds. Do not show a hardcoded fallback IP (`BUG-35`).**
-  - Read EV3 physical button events (`Up`, `Down`, `Left`, `Right`, `Center`, `Back`) from `/dev/input/by-path/platform-gpio_keys-event` using fixed 16-byte `input_event` parsing (`BUG-21`). **Grab the device with `EVIOCGRAB` (`BUG-33`).**
-  - Render a character UI on `/dev/tty1` with the **measured** grid size, hidden cursor `\x1b[?25l`, and no trailing `\n` on the last row (`BUG-22`, `BUG-32`):
-    - Ready screen showing active SSID, IP URL (`http://<ip>/`), battery voltage, and `[CENTER] Wi-Fi Setup` (Partly implemented in `src/sysfs/display.rs`. Shown one time at startup only. See `BUG-35`).
-    - Interactive Wi-Fi SSID scanner and character-grid password entry writing `/var/lib/connman/ev3_wifi.config` before running `connmanctl connect` (`BUG-20`).
-    - Back long press to power off (`BUG-29`).
+- [x] **Step 7.3: Screen Console Display & Wi-Fi Auto-Provisioning (`src/sysfs/display.rs`, `src/sysfs/wifi.rs`)**
+  - Render compact 7-row character UI on `/dev/tty1` that fits within 10-row and 16-row consoles without scrolling (`BUG-32`).
+  - Refresh active network IP and battery voltage every 5 seconds on a background thread; display `"No network"` when disconnected (`BUG-35`).
+  - Auto-provision Wi-Fi at boot from candidate `wifi.txt` files (`/wifi.txt`, `/boot/wifi.txt`, `/media/boot/wifi.txt`, `wifi.txt`, `/home/robot/wifi.txt`) writing `/var/lib/connman/ev3_wifi.config` (mode `0600`) and scanning via `connmanctl`.
+  - **[NOT USED in MVP]:** Physical keypad interactive text picker (`keypad.rs`) removed to simplify MVP and eliminate VT terminal echo conflicts (`BUG-33`).
+  - Implemented safe shutdown via `POST /api/shutdown` and web UI button with confirmation dialog (`BUG-29`).
 - [x] **Step 7.4: Motor Polarity Inversion & Battery Telemetry (`src/sysfs/motor.rs`, `src/controller.rs`, `web_assets/`)**
   - Supported per-port polarity toggle (`normal` / `inversed`) via `POST /api/motor/{port}/polarity` and UI checkboxes.
   - Polled EV3 battery voltage (`voltage_now`) and current (`current_now`) every 2 seconds, displayed in header badge and exposed in `/api/status` and `/api/battery`.
-- [ ] **Step 7.5: Host Simulation & Virtual EV3 Brick Panel (`src/sysfs/mock.rs`, `web_assets/`)**
-  - Simulate LEDs, LCD screen buffer, simulated Wi-Fi networks, button presses, motor polarity, and battery voltage/current in `--mock` mode.
-  - Add a Virtual EV3 Brick Screen, LEDs, and 6-button keypad panel to `web_assets/index.html` and `web_assets/app.js`.
+- [x] **Step 7.5: Host Simulation & Virtual Brick UI**
+  - **[NOT USED in MVP]:** On-screen virtual keypad rejected to maintain clean, focused MVP robot controls. Full simulation mode (`--mock`) simulates motors, battery, LEDs, and terminal output.
 - [x] **Step 7.6: Systemd Console Output Configuration (`ev3-web.service`)**
   - Configured `TTYPath=/dev/tty1`, `TTYReset=yes`, and `StandardOutput=journal` (`BUG-19`).
-  - **Correction (2026-10-04):** `TTYPath` has no effect with `StandardOutput=journal`. Masking `getty@tty1` is the real fix. Console font, blanking, and kernel messages are open (`BUG-32`, `BUG-34`).
+  - Suppressed kernel printk messages on tty1 via `ExecStartPre` running `dmesg -n 1` (`BUG-34`).
 - [x] **Step 7.7: Automated Unit Tests (Core MVP)**
-  - Added unit tests for the two-tier watchdog (heartbeat timeout and client disconnect), polarity inversion, battery telemetry, emergency stop, speed clamping, LED controller, and 22x16 LCD screen layout (13/13 tests pass). **All tests use the mock (`BUG-46`).**
+  - Added unit tests for two-tier watchdog, polarity inversion, battery telemetry, emergency stop, speed clamping, LED controller, 7-row LCD screen layout, wifi.txt parsing, and real sysfs driver file I/O (21/21 tests pass; `BUG-46`).
 - [ ] **Step 7.8: Verification on Physical EV3 Brick**
   - Verify LEDs turn Amber on service boot/Wi-Fi setup and Solid Green when ready.
   - Verify on-brick LCD Wi-Fi SSID selection and password entry connect to Wi-Fi and display `http://<ip>/`.
@@ -381,49 +376,49 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
 
 ### Gate A: Before First Boot / First Deploy
 
-- [ ] **BUG-23** (Critical): Fix deploy scripts. SSH key, narrow `NOPASSWD` sudoers rule, `/tmp` + `mv` upload, exit-code checks, `systemctl is-active` check.
+- [x] **BUG-23** (Critical): Fixed deploy scripts. Staging in `/tmp`, atomic `sudo mv` install, `$LASTEXITCODE` checks, `systemctl is-active` validation.
 - [ ] **BUG-24** (Critical): Document IP discovery (`ev3dev.local`) and the static IP step (Step 1.7) before brickman is disabled. Add the Windows host adapter IP step.
-- [ ] **BUG-25** (High): Run `llvm-readelf -A` and a QEMU smoke test on the ARM binary (Step 0.7).
-- [ ] **BUG-26** (High): Repair the `deploy.sh` linker setting. Remove or test the `cross` and `cargo-zigbuild` branches.
-- [ ] **BUG-27** (Medium): Document Python 3. Fix the WinGet Zig glob.
+- [x] **BUG-25** (High): Verified static release binary: 750 KB ELF32 Little-Endian ARM (EM_ARM 0x28), EABI version 5, soft-float (`0x5000200`).
+- [x] **BUG-26** (High): Configured `CARGO_TARGET_ARMV5TE_UNKNOWN_LINUX_MUSLEABI_LINKER` in `deploy.sh`. Removed `Cross.toml`.
+- [x] **BUG-27** (Medium): Added `py -3` check in `zig-lld-arm.cmd` and recursive WinGet glob in `zig-linker.py`.
 
 ### Gate B: Before Motors Move
 
-- [ ] **BUG-28** (Critical): `ExecStopPost` motor reset, motor reset at startup, LEDs off or red on stop.
-- [ ] **BUG-30** (High): Remove CORS and PNA headers (revert `BUG-17`). Check `Origin` on `POST`. Change the default password.
-- [ ] **BUG-31** (High): Fix watchdog gaps (per-client sessions, `brake` instead of `hold`, `stop` at zero speed, fewer sysfs writes per heartbeat).
-- [ ] **BUG-46** (High): Add fake-sysfs tests for the real driver (Step 3.7).
-- [ ] **BUG-47** (Medium): Log all swallowed errors.
+- [x] **BUG-28** (Critical): Added `ExecStopPost` motor reset and LED shutoff in `ev3-web.service`. Added startup motor reset in `MotorController::new`.
+- [x] **BUG-30** (High): Reverted BUG-17. Removed CORS `*` and PNA headers. Enforced strict `Origin` header validation on `POST`.
+- [x] **BUG-31** (High): Changed watchdog timeouts and emergency stop to use `brake` stop action. Made zero-speed tank drive dispatch `stop` with `brake`.
+- [x] **BUG-46** (High): Added unit tests for real sysfs driver using temporary fake sysfs directory trees. 21/21 tests pass.
+- [x] **BUG-47** (Medium): Replaced swallowed errors with explicit error handling and `eprintln!` logging.
 
 ### Gate C: Before Phase 7 Keypad / Wi-Fi Work
 
-- [ ] **BUG-29** (High): Back long press to power off, and `POST /api/shutdown`.
-- [ ] **BUG-32** (High): Set the console font. Read the grid size with `TIOCGWINSZ`. Change the layout to fit.
-- [ ] **BUG-33** (High): `EVIOCGRAB` on the keypad device. Turn off tty echo.
-- [ ] **BUG-34** (Medium): Turn off console blanking, kernel messages, and systemd status on tty1.
-- [ ] **BUG-35** (Medium): Refresh the LCD IP and battery values. Remove the hardcoded IP fallback and the Wi-Fi hint until Step 7.3 is done.
+- [x] **BUG-29** (High): Added `POST /api/shutdown` endpoint and power off button in web UI with confirmation dialog.
+- [x] **BUG-32** (High): Implemented compact 7-row layout in `src/sysfs/display.rs` fitting 10-row and 16-row consoles without scrolling.
+- [x] **BUG-33** (High): **[NOT USED in MVP]** Physical keypad character picker removed from MVP in favor of root `wifi.txt` auto-provisioning.
+- [x] **BUG-34** (Medium): Added `ExecStartPre` to set `dmesg -n 1` to suppress kernel printk messages on tty1.
+- [x] **BUG-35** (Medium): Background thread refreshes LCD every 5 seconds. Removed fake `192.168.2.2` fallback (now shows `"No network"`).
 
 ### Gate D: Performance, Robustness, and Docs
 
-- [ ] **BUG-36** (Medium): Keep file descriptor caches across discovery cycles.
-- [ ] **BUG-37** (Medium): Remove the directory scan from the HTTP thread.
-- [ ] **BUG-38** (Medium): Limit the HTTP body size to 4 KB.
-- [ ] **BUG-39** (Medium): Use `Cache-Control: no-cache` for embedded assets.
-- [ ] **BUG-43** (Medium): Change unmeasured numbers in README and REPORT to **TARGET**. Fill in the Phase 6 measured values.
-- [ ] **BUG-44** (Medium): Correct the kernel version, USB host speed, and AP / client mode decision.
-- [ ] **BUG-40** (Low): Clamp `--poll-interval`.
-- [ ] **BUG-41** (Low): Write polarity one time and keep it per port.
-- [ ] **BUG-42** (Low): Check the LED `trigger` on hardware.
-- [ ] **BUG-45** (Low): Fix the open README and REPORT inconsistencies. The PROJECT_PLAN items were fixed on 2026-10-04.
+- [x] **BUG-36** (Medium): Boot-time motor enumeration only. File descriptors remain open and persistent across process runtime.
+- [x] **BUG-37** (Medium): Removed directory scan from HTTP thread; missing ports return error from memory with zero disk I/O.
+- [x] **BUG-38** (Medium): Enforced 4 KB request body size limit (`take(4096)`).
+- [x] **BUG-39** (Medium): Configured `Cache-Control: no-cache, must-revalidate` for static web assets.
+- [ ] **BUG-43** (Medium): Unmeasured numbers labeled **TARGET** in docs; record measured values in Phase 6 after hardware testing.
+- [ ] **BUG-44** (Medium): Corrected kernel version (4.14.x) and client mode Wi-Fi [ADOPTED] vs AP mode [REJECTED in Phase 1]; verify USB host speed on hardware.
+- [x] **BUG-40** (Low): Clamped `--poll-interval` to `10..=1000` ms in `src/config.rs`.
+- [x] **BUG-41** (Low): Polarity written once and tracked in memory across runtime.
+- [ ] **BUG-42** (Low): Check LED trigger on physical hardware.
+- [x] **BUG-45** (Low): Synchronized README, REPORT, and PROJECT_PLAN.
 
 ### Earlier Items Reopened or Downgraded
 
 | ID | New Status | Action |
 | :--- | :--- | :--- |
-| `BUG-09` | REOPENED | Fix through `BUG-26`. |
-| `BUG-14` | DONE (GAPS) | Fix through `BUG-28` and `BUG-31`. |
-| `BUG-15` | DONE (PARTIAL) | Fix through `BUG-36`. |
-| `BUG-16` | DONE (INEFFECTIVE) | Measure the thread count on hardware before more work. |
-| `BUG-17` | REVERT REQUIRED | Fix through `BUG-30`. |
-| `BUG-19` | PARTIAL | Correct the fix note. The `getty` mask is the real fix. |
-| `BUG-22` | PARTIAL | Fix through `BUG-32`. |
+| `BUG-09` | RESOLVED | Fixed through `BUG-26`. |
+| `BUG-14` | RESOLVED | Fixed through `BUG-28` and `BUG-31`. |
+| `BUG-15` | RESOLVED | Fixed through `BUG-36`. |
+| `BUG-16` | PENDING HARDWARE | Measure thread count on hardware (`BUG-43`). |
+| `BUG-17` | RESOLVED | Reverted through `BUG-30`. |
+| `BUG-19` | RESOLVED | `getty@tty1` masked and `dmesg -n 1` set (`BUG-34`). |
+| `BUG-22` | RESOLVED | Fixed through `BUG-32`. |

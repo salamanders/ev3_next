@@ -23,34 +23,42 @@ pub enum HardwareBackend {
     Mock(MockController),
 }
 
+struct WatchdogState {
+    last_tank_drive: Option<Instant>,
+    tank_drive_ports: (String, String),
+    tank_drive_active: bool,
+    last_status_poll: Instant,
+    continuous_active: bool,
+}
+
 pub struct MotorController {
     backend: HardwareBackend,
     cached_status: Arc<RwLock<Vec<MotorStatus>>>,
-    cached_motors: Arc<RwLock<Vec<Motor>>>,
+    boot_motors: Vec<Motor>,
     cached_battery: Arc<RwLock<BatteryStatus>>,
     poll_interval_ms: u64,
-
-    // Two-Tier Watchdog State (BUG-14)
-    last_tank_drive_time: Arc<Mutex<Option<Instant>>>,
-    tank_drive_ports: Arc<Mutex<(String, String)>>,
-    tank_drive_active: Arc<Mutex<bool>>,
-    last_status_poll_time: Arc<Mutex<Instant>>,
-    continuous_run_active: Arc<Mutex<bool>>,
+    watchdog: Mutex<WatchdogState>,
 }
 
 impl MotorController {
     pub fn new(mock_mode: bool, poll_interval_ms: u64) -> Arc<Self> {
-        let (backend, initial_motors) = if mock_mode {
+        let (backend, boot_motors) = if mock_mode {
             println!("[CONTROLLER] Initializing in MOCK mode (simulated motors).");
             (HardwareBackend::Mock(MockController::new()), Vec::new())
         } else {
             println!("[CONTROLLER] Initializing in REAL hardware mode (sysfs /sys/class/tacho-motor).");
-            (HardwareBackend::Real, Motor::find_all())
+            let motors = Motor::find_all();
+            for m in &motors {
+                if let Err(e) = m.send_command("reset") {
+                    eprintln!("[WARN] Initial reset failed for motor on Port {}: {}", m.port, e);
+                }
+            }
+            (HardwareBackend::Real, motors)
         };
 
         let initial_status = match &backend {
             HardwareBackend::Mock(mock) => mock.poll_and_get_all_status(),
-            HardwareBackend::Real => Self::query_real_motors(&initial_motors),
+            HardwareBackend::Real => Self::query_real_motors(&boot_motors),
         };
 
         let initial_battery = match &backend {
@@ -62,17 +70,19 @@ impl MotorController {
         let controller = Arc::new(Self {
             backend,
             cached_status: Arc::new(RwLock::new(initial_status)),
-            cached_motors: Arc::new(RwLock::new(initial_motors)),
+            boot_motors,
             cached_battery: Arc::new(RwLock::new(initial_battery)),
             poll_interval_ms,
-            last_tank_drive_time: Arc::new(Mutex::new(None)),
-            tank_drive_ports: Arc::new(Mutex::new(("B".into(), "C".into()))),
-            tank_drive_active: Arc::new(Mutex::new(false)),
-            last_status_poll_time: Arc::new(Mutex::new(now)),
-            continuous_run_active: Arc::new(Mutex::new(false)),
+            watchdog: Mutex::new(WatchdogState {
+                last_tank_drive: None,
+                tank_drive_ports: ("B".into(), "C".into()),
+                tank_drive_active: false,
+                last_status_poll: now,
+                continuous_active: false,
+            }),
         });
 
-        // Spawn background polling thread to maintain cache without blocking HTTP handlers
+        // Background polling thread updates RAM telemetry without blocking HTTP requests (Rule 6)
         let c_clone = controller.clone();
         thread::Builder::new()
             .name("sysfs-poller".into())
@@ -130,26 +140,21 @@ impl MotorController {
 
     fn run_poller_loop(&self) {
         let interval = Duration::from_millis(self.poll_interval_ms);
-        let mut ticks_since_discovery: u64 = 0;
-        let discovery_interval_ticks = (2000 / self.poll_interval_ms).max(1);
+        let mut battery_tick: u64 = 0;
+        let battery_interval_ticks = (2000 / self.poll_interval_ms).max(1);
 
         loop {
             let statuses = match &self.backend {
                 HardwareBackend::Mock(mock) => mock.poll_and_get_all_status(),
                 HardwareBackend::Real => {
-                    ticks_since_discovery += 1;
-                    if ticks_since_discovery >= discovery_interval_ticks {
-                        ticks_since_discovery = 0;
-                        if let Ok(mut motors_guard) = self.cached_motors.write() {
-                            *motors_guard = Motor::find_all();
-                        }
+                    battery_tick += 1;
+                    if battery_tick >= battery_interval_ticks {
+                        battery_tick = 0;
                         if let Ok(mut battery_guard) = self.cached_battery.write() {
                             *battery_guard = Self::query_real_battery();
                         }
                     }
-
-                    let motors = self.cached_motors.read().unwrap().clone();
-                    Self::query_real_motors(&motors)
+                    Self::query_real_motors(&self.boot_motors)
                 }
             };
 
@@ -157,83 +162,71 @@ impl MotorController {
                 *cache = statuses;
             }
 
-            // Run watchdog evaluations (BUG-14)
             self.check_watchdogs();
-
             thread::sleep(interval);
         }
     }
 
     fn check_watchdogs(&self) {
-        // Tier 1: Tank Drive Watchdog (400 ms timeout)
-        let mut need_stop_td = false;
-        let mut td_ports = (String::new(), String::new());
-        {
-            let mut td_active = self.tank_drive_active.lock().unwrap();
-            if *td_active {
-                let last_td = self.last_tank_drive_time.lock().unwrap();
-                if let Some(t) = *last_td {
+        let (stop_td, td_ports, stop_cr) = {
+            let mut wd = match self.watchdog.lock() {
+                Ok(guard) => guard,
+                Err(e) => {
+                    eprintln!("[WATCHDOG ERROR] Watchdog lock poisoned: {}", e);
+                    return;
+                }
+            };
+
+            let mut stop_td = false;
+            let mut td_ports = (String::new(), String::new());
+            if wd.tank_drive_active {
+                if let Some(t) = wd.last_tank_drive {
                     if t.elapsed() > Duration::from_millis(400) {
-                        *td_active = false;
-                        need_stop_td = true;
-                        td_ports = self.tank_drive_ports.lock().unwrap().clone();
+                        wd.tank_drive_active = false;
+                        stop_td = true;
+                        td_ports = wd.tank_drive_ports.clone();
                     }
                 }
             }
-        }
-        if need_stop_td {
-            println!("[WATCHDOG] Tank drive heartbeat timed out (>400ms). Halting drive motors {} & {}.", td_ports.0, td_ports.1);
-            let _ = self.stop(&td_ports.0, Some("brake".into()));
-            let _ = self.stop(&td_ports.1, Some("brake".into()));
-        }
 
-        // Tier 2: Client Connection Watchdog (1000 ms timeout)
-        let mut need_stop_cr = false;
-        {
-            let mut cr_active = self.continuous_run_active.lock().unwrap();
-            if *cr_active {
-                let last_poll = *self.last_status_poll_time.lock().unwrap();
-                if last_poll.elapsed() > Duration::from_millis(1000) {
-                    *cr_active = false;
-                    need_stop_cr = true;
-                }
+            let mut stop_cr = false;
+            if wd.continuous_active && wd.last_status_poll.elapsed() > Duration::from_millis(1000) {
+                wd.continuous_active = false;
+                stop_cr = true;
+            }
+
+            (stop_td, td_ports, stop_cr)
+        };
+
+        if stop_td {
+            println!("[WATCHDOG] Tank drive heartbeat timed out (>400ms). Halting drive motors {} & {}.", td_ports.0, td_ports.1);
+            if let Err(e) = self.stop(&td_ports.0, Some("brake".into())) {
+                eprintln!("[WATCHDOG ERROR] Failed stopping port {}: {}", td_ports.0, e);
+            }
+            if let Err(e) = self.stop(&td_ports.1, Some("brake".into())) {
+                eprintln!("[WATCHDOG ERROR] Failed stopping port {}: {}", td_ports.1, e);
             }
         }
-        if need_stop_cr {
+
+        if stop_cr {
             println!("[WATCHDOG] Client connection poll timed out (>1000ms). Halting all continuous motors.");
-            let _ = self.emergency_stop();
+            if let Err(e) = self.emergency_stop() {
+                eprintln!("[WATCHDOG ERROR] Failed emergency stopping motors: {}", e);
+            }
         }
     }
 
-    fn get_real_motor(&self, port: &str) -> Result<Motor, String> {
-        // Fast path: check cached motors without disk I/O
-        if let Ok(guard) = self.cached_motors.read() {
-            if let Some(motor) = guard.iter().find(|m| m.port.eq_ignore_ascii_case(port)) {
-                return Ok(motor.clone());
-            }
-        }
-
-        // Slow path fallback: motor was newly connected, scan once and cache
-        let refreshed = Motor::find_all();
-        let found = refreshed.iter().find(|m| m.port.eq_ignore_ascii_case(port)).cloned();
-        if let Ok(mut guard) = self.cached_motors.write() {
-            *guard = refreshed;
-        }
-
-        found.ok_or_else(|| format!("Motor on Port {} not connected", port))
+    fn get_real_motor(&self, port: &str) -> Result<&Motor, String> {
+        self.boot_motors
+            .iter()
+            .find(|m| m.port.eq_ignore_ascii_case(port))
+            .ok_or_else(|| format!("Motor on Port {} was not connected at boot", port))
     }
 
     pub fn touch_client_poll(&self) {
-        if let Ok(mut guard) = self.last_status_poll_time.lock() {
-            *guard = Instant::now();
+        if let Ok(mut wd) = self.watchdog.lock() {
+            wd.last_status_poll = Instant::now();
         }
-    }
-
-    /// Read cached status from memory in <0.05ms (zero sysfs file I/O overhead)
-    #[allow(dead_code)]
-    pub fn get_all_status(&self) -> Vec<MotorStatus> {
-        self.touch_client_poll();
-        self.cached_status.read().unwrap().clone()
     }
 
     pub fn get_system_status(&self) -> SystemStatus {
@@ -248,28 +241,28 @@ impl MotorController {
         self.cached_battery.read().unwrap().clone()
     }
 
+    pub fn is_mock(&self) -> bool {
+        matches!(self.backend, HardwareBackend::Mock(_))
+    }
+
     pub fn set_polarity(&self, port: &str, polarity: &str) -> Result<(), String> {
+        let val = if polarity == "inversed" { "inversed" } else { "normal" };
         match &self.backend {
             HardwareBackend::Mock(mock) => {
-                mock.set_polarity(port, polarity);
+                mock.set_polarity(port, val);
                 Ok(())
             }
             HardwareBackend::Real => {
-                let mut motor = self.get_real_motor(port)?;
-                motor.set_polarity(polarity).map_err(|e| e.to_string())?;
-                if let Ok(mut guard) = self.cached_motors.write() {
-                    if let Some(m) = guard.iter_mut().find(|m| m.port.eq_ignore_ascii_case(port)) {
-                        let _ = m.set_polarity(polarity);
-                    }
-                }
+                let motor = self.get_real_motor(port)?;
+                motor.set_polarity(val).map_err(|e| e.to_string())?;
                 Ok(())
             }
         }
     }
 
     pub fn run_forever(&self, port: &str, speed: i32) -> Result<(), String> {
-        if let Ok(mut cr) = self.continuous_run_active.lock() {
-            *cr = true;
+        if let Ok(mut wd) = self.watchdog.lock() {
+            wd.continuous_active = true;
         }
 
         match &self.backend {
@@ -324,8 +317,8 @@ impl MotorController {
     }
 
     pub fn run_direct(&self, port: &str, duty_cycle: i32) -> Result<(), String> {
-        if let Ok(mut cr) = self.continuous_run_active.lock() {
-            *cr = true;
+        if let Ok(mut wd) = self.watchdog.lock() {
+            wd.continuous_active = true;
         }
 
         match &self.backend {
@@ -373,15 +366,16 @@ impl MotorController {
     }
 
     pub fn tank_drive(&self, left_port: &str, right_port: &str, left_speed: i32, right_speed: i32) -> Result<(), String> {
-        // Update Tank Drive heartbeat watchdog state (BUG-14)
-        if let Ok(mut last) = self.last_tank_drive_time.lock() {
-            *last = Some(Instant::now());
+        if let Ok(mut wd) = self.watchdog.lock() {
+            wd.last_tank_drive = Some(Instant::now());
+            wd.tank_drive_ports = (left_port.to_string(), right_port.to_string());
+            wd.tank_drive_active = left_speed != 0 || right_speed != 0;
         }
-        if let Ok(mut ports) = self.tank_drive_ports.lock() {
-            *ports = (left_port.to_string(), right_port.to_string());
-        }
-        if let Ok(mut active) = self.tank_drive_active.lock() {
-            *active = left_speed != 0 || right_speed != 0;
+
+        if left_speed == 0 && right_speed == 0 {
+            self.stop(left_port, Some("brake".into()))?;
+            self.stop(right_port, Some("brake".into()))?;
+            return Ok(());
         }
 
         self.run_forever_internal(left_port, left_speed)?;
@@ -389,7 +383,6 @@ impl MotorController {
         Ok(())
     }
 
-    // Helper for tank drive so we don't trigger the continuous_run_active watchdog on tank drive
     fn run_forever_internal(&self, port: &str, speed: i32) -> Result<(), String> {
         match &self.backend {
             HardwareBackend::Mock(mock) => {
@@ -407,11 +400,9 @@ impl MotorController {
     }
 
     pub fn emergency_stop(&self) -> Result<(), String> {
-        if let Ok(mut td) = self.tank_drive_active.lock() {
-            *td = false;
-        }
-        if let Ok(mut cr) = self.continuous_run_active.lock() {
-            *cr = false;
+        if let Ok(mut wd) = self.watchdog.lock() {
+            wd.tank_drive_active = false;
+            wd.continuous_active = false;
         }
 
         match &self.backend {
@@ -420,10 +411,9 @@ impl MotorController {
                 Ok(())
             }
             HardwareBackend::Real => {
-                let motors = self.cached_motors.read().unwrap().clone();
                 let mut errors = Vec::new();
-                for motor in &motors {
-                    if let Err(e) = motor.set_stop_action("hold") {
+                for motor in &self.boot_motors {
+                    if let Err(e) = motor.set_stop_action("brake") {
                         errors.push(format!("Port {} stop_action error: {}", motor.port, e));
                     }
                     if let Err(e) = motor.send_command("stop") {
@@ -449,7 +439,6 @@ mod tests {
         let controller = MotorController::new(true, 15);
         // Start tank drive
         controller.tank_drive("B", "C", 500, 500).unwrap();
-        // Wait for background poller tick
         thread::sleep(Duration::from_millis(40));
 
         // Immediately check: motors B and C should be running
@@ -478,7 +467,6 @@ mod tests {
         assert_eq!(st.battery.current_a, 0.12);
 
         controller.set_polarity("A", "inversed").unwrap();
-        // Wait for background poller tick
         thread::sleep(Duration::from_millis(40));
 
         let st_inv = controller.get_system_status();
@@ -507,4 +495,3 @@ mod tests {
         assert_eq!(a2.speed, 0);
     }
 }
-

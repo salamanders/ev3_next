@@ -35,6 +35,10 @@ impl CachedMotorFiles {
         if let Some(file) = file_opt.as_mut() {
             match file.seek(SeekFrom::Start(0)) {
                 Ok(_) => match file.read(buf) {
+                    Ok(0) => {
+                        *file_opt = None;
+                        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "empty sysfs file"));
+                    }
                     Ok(n) => return Ok(n),
                     Err(e) => {
                         *file_opt = None;
@@ -59,15 +63,19 @@ pub struct Motor {
     pub driver_name: String,
     pub max_speed: i32,
     pub count_per_rot: i32,
-    pub polarity: String,
+    polarity: Arc<Mutex<String>>,
     cached_files: Arc<Mutex<CachedMotorFiles>>,
 }
 
 impl Motor {
     /// Enumerate all connected motors from `/sys/class/tacho-motor/`
     pub fn find_all() -> Vec<Motor> {
+        Self::find_all_in(Path::new("/sys/class/tacho-motor"))
+    }
+
+    /// Enumerate connected motors from a specified base path (for testing and hardware)
+    pub fn find_all_in(base_path: &Path) -> Vec<Motor> {
         let mut motors = Vec::new();
-        let base_path = Path::new("/sys/class/tacho-motor");
         if !base_path.exists() {
             return motors;
         }
@@ -112,7 +120,7 @@ impl Motor {
                         driver_name,
                         max_speed,
                         count_per_rot,
-                        polarity,
+                        polarity: Arc::new(Mutex::new(polarity)),
                         cached_files: Arc::new(Mutex::new(CachedMotorFiles::default())),
                     });
                 }
@@ -122,6 +130,10 @@ impl Motor {
         // Sort by port name A, B, C, D
         motors.sort_by(|a, b| a.port.cmp(&b.port));
         motors
+    }
+
+    pub fn polarity(&self) -> String {
+        self.polarity.lock().map(|g| g.clone()).unwrap_or_else(|_| "normal".into())
     }
 
     pub fn set_speed_sp(&self, speed: i32) -> io::Result<()> {
@@ -150,15 +162,21 @@ impl Motor {
         self.write_attr("command", cmd)
     }
 
-    pub fn set_polarity(&mut self, polarity: &str) -> io::Result<()> {
+    pub fn set_polarity(&self, polarity: &str) -> io::Result<()> {
         let val = if polarity == "inversed" { "inversed" } else { "normal" };
         self.write_attr("polarity", val)?;
-        self.polarity = val.to_string();
+        if let Ok(mut pol) = self.polarity.lock() {
+            *pol = val.to_string();
+        }
         Ok(())
     }
 
     /// Read dynamic telemetry using persistent open file descriptors and stack buffers (BUG-15)
     pub fn poll_dynamic_status(&self) -> Option<MotorStatus> {
+        if !self.sysfs_path.exists() {
+            return None;
+        }
+
         let mut files = self.cached_files.lock().ok()?;
         let mut buf = [0u8; 64];
 
@@ -219,7 +237,7 @@ impl Motor {
             max_speed: self.max_speed,
             count_per_rot: self.count_per_rot,
             connected: true,
-            polarity: self.polarity.clone(),
+            polarity: self.polarity(),
         })
     }
 
@@ -235,7 +253,7 @@ impl Motor {
             max_speed: self.max_speed,
             count_per_rot: self.count_per_rot,
             connected: false,
-            polarity: self.polarity.clone(),
+            polarity: self.polarity(),
         })
     }
 
@@ -252,5 +270,140 @@ impl Motor {
         let mut content = String::new();
         file.read_to_string(&mut content)?;
         Ok(content.trim().to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn make_test_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let p = std::env::temp_dir().join(format!("ev3_test_{}_{}", name, nanos));
+        let _ = fs::remove_dir_all(&p);
+        fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn test_real_motor_discovery_and_address_parsing() {
+        let root = make_test_dir("discovery");
+        let m0 = root.join("motor0");
+        let m1 = root.join("motor1");
+        let m2 = root.join("motor2");
+        fs::create_dir_all(&m0).unwrap();
+        fs::create_dir_all(&m1).unwrap();
+        fs::create_dir_all(&m2).unwrap();
+
+        // motor0 -> ev3-ports:outA
+        fs::write(m0.join("address"), "ev3-ports:outA\n").unwrap();
+        fs::write(m0.join("driver_name"), "lego-ev3-l-motor\n").unwrap();
+        fs::write(m0.join("max_speed"), "1050\n").unwrap();
+        fs::write(m0.join("count_per_rot"), "360\n").unwrap();
+        fs::write(m0.join("polarity"), "normal\n").unwrap();
+
+        // motor1 -> outB
+        fs::write(m1.join("address"), "outB\n").unwrap();
+        fs::write(m1.join("driver_name"), "lego-ev3-m-motor\n").unwrap();
+        fs::write(m1.join("max_speed"), "1560\n").unwrap();
+        fs::write(m1.join("count_per_rot"), "360\n").unwrap();
+        fs::write(m1.join("polarity"), "inversed\n").unwrap();
+
+        // motor2 -> unknown port, should be skipped
+        fs::write(m2.join("address"), "unknown:outZ\n").unwrap();
+
+        let motors = Motor::find_all_in(&root);
+        assert_eq!(motors.len(), 2);
+        assert_eq!(motors[0].port, "A");
+        assert_eq!(motors[0].max_speed, 1050);
+        assert_eq!(motors[0].driver_name, "lego-ev3-l-motor");
+
+        assert_eq!(motors[1].port, "B");
+        assert_eq!(motors[1].max_speed, 1560);
+        assert_eq!(motors[1].driver_name, "lego-ev3-m-motor");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_real_motor_clamping_and_commands() {
+        let root = make_test_dir("commands");
+        let m = root.join("motor0");
+        fs::create_dir_all(&m).unwrap();
+        fs::write(m.join("address"), "outA\n").unwrap();
+        fs::write(m.join("max_speed"), "1000\n").unwrap();
+
+        // Attribute files for writing
+        fs::write(m.join("speed_sp"), "0\n").unwrap();
+        fs::write(m.join("duty_cycle_sp"), "0\n").unwrap();
+        fs::write(m.join("command"), "\n").unwrap();
+        fs::write(m.join("polarity"), "normal\n").unwrap();
+
+        let mut motors = Motor::find_all_in(&root);
+        assert_eq!(motors.len(), 1);
+        let motor = &mut motors[0];
+
+        // Clamping high speed
+        motor.set_speed_sp(2000).unwrap();
+        let speed_sp = fs::read_to_string(m.join("speed_sp")).unwrap();
+        assert_eq!(speed_sp.trim(), "1000");
+
+        // Clamping negative speed
+        motor.set_speed_sp(-1500).unwrap();
+        let speed_sp_neg = fs::read_to_string(m.join("speed_sp")).unwrap();
+        assert_eq!(speed_sp_neg.trim(), "-1000");
+
+        // Clamping duty cycle
+        motor.set_duty_cycle_sp(150).unwrap();
+        let duty_sp = fs::read_to_string(m.join("duty_cycle_sp")).unwrap();
+        assert_eq!(duty_sp.trim(), "100");
+
+        // Command write
+        motor.send_command("run-forever").unwrap();
+        let cmd = fs::read_to_string(m.join("command")).unwrap();
+        assert_eq!(cmd.trim(), "run-forever");
+
+        // Polarity write
+        motor.set_polarity("inversed").unwrap();
+        let pol = fs::read_to_string(m.join("polarity")).unwrap();
+        assert_eq!(pol.trim(), "inversed");
+        assert_eq!(motor.polarity(), "inversed");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_real_motor_dynamic_polling_and_disconnected() {
+        let root = make_test_dir("polling");
+        let m = root.join("motor0");
+        fs::create_dir_all(&m).unwrap();
+        fs::write(m.join("address"), "outC\n").unwrap();
+
+        // Write telemetry files
+        fs::write(m.join("position"), "240\n").unwrap();
+        fs::write(m.join("speed"), "450\n").unwrap();
+        fs::write(m.join("duty_cycle"), "50\n").unwrap();
+        fs::write(m.join("state"), "running holding\n").unwrap();
+
+        let motors = Motor::find_all_in(&root);
+        assert_eq!(motors.len(), 1);
+        let motor = &motors[0];
+
+        let status = motor.poll_dynamic_status().expect("Must poll status successfully");
+        assert_eq!(status.port, "C");
+        assert_eq!(status.position, 240);
+        assert_eq!(status.speed, 450);
+        assert_eq!(status.duty_cycle, 50);
+        assert!(status.state.contains(&"running".to_string()));
+        assert!(status.state.contains(&"holding".to_string()));
+        assert!(status.connected);
+
+        // Remove motor directory to simulate device disconnect / node unbind
+        fs::remove_dir_all(&m).unwrap();
+        let disconnected_status = motor.read_status();
+        assert!(!disconnected_status.connected);
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

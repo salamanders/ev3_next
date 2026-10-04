@@ -11,7 +11,6 @@ pub struct DisplayController {
 impl DisplayController {
     pub const TTY_PATH: &'static str = "/dev/tty1";
     pub const MAX_COLS: usize = 21; // Restrict to 21 chars to avoid fbcon auto-wrap glitch (BUG-22)
-    pub const MAX_ROWS: usize = 16;
 
     pub fn new(mock_mode: bool) -> Self {
         Self {
@@ -26,7 +25,7 @@ impl DisplayController {
         let ip_opt = Self::probe_ip("192.168.2.1:80")
             .or_else(|| Self::probe_ip("8.8.8.8:80"));
 
-        ip_opt.unwrap_or_else(|| "192.168.2.2".to_string())
+        ip_opt.unwrap_or_else(|| "No network".to_string())
     }
 
     fn probe_ip(target: &str) -> Option<String> {
@@ -41,38 +40,25 @@ impl DisplayController {
         }
     }
 
-    /// Render 22x16 text layout safely according to BUG-22 guardrails
+    /// Render compact text layout that fits within 10-row or 16-row consoles without scrolling (BUG-32)
     pub fn format_ready_screen(ip: &str, port: u16, battery_v: f32) -> String {
-        let mut lines = Vec::with_capacity(Self::MAX_ROWS);
+        let mut lines = Vec::new();
 
         lines.push("=== EV3 MOTOR WEB ===".to_string());
         lines.push(Self::truncate_pad("Status: ONLINE"));
-        lines.push(Self::truncate_pad(&format!("Port:   {}", port)));
-        lines.push(Self::truncate_pad("IP Address:"));
-        lines.push(Self::truncate_pad(&format!(" {}", ip)));
-        lines.push(Self::truncate_pad("URL:"));
-        if port == 80 {
-            lines.push(Self::truncate_pad(&format!(" http://{}/", ip)));
+        lines.push(Self::truncate_pad(&format!("IP:     {}", ip)));
+        if ip == "No network" {
+            lines.push(Self::truncate_pad("URL:    (Waiting...)"));
+        } else if port == 80 {
+            lines.push(Self::truncate_pad(&format!("URL:    http://{}/", ip)));
         } else {
-            lines.push(Self::truncate_pad(&format!(" http://{}:{}/", ip, port)));
+            lines.push(Self::truncate_pad(&format!("URL:    http://{}:{}/", ip, port)));
         }
-        lines.push(Self::truncate_pad(&format!("Battery: {:.1} V", battery_v)));
-        lines.push("---------------------".to_string());
-        lines.push(Self::truncate_pad("Controls: Web SPA"));
-        lines.push(Self::truncate_pad("Heartbeat: 400ms"));
-        lines.push(Self::truncate_pad("Stop: Spacebar"));
-        lines.push("---------------------".to_string());
-        lines.push(Self::truncate_pad("Ready for commands."));
-        lines.push(Self::truncate_pad("Center: Wi-Fi Setup"));
+        lines.push(Self::truncate_pad(&format!("Batt:   {:.1} V", battery_v)));
+        lines.push(Self::truncate_pad("Stop:   Spacebar/UI"));
         lines.push("=====================".to_string());
 
-        // Fill up to row 16 if needed
-        while lines.len() < Self::MAX_ROWS {
-            lines.push(String::new());
-        }
-        lines.truncate(Self::MAX_ROWS);
-
-        // Join lines 1..15 with newline; row 16 has NO trailing newline (BUG-22)
+        // Join lines with newline; last line has NO trailing newline (BUG-22)
         let mut output = String::from("\x1b[?25l\x1b[2J\x1b[H"); // Hide cursor + Clear screen + Home cursor
         for (i, line) in lines.iter().enumerate() {
             let truncated = if line.chars().count() > Self::MAX_COLS {
@@ -82,7 +68,7 @@ impl DisplayController {
             };
 
             output.push_str(&truncated);
-            if i + 1 < Self::MAX_ROWS {
+            if i + 1 < lines.len() {
                 output.push('\n');
             }
         }
@@ -132,7 +118,7 @@ mod tests {
         let body = screen.trim_start_matches("\x1b[?25l\x1b[2J\x1b[H");
         let lines: Vec<&str> = body.split('\n').collect();
 
-        assert_eq!(lines.len(), 16, "Screen must have exactly 16 rows");
+        assert!(lines.len() <= 10, "Screen must fit in compact 10-row console");
         for (idx, line) in lines.iter().enumerate() {
             assert!(
                 line.chars().count() <= DisplayController::MAX_COLS,
@@ -142,7 +128,7 @@ mod tests {
                 line
             );
         }
-        assert!(!screen.ends_with('\n'), "Row 16 must not have a trailing newline (BUG-22)");
+        assert!(!screen.ends_with('\n'), "Last row must not have a trailing newline (BUG-22)");
     }
 
     #[test]

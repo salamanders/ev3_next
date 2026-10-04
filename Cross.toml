@@ -1,7 +1,0 @@
-[target.armv5te-unknown-linux-musleabi]
-image = "ghcr.io/cross-rs/armv5te-unknown-linux-musleabi:edge"
-
-[build.env]
-passthrough = [
-    "RUST_LOG",
-]

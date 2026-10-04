@@ -4,33 +4,33 @@ A fast, lightweight web server in Rust for the LEGO Mindstorms EV3 hardware (Tex
 
 ---
 
-## 📍 Project Status and Development Phases
+## 📍 Project Status and Development Stages
 
-This project operates in two distinct phases:
+This project operates in two distinct stages:
 
-### **Current Phase: Phase 1 (Active USB Development & Iteration)** 👈 *WE ARE HERE*
+### **Stage A: Active USB Development & Iteration** 👈 *WE ARE HERE*
 - **Workflow:** The EV3 connects to the host PC with a Mini-USB cable.
-- **Deployment:** You flash the SD card one time. You compile code on the PC and send updates to the brick over the USB network cable with `deploy.ps1` in 4 seconds.
+- **Deployment:** You flash the SD card one time. You compile code on the PC and send updates to the brick over the USB network cable with `deploy.ps1` in ~4 seconds (**TARGET**).
 - **Host Testing:** You verify all user interface and API changes on the PC first using `cargo run -- --mock`.
 - **Goal:** Rapid iteration, feature development, and hardware driver validation with zero friction and no SD card swapping.
 
-### **Future Phase: Phase 2 (Standalone Pre-Baked Disk Image)**
+### **Stage B: Standalone Pre-Baked Disk Image**
 - **Workflow:** The EV3 operates independently with no PC attached.
 - **Deployment:** A single pre-baked MicroSD card image (`.img`) contains the optimized Linux kernel, root filesystem, auto-start systemd service, and web server binary.
-- **Runtime:** Powering on the brick automatically starts the Wi-Fi access point and web server in 10 to 15 seconds. Users control motors directly from smartphones or tablets over Wi-Fi.
+- **Runtime:** Powering on the brick connects to Wi-Fi automatically (via `wifi.txt`) and starts the web server. Users control motors directly from smartphones or tablets over Wi-Fi.
 
 ---
 
 ## Key Features
 
-- **Low Latency:** Direct communication with the Linux kernel `/sys/class/tacho-motor/` sysfs interface (< 5ms latency).
-- **Low Memory Footprint:** Statically linked Rust binary that uses less than 3 MB RAM. This prevents Out-Of-Memory errors on the 64 MB EV3 brick.
+- **Low Latency:** Direct communication with the Linux kernel `/sys/class/tacho-motor/` sysfs interface (< 5ms latency, **TARGET**).
+- **Low Memory Footprint:** Statically linked Rust binary that uses less than 3 MB RAM (**TARGET**). This prevents Out-Of-Memory errors on the 64 MB EV3 brick.
 - **Embedded Web User Interface:** Single-Page Application (HTML5 / CSS3 / JavaScript) embedded directly into the binary with `include_str!`.
-- **Host Simulation Mode (`--mock`):** Run and test simulated motors, virtual EV3 LCD screen, and keypad buttons on Windows, macOS, or Linux without physical EV3 hardware.
-- **No SD Card Swapping:** The `deploy.sh` (macOS/Linux) and `deploy.ps1` (Windows) scripts upload new builds over the USB or Wi-Fi network in 4 seconds.
-- **Robot Drive Controls & Safety Watchdog:** Directional D-Pad, keyboard shortcuts (`WASD` and Arrow keys), per-port polarity inversion, and a two-tier safety watchdog (400 ms Tank Drive heartbeat timeout and 1000 ms browser disconnect timeout).
-- **On-Brick LCD Wi-Fi Setup & Battery Telemetry (Phase 7):** Native 22x16 text menu on `/dev/tty1` using the EV3 physical buttons to select a Wi-Fi SSID, enter a password, and display the live `http://<ip>/` URL, plus 2-second battery voltage/current polling.
-- **Background Telemetry Thread:** Non-blocking 50ms polling thread caches motor encoder data in memory. HTTP requests read from memory in less than 0.05ms.
+- **Host Simulation Mode (`--mock`):** Run and test simulated motors, LEDs, battery telemetry, and web dashboard on Windows, macOS, or Linux without physical EV3 hardware.
+- **No SD Card Swapping:** The `deploy.sh` (macOS/Linux) and `deploy.ps1` (Windows) scripts upload new builds over the USB or Wi-Fi network in ~4 seconds (**TARGET**).
+- **Robot Drive Controls & Safety Watchdog:** Directional D-Pad, keyboard shortcuts (`WASD` and Arrow keys), per-port polarity inversion, and a two-tier safety watchdog (400 ms Tank Drive heartbeat timeout with brake action; 1000 ms browser disconnect timeout).
+- **On-Brick LCD Status Display & Wi-Fi Auto-Provisioning:** Native 7-row compact status display on `/dev/tty1` refreshing every 5 seconds with live IP and battery voltage, plus automatic Wi-Fi setup via root `wifi.txt`.
+- **Background Telemetry Thread:** Non-blocking 50ms polling thread caches motor encoder data in memory. HTTP requests read from memory in less than 0.05ms (**TARGET**).
 
 ---
 
@@ -51,11 +51,11 @@ http://localhost:8080/
 - <kbd>S</kbd> / <kbd>▼</kbd> : Reverse
 - <kbd>A</kbd> / <kbd>◄</kbd> : Turn Left
 - <kbd>D</kbd> / <kbd>►</kbd> : Turn Right
-- <kbd>Spacebar</kbd> : **Emergency Stop (Stops all motors immediately)**
+- <kbd>Spacebar</kbd> : **Emergency Stop (Stops all motors immediately with brake)**
 
 ---
 
-## Step-by-Step Hardware Setup & Deployment (Phase 1)
+## Step-by-Step Hardware Setup & Deployment (Stage A)
 
 Follow this setup **one time**. After initial setup, you never remove the MicroSD card again.
 
@@ -67,10 +67,11 @@ Follow this setup **one time**. After initial setup, you never remove the MicroS
    - **Direct Download:** [`ev3dev-stretch-ev3-generic-2020-04-10.zip`](https://github.com/ev3dev/ev3dev/releases/download/ev3dev-stretch-2020-04-10/ev3dev-stretch-ev3-generic-2020-04-10.zip)
 3. Download and open [BalenaEtcher](https://etcher.balena.io/).
 4. Select the downloaded `.zip` file, select your MicroSD card drive, and click **Flash!**.
+5. *(Optional for Automatic Wi-Fi)*: Create a text file named `wifi.txt` in the root of the flashed SD card. Line 1 is the Wi-Fi SSID; Line 2 is the Wi-Fi password.
 
 ### 2. First Boot, USB Connection & Optional Wi-Fi Dongle
 1. Insert the MicroSD card into the EV3 brick.
-2. *(Optional for Wireless Control)* Insert a Linux 4.4 compatible USB 2.0 Wi-Fi dongle into the EV3 side **USB Host port** (for example: Edimax EW-7811Un V1 / Realtek `RTL8188CUS`, `RTL8188EU`, Atheros `AR9271`, or Ralink `RT5370`).
+2. *(Optional for Wireless Control)* Insert a Linux 4.14 compatible USB Wi-Fi dongle into the EV3 side **USB Host port** (for example: Edimax EW-7811Un V1 / Realtek `RTL8188CUS`, `RTL8188EU`, Atheros `AR9271`, or Ralink `RT5370`).
 3. Press the **Center Button** to power on. Wait 1 to 2 minutes for the initial boot.
 4. Connect the Mini-USB cable between the EV3 **PC port** and your host computer.
 5. Verify the USB network connection:
@@ -97,7 +98,7 @@ Connect to the EV3 with SSH (default password is `maker`):
 ssh robot@192.168.2.2
 ```
 
-Run these commands to decrease future boot times to **10–15 seconds**, free 20 MB of RAM, and reserve `/dev/tty1` for the on-brick LCD Wi-Fi and status display:
+Run these commands to decrease future boot times to **10–15 seconds** (**TARGET**), free 20 MB of RAM, and reserve `/dev/tty1` for the on-brick LCD status display:
 ```bash
 sudo su
 
@@ -133,11 +134,11 @@ Run the deployment script from the project directory:
   ```powershell
   .\deploy.ps1 -TargetIp 192.168.2.2
   ```
-*This cross-compiles for ARMv5te, uploads the binary to `/home/robot/ev3-web-motor`, and restarts the service in 4 seconds.*
+*This cross-compiles for ARMv5te, uploads the binary via `/tmp` staging, and restarts the service in ~4 seconds (**TARGET**).*
 
 ### 5. Access the Web Dashboard (USB or Wi-Fi)
 - Over USB, open `http://192.168.2.2/` in your web browser.
-- Over Wi-Fi (Phase 7), use the EV3 physical buttons on the LCD screen to select your Wi-Fi SSID and enter your password. Once connected, the EV3 LCD displays the live Wi-Fi URL (`http://<wifi-ip>/`).
+- Over Wi-Fi, if `wifi.txt` was provisioned, check the EV3 LCD screen for the active IP address (`http://<wifi-ip>/`).
 
 ---
 
@@ -147,14 +148,17 @@ Run the deployment script from the project directory:
 | :--- | :--- | :--- | :--- |
 | `GET` | `/` | None | Returns the embedded web dashboard. |
 | `GET` | `/api/status` | None | Returns telemetry data for all 4 motor ports. |
+| `GET` | `/api/battery` | None | Returns battery voltage and current. |
 | `POST` | `/api/motor/{port}/run-forever` | `{"speed": 500}` | Runs motor continuously at target speed. |
 | `POST` | `/api/motor/{port}/run-timed` | `{"speed": 500, "time_ms": 1000, "stop_action": "brake"}` | Runs motor for a specified duration in milliseconds. |
 | `POST` | `/api/motor/{port}/run-to-rel-pos`| `{"speed": 400, "position_sp": 360, "stop_action": "hold"}` | Rotates motor by relative degree count. |
 | `POST` | `/api/motor/{port}/run-direct` | `{"duty_cycle": 75}` | Sets direct PWM duty cycle (-100% to +100%). |
 | `POST` | `/api/motor/{port}/stop` | `{"action": "coast" \| "brake" \| "hold"}` | Stops motor with specified stop mode. |
 | `POST` | `/api/motor/{port}/reset` | None | Resets relative encoder count to 0. |
+| `POST` | `/api/motor/{port}/polarity` | `{"polarity": "normal" \| "inversed"}` | Inverts motor rotation direction. |
 | `POST` | `/api/tank-drive` | `{"left_port":"B", "right_port":"C", "left_speed":500, "right_speed":500}` | Drives left and right motors together. |
-| `POST` | `/api/emergency-stop` | None | **Emergency Stop**: stops all motors immediately. |
+| `POST` | `/api/emergency-stop` | None | **Emergency Stop**: stops all motors immediately with brake action. |
+| `POST` | `/api/shutdown` | None | **Power Off**: safely powers down the EV3 brick. |
 
 ---
 
@@ -163,12 +167,12 @@ Run the deployment script from the project directory:
 ```
 ev3_next/
 ├── Cargo.toml               # Cargo package configuration
-├── Cross.toml               # Cross-compilation container configuration
 ├── ev3-web.service          # Systemd unit file for auto-start on boot
 ├── deploy.ps1               # Deployment script for Windows PowerShell
 ├── deploy.sh                # Deployment script for Linux and macOS
 ├── zig-lld-arm.cmd          # Windows cross-linker script
-├── zig-linker.py            # Windows linker argument adapter
+├── zig-lld-arm.sh           # Unix cross-linker wrapper
+├── zig-linker.py            # Windows/Unix linker argument adapter
 ├── src/
 │   ├── main.rs              # Program entry point and HTTP worker pool
 │   ├── config.rs            # Command line argument parser
@@ -176,7 +180,10 @@ ev3_next/
 │   ├── sysfs/
 │   │   ├── mod.rs           # Sysfs module exports
 │   │   ├── motor.rs         # Real Linux sysfs tacho-motor driver
-│   │   └── mock.rs          # Simulated motor controller for testing
+│   │   ├── mock.rs          # Simulated motor controller for testing
+│   │   ├── led.rs           # Sysfs brick status LED driver
+│   │   ├── display.rs       # Console /dev/tty1 LCD status renderer
+│   │   └── wifi.rs          # wifi.txt credential auto-provisioning
 │   └── web/
 │       ├── mod.rs           # Web module exports
 │       ├── router.rs        # HTTP request router and static asset handler

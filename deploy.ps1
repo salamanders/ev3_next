@@ -42,24 +42,16 @@ if (-not (Get-Command "zig" -ErrorAction SilentlyContinue)) {
     $env:PATH = "$PSScriptRoot;$env:USERPROFILE\.cargo\bin;$env:PATH"
 }
 
-$BuiltWith = ""
-if (Get-Command "cargo-zigbuild" -ErrorAction SilentlyContinue) {
-    Write-Host "      Using cargo-zigbuild..." -ForegroundColor Gray
-    cargo zigbuild --target armv5te-unknown-linux-musleabi --release
-    $BuiltWith = "cargo-zigbuild"
-} elseif (Get-Command "cross" -ErrorAction SilentlyContinue) {
-    Write-Host "      Using cross (Docker)..." -ForegroundColor Gray
-    cross build --target armv5te-unknown-linux-musleabi --release
-    $BuiltWith = "cross"
-} else {
-    Write-Host "      Using standard cargo with Zig LLD linker..." -ForegroundColor Gray
-    cargo build --target armv5te-unknown-linux-musleabi --release
-    $BuiltWith = "cargo+zig"
+Write-Host "      Using standard cargo with Zig LLD linker..." -ForegroundColor Gray
+cargo build --target armv5te-unknown-linux-musleabi --release
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "[FATAL] Cross-compilation failed."
+    exit 1
 }
 
 $BinaryPath = "target\armv5te-unknown-linux-musleabi\release\ev3-web-motor"
 if (-not (Test-Path $BinaryPath)) {
-    Write-Error "[FATAL] Compiled binary not found at $BinaryPath! Please install 'cargo-zigbuild' or 'cross'."
+    Write-Error "[FATAL] Compiled binary not found at $BinaryPath!"
     exit 1
 }
 
@@ -70,30 +62,32 @@ Write-Host ("      Binary built successfully: {0:N2} MB" -f $BinarySize) -Foregr
 Write-Host "[2/4] Testing connection to EV3 at $TargetIp..." -ForegroundColor Yellow
 $PingSuccess = Test-Connection -ComputerName $TargetIp -Count 1 -Quiet -ErrorAction SilentlyContinue
 if (-not $PingSuccess) {
-    Write-Warning "Could not ping $TargetIp directly (ICMP might be blocked). Proceeding to SSH test..."
+    Write-Warning "Could not ping $TargetIp directly (ICMP might be blocked). Proceeding to SSH..."
 }
 
-# 3. Stop Service & Upload
-Write-Host "[3/4] Stopping active service and uploading binary via SCP..." -ForegroundColor Yellow
-try {
-    # Stop service to prevent 'Text file busy' error
-    ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "$($User)@$($TargetIp)" "sudo systemctl stop ev3-web.service 2>/dev/null || true"
-} catch {
-    Write-Warning "Failed to stop service prior to upload (service might not be installed yet)."
-}
-
-scp -o StrictHostKeyChecking=no $BinaryPath "$($User)@$($TargetIp):/home/robot/ev3-web-motor"
+# 3. Upload Phase (Staging in /tmp to prevent 'Text file busy' or interrupted execution)
+Write-Host "[3/4] Uploading binary via SCP to /tmp staging..." -ForegroundColor Yellow
+scp -o StrictHostKeyChecking=no $BinaryPath "$($User)@$($TargetIp):/tmp/ev3-web-motor.new"
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "[FATAL] SCP upload failed. Please verify SSH connectivity and credentials."
+    Write-Error "[FATAL] SCP upload failed. Verify network connectivity, target IP, and SSH keys."
     exit 1
 }
-Write-Host "      Binary uploaded successfully." -ForegroundColor Green
+Write-Host "      Binary uploaded to staging successfully." -ForegroundColor Green
 
-# 4. Service Restart
-Write-Host "[4/4] Setting permissions and restarting service..." -ForegroundColor Yellow
-ssh -o StrictHostKeyChecking=no "$($User)@$($TargetIp)" "sudo chmod +x /home/robot/ev3-web-motor && sudo systemctl restart ev3-web.service"
+# 4. Atomic Install & Service Restart
+Write-Host "[4/4] Installing binary and restarting service..." -ForegroundColor Yellow
+ssh -o StrictHostKeyChecking=no "$($User)@$($TargetIp)" "sudo mv /tmp/ev3-web-motor.new /home/robot/ev3-web-motor && sudo chmod +x /home/robot/ev3-web-motor && sudo systemctl restart ev3-web.service"
 if ($LASTEXITCODE -ne 0) {
-    Write-Warning "Service restart command failed. Make sure ev3-web.service is installed in /etc/systemd/system/."
+    Write-Error "[FATAL] Failed to install binary or restart ev3-web.service. Verify sudo rules."
+    exit 1
+}
+
+# 5. Service Status Verification
+Write-Host "      Verifying service active status..." -ForegroundColor Gray
+ssh -o StrictHostKeyChecking=no "$($User)@$($TargetIp)" "systemctl is-active --quiet ev3-web.service"
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "[FATAL] ev3-web.service is NOT running. Run 'ssh $($User)@$($TargetIp) journalctl -u ev3-web.service -n 50' to inspect logs."
+    exit 1
 }
 
 Write-Host ""

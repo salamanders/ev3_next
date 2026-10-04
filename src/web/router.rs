@@ -23,14 +23,29 @@ impl Router {
         let path = url.split('?').next().unwrap_or("/");
         let method = request.method().clone();
 
-        // Handle CORS preflight
+        // Reject cross-origin POST requests to prevent drive-by motor control (BUG-30)
+        if method == Method::Post {
+            let headers = request.headers().to_vec();
+            let host_hdr = headers.iter().find(|h| h.field.equiv("Host")).map(|h| h.value.as_str());
+            let origin_hdr = headers.iter().find(|h| h.field.equiv("Origin")).map(|h| h.value.as_str());
+
+            if let (Some(origin), Some(host)) = (origin_hdr, host_hdr) {
+                let clean_origin = origin.trim_start_matches("http://").trim_start_matches("https://");
+                let clean_origin_host = clean_origin.split('/').next().unwrap_or("");
+                if !clean_origin_host.eq_ignore_ascii_case(host) {
+                    eprintln!("[SECURITY] Rejected cross-origin POST from Origin '{}' targeting Host '{}'", origin, host);
+                    self.respond_json(request, StatusCode(403), &ApiResponse::<()>::err("Cross-origin requests forbidden"));
+                    return;
+                }
+            }
+        }
+
+        // Return 405 for preflight OPTIONS requests (CORS is disabled)
         if method == Method::Options {
-            let res = Response::empty(StatusCode(204))
-                .with_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap())
-                .with_header(Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"GET, POST, OPTIONS"[..]).unwrap())
-                .with_header(Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"Content-Type"[..]).unwrap())
-                .with_header(Header::from_bytes(&b"Access-Control-Allow-Private-Network"[..], &b"true"[..]).unwrap());
-            let _ = request.respond(res);
+            let res = Response::empty(StatusCode(405));
+            if let Err(e) = request.respond(res) {
+                eprintln!("[HTTP WARN] Failed sending OPTIONS response: {}", e);
+            }
             return;
         }
 
@@ -56,6 +71,23 @@ impl Router {
             (Method::Get, "/api/battery") => {
                 let battery = self.controller.get_battery();
                 self.respond_json(request, StatusCode(200), &ApiResponse::ok(battery));
+            }
+
+            // Clean System Shutdown (BUG-29)
+            (Method::Post, "/api/shutdown") => {
+                println!("[SYSTEM] System poweroff requested via Web API.");
+                self.respond_json(request, StatusCode(200), &ApiResponse::ok("System is powering off..."));
+                let is_mock = self.controller.is_mock();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    if is_mock {
+                        println!("[MOCK] Simulation poweroff completed.");
+                    } else {
+                        if let Err(e) = std::process::Command::new("systemctl").arg("poweroff").status() {
+                            eprintln!("[SYSTEM ERROR] Failed executing systemctl poweroff: {}", e);
+                        }
+                    }
+                });
             }
 
             // Global Emergency Stop
@@ -169,18 +201,24 @@ impl Router {
     }
 
     fn read_json_body<T: serde::de::DeserializeOwned>(&self, request: &mut Request) -> Result<T, String> {
+        if let Some(len) = request.body_length() {
+            if len > 4096 {
+                return Err("Request body exceeds 4KB limit".into());
+            }
+        }
         let mut body = String::new();
-        request.as_reader().read_to_string(&mut body).map_err(|e| format!("Failed to read request body: {}", e))?;
+        use std::io::Read;
+        request.as_reader().take(4096).read_to_string(&mut body).map_err(|e| format!("Failed to read request body: {}", e))?;
         serde_json::from_str::<T>(&body).map_err(|e| format!("Invalid JSON payload: {}", e))
     }
 
     fn respond_static(&self, request: Request, content: &str, content_type: &str) {
         let res = Response::from_string(content)
             .with_header(Header::from_bytes(&b"Content-Type"[..], content_type.as_bytes()).unwrap())
-            .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"public, max-age=3600"[..]).unwrap())
-            .with_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap())
-            .with_header(Header::from_bytes(&b"Access-Control-Allow-Private-Network"[..], &b"true"[..]).unwrap());
-        let _ = request.respond(res);
+            .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-cache, must-revalidate"[..]).unwrap());
+        if let Err(e) = request.respond(res) {
+            eprintln!("[HTTP WARN] Failed to send static response: {}", e);
+        }
     }
 
     fn respond_json<T: serde::Serialize>(&self, request: Request, status: StatusCode, data: &T) {
@@ -189,13 +227,14 @@ impl Router {
             status,
             vec![
                 Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap(),
-                Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
-                Header::from_bytes(&b"Access-Control-Allow-Private-Network"[..], &b"true"[..]).unwrap(),
+                Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap(),
             ],
             Cursor::new(json_str.into_bytes()),
             None,
             None,
         );
-        let _ = request.respond(res);
+        if let Err(e) = request.respond(res) {
+            eprintln!("[HTTP WARN] Failed to send JSON response: {}", e);
+        }
     }
 }
