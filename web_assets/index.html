@@ -18,6 +18,9 @@
         </div>
 
         <div class="status-group">
+            <div id="battery-badge" class="badge badge-info" title="EV3 Battery Voltage">
+                <span>🔋 <strong id="battery-val">--</strong> V</span>
+            </div>
             <div id="conn-badge" class="badge badge-connecting">
                 <span class="dot"></span>
                 <span id="conn-text">Connecting...</span>
@@ -104,7 +107,10 @@
                             <span class="port-badge">Port A</span>
                             <span class="motor-driver" id="driver-A">--</span>
                         </div>
-                        <span class="motor-state-badge badge-offline" id="state-badge-A">Offline</span>
+                        <div class="port-header-right">
+                            <label class="polarity-label" title="Invert motor direction"><input type="checkbox" class="polarity-checkbox" data-port="A"> Invert</label>
+                            <span class="motor-state-badge badge-offline" id="state-badge-A">Offline</span>
+                        </div>
                     </div>
 
                     <div class="telemetry-grid">
@@ -155,7 +161,10 @@
                             <span class="port-badge">Port B</span>
                             <span class="motor-driver" id="driver-B">--</span>
                         </div>
-                        <span class="motor-state-badge badge-offline" id="state-badge-B">Offline</span>
+                        <div class="port-header-right">
+                            <label class="polarity-label" title="Invert motor direction"><input type="checkbox" class="polarity-checkbox" data-port="B"> Invert</label>
+                            <span class="motor-state-badge badge-offline" id="state-badge-B">Offline</span>
+                        </div>
                     </div>
 
                     <div class="telemetry-grid">
@@ -206,7 +215,10 @@
                             <span class="port-badge">Port C</span>
                             <span class="motor-driver" id="driver-C">--</span>
                         </div>
-                        <span class="motor-state-badge badge-offline" id="state-badge-C">Offline</span>
+                        <div class="port-header-right">
+                            <label class="polarity-label" title="Invert motor direction"><input type="checkbox" class="polarity-checkbox" data-port="C"> Invert</label>
+                            <span class="motor-state-badge badge-offline" id="state-badge-C">Offline</span>
+                        </div>
                     </div>
 
                     <div class="telemetry-grid">
@@ -257,7 +269,10 @@
                             <span class="port-badge">Port D</span>
                             <span class="motor-driver" id="driver-D">--</span>
                         </div>
-                        <span class="motor-state-badge badge-offline" id="state-badge-D">Offline</span>
+                        <div class="port-header-right">
+                            <label class="polarity-label" title="Invert motor direction"><input type="checkbox" class="polarity-checkbox" data-port="D"> Invert</label>
+                            <span class="motor-state-badge badge-offline" id="state-badge-D">Offline</span>
+                        </div>
                     </div>
 
                     <div class="telemetry-grid">

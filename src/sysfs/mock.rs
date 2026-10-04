@@ -21,6 +21,7 @@ struct MockMotorState {
     running: bool,
     holding: bool,
     stop_action: String,
+    polarity: String,
     last_tick: Instant,
 }
 
@@ -42,6 +43,7 @@ impl MockController {
                     running: false,
                     holding: false,
                     stop_action: "brake".into(),
+                    polarity: "normal".into(),
                     last_tick: now,
                 },
                 MockMotorState {
@@ -57,6 +59,7 @@ impl MockController {
                     running: false,
                     holding: false,
                     stop_action: "brake".into(),
+                    polarity: "normal".into(),
                     last_tick: now,
                 },
                 MockMotorState {
@@ -72,6 +75,7 @@ impl MockController {
                     running: false,
                     holding: false,
                     stop_action: "brake".into(),
+                    polarity: "normal".into(),
                     last_tick: now,
                 },
                 MockMotorState {
@@ -87,9 +91,17 @@ impl MockController {
                     running: false,
                     holding: false,
                     stop_action: "brake".into(),
+                    polarity: "normal".into(),
                     last_tick: now,
                 },
             ])),
+        }
+    }
+
+    pub fn set_polarity(&self, port: &str, polarity: &str) {
+        let mut m = self.motors.lock().unwrap();
+        if let Some(motor) = m.iter_mut().find(|m| m.port.eq_ignore_ascii_case(port)) {
+            motor.polarity = if polarity == "inversed" { "inversed".into() } else { "normal".into() };
         }
     }
 
@@ -285,6 +297,7 @@ impl MockController {
                 max_speed: motor.max_speed,
                 count_per_rot: motor.count_per_rot,
                 connected: true,
+                polarity: motor.polarity.clone(),
             }
         }).collect()
     }
@@ -295,6 +308,17 @@ mod tests {
     use super::*;
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn test_mock_polarity() {
+        let mock = MockController::new();
+        let statuses = mock.poll_and_get_all_status();
+        assert_eq!(statuses[0].polarity, "normal");
+
+        mock.set_polarity("A", "inversed");
+        let statuses_inv = mock.poll_and_get_all_status();
+        assert_eq!(statuses_inv[0].polarity, "inversed");
+    }
 
     #[test]
     fn test_mock_initial_state() {

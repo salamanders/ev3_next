@@ -12,6 +12,8 @@ Restart=always
 RestartSec=2
 StandardOutput=journal
 StandardError=journal
+TTYPath=/dev/tty1
+TTYReset=yes
 
 # Safe process priority for single-core 300MHz ARM9
 Nice=-5

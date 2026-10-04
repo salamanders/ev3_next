@@ -345,6 +345,24 @@ kbd {
 .badge-holding { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
 .badge-idle { background: rgba(148, 163, 184, 0.2); color: #cbd5e1; }
 .badge-offline { background: rgba(239, 68, 68, 0.2); color: #f87171; }
+.port-header-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.polarity-label {
+    font-size: 11px;
+    color: var(--text-muted);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.polarity-label input {
+    cursor: pointer;
+}
 
 .telemetry-grid {
     display: grid;

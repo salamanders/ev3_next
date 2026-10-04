@@ -11,6 +11,8 @@ class EV3App {
         this.consecutiveErrors = 0;
         this.activeKeys = new Set();
         this.keyboardDriveActive = false;
+        this.driveHeartbeatTimer = null;
+        this.currentDriveDir = "stop";
 
         this.initElements();
         this.attachEventListeners();
@@ -22,6 +24,7 @@ class EV3App {
         this.connBadge = document.getElementById("conn-badge");
         this.connText = document.getElementById("conn-text");
         this.latencyVal = document.getElementById("latency-val");
+        this.batteryVal = document.getElementById("battery-val");
 
         // Emergency Stop
         this.btnEstopHeader = document.getElementById("btn-estop-header");
@@ -38,8 +41,9 @@ class EV3App {
         this.logBox = document.getElementById("log-box");
         this.btnClearLog = document.getElementById("btn-clear-log");
 
-        // Motor target speed sliders
+        // Motor target speed sliders and polarity checkboxes
         this.speedSliders = document.querySelectorAll(".target-speed-slider");
+        this.polarityCheckboxes = document.querySelectorAll(".polarity-checkbox");
     }
 
     attachEventListeners() {
@@ -53,7 +57,7 @@ class EV3App {
             this.driveSpeedPct.textContent = Math.round((val / 1050) * 100);
         });
 
-        // D-Pad Direction Buttons: Momentary drive on press/release
+        // D-Pad Direction Buttons: Momentary drive with repeat heartbeat
         this.dpadButtons.forEach(btn => {
             const dir = btn.dataset.dir;
             if (dir === "stop") {
@@ -72,10 +76,23 @@ class EV3App {
                 btn.addEventListener("pointerup", stopDrive);
                 btn.addEventListener("pointercancel", stopDrive);
                 btn.addEventListener("pointerleave", (e) => {
-                    // Only stop if pointer was pressed
                     if (e.buttons > 0) stopDrive(e);
                 });
             }
+        });
+
+        // Polarity Inversion Checkboxes
+        this.polarityCheckboxes.forEach(cb => {
+            const port = cb.dataset.port;
+            cb.addEventListener("change", async () => {
+                const polarity = cb.checked ? "inversed" : "normal";
+                this.log(`[Port ${port}] Setting polarity to ${polarity}`, "info");
+                try {
+                    await this.apiPost(`/api/motor/${port}/polarity`, { polarity });
+                } catch (e) {
+                    cb.checked = !cb.checked;
+                }
+            });
         });
 
         // Clear Log
@@ -140,7 +157,7 @@ class EV3App {
 
         // Window Blur: prevent sticky keys when user switches tabs
         window.addEventListener("blur", () => {
-            if (this.activeKeys.size > 0 || this.keyboardDriveActive) {
+            if (this.activeKeys.size > 0 || this.keyboardDriveActive || this.currentDriveDir !== "stop") {
                 this.activeKeys.clear();
                 this.keyboardDriveActive = false;
                 this.handleDriveDirection("stop");
@@ -181,6 +198,14 @@ class EV3App {
 
     async emergencyStop() {
         this.log("⚠️ EMERGENCY STOP TRIGGERED", "error");
+        if (this.driveHeartbeatTimer) {
+            clearInterval(this.driveHeartbeatTimer);
+            this.driveHeartbeatTimer = null;
+        }
+        this.currentDriveDir = "stop";
+        this.keyboardDriveActive = false;
+        this.activeKeys.clear();
+
         try {
             const data = await this.apiPost("/api/emergency-stop", {});
             if (data.success) {
@@ -192,6 +217,36 @@ class EV3App {
     }
 
     async handleDriveDirection(dir) {
+        if (dir === "stop") {
+            if (this.driveHeartbeatTimer) {
+                clearInterval(this.driveHeartbeatTimer);
+                this.driveHeartbeatTimer = null;
+            }
+            this.currentDriveDir = "stop";
+
+            const leftPort = this.driveLeftPort.value;
+            const rightPort = this.driveRightPort.value;
+            await Promise.allSettled([
+                this.sendMotorCommand(leftPort, "stop", { action: "brake" }),
+                this.sendMotorCommand(rightPort, "stop", { action: "brake" })
+            ]);
+            return;
+        }
+
+        this.currentDriveDir = dir;
+        await this.sendCurrentDrivePacket();
+
+        // Tier 1 Watchdog (BUG-14): Repeat tank-drive packet every 150ms while held
+        if (!this.driveHeartbeatTimer) {
+            this.driveHeartbeatTimer = setInterval(() => {
+                this.sendCurrentDrivePacket();
+            }, 150);
+        }
+    }
+
+    async sendCurrentDrivePacket() {
+        if (this.currentDriveDir === "stop") return;
+
         const speed = parseInt(this.driveSpeedSlider.value, 10);
         const leftPort = this.driveLeftPort.value;
         const rightPort = this.driveRightPort.value;
@@ -199,7 +254,7 @@ class EV3App {
         let leftSpeed = 0;
         let rightSpeed = 0;
 
-        switch (dir) {
+        switch (this.currentDriveDir) {
             case "fwd":
                 leftSpeed = speed;
                 rightSpeed = speed;
@@ -232,26 +287,25 @@ class EV3App {
                 leftSpeed = -speed;
                 rightSpeed = -Math.round(speed * 0.4);
                 break;
-            case "stop":
             default:
                 leftSpeed = 0;
                 rightSpeed = 0;
                 break;
         }
 
-        if (dir === "stop") {
-            await Promise.allSettled([
-                this.sendMotorCommand(leftPort, "stop", { action: "brake" }),
-                this.sendMotorCommand(rightPort, "stop", { action: "brake" })
-            ]);
-        } else {
-            this.log(`[Drive] ${dir} (L:${leftSpeed}, R:${rightSpeed})`, "info");
+        try {
             await this.apiPost("/api/tank-drive", {
                 left_port: leftPort,
                 right_port: rightPort,
                 left_speed: leftSpeed,
                 right_speed: rightSpeed
             });
+        } catch (e) {
+            // Heartbeat failed, cancel timer
+            if (this.driveHeartbeatTimer) {
+                clearInterval(this.driveHeartbeatTimer);
+                this.driveHeartbeatTimer = null;
+            }
         }
     }
 
@@ -323,8 +377,17 @@ class EV3App {
                 this.lastLatency = Math.round(t1 - t0);
                 this.consecutiveErrors = 0;
                 this.updateConnectionBadge(true);
-                if (data.success && Array.isArray(data.data)) {
-                    this.updateMotorCards(data.data);
+
+                if (data.success && data.data) {
+                    const motors = Array.isArray(data.data) ? data.data : data.data.motors;
+                    if (Array.isArray(motors)) {
+                        this.updateMotorCards(motors);
+                    }
+
+                    const battery = data.data.battery;
+                    if (battery && this.batteryVal) {
+                        this.batteryVal.textContent = battery.voltage_v.toFixed(1);
+                    }
                 }
             } catch (err) {
                 this.consecutiveErrors++;
@@ -360,6 +423,12 @@ class EV3App {
             // Driver name
             const driverElem = document.getElementById(`driver-${port}`);
             if (driverElem) driverElem.textContent = m.driver_name;
+
+            // Polarity Checkbox
+            const polarityCb = card.querySelector(".polarity-checkbox");
+            if (polarityCb && document.activeElement !== polarityCb) {
+                polarityCb.checked = (m.polarity === "inversed");
+            }
 
             // State Badge
             const badge = document.getElementById(`state-badge-${port}`);

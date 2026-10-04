@@ -28,7 +28,8 @@ impl Router {
             let res = Response::empty(StatusCode(204))
                 .with_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap())
                 .with_header(Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"GET, POST, OPTIONS"[..]).unwrap())
-                .with_header(Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"Content-Type"[..]).unwrap());
+                .with_header(Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"Content-Type"[..]).unwrap())
+                .with_header(Header::from_bytes(&b"Access-Control-Allow-Private-Network"[..], &b"true"[..]).unwrap());
             let _ = request.respond(res);
             return;
         }
@@ -47,8 +48,14 @@ impl Router {
 
             // Telemetry Endpoint (reads in <0.05ms from cache)
             (Method::Get, "/api/status") => {
-                let status = self.controller.get_all_status();
+                let status = self.controller.get_system_status();
                 self.respond_json(request, StatusCode(200), &ApiResponse::ok(status));
+            }
+
+            // Battery Endpoint
+            (Method::Get, "/api/battery") => {
+                let battery = self.controller.get_battery();
+                self.respond_json(request, StatusCode(200), &ApiResponse::ok(battery));
             }
 
             // Global Emergency Stop
@@ -146,6 +153,15 @@ impl Router {
                     Err(e) => self.respond_json(request, StatusCode(500), &ApiResponse::<()>::err(e)),
                 }
             }
+            "polarity" => {
+                match self.read_json_body::<PolarityPayload>(&mut request) {
+                    Ok(payload) => match self.controller.set_polarity(port, &payload.polarity) {
+                        Ok(_) => self.respond_json(request, StatusCode(200), &ApiResponse::ok("Motor polarity updated")),
+                        Err(e) => self.respond_json(request, StatusCode(500), &ApiResponse::<()>::err(e)),
+                    },
+                    Err(e) => self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(e)),
+                }
+            }
             _ => {
                 self.respond_json(request, StatusCode(404), &ApiResponse::<()>::err(format!("Unknown motor action: {}", action)));
             }
@@ -162,7 +178,8 @@ impl Router {
         let res = Response::from_string(content)
             .with_header(Header::from_bytes(&b"Content-Type"[..], content_type.as_bytes()).unwrap())
             .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"public, max-age=3600"[..]).unwrap())
-            .with_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
+            .with_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap())
+            .with_header(Header::from_bytes(&b"Access-Control-Allow-Private-Network"[..], &b"true"[..]).unwrap());
         let _ = request.respond(res);
     }
 
@@ -173,6 +190,7 @@ impl Router {
             vec![
                 Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap(),
                 Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
+                Header::from_bytes(&b"Access-Control-Allow-Private-Network"[..], &b"true"[..]).unwrap(),
             ],
             Cursor::new(json_str.into_bytes()),
             None,

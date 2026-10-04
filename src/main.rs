@@ -21,13 +21,22 @@ fn main() {
     println!("Dashboard URL:     http://localhost:{}", config.port);
     println!("============================================================");
 
+    let leds = sysfs::LedController::new(config.mock_mode);
+    leds.set_starting();
+
+    let display = sysfs::DisplayController::new(config.mock_mode);
+
     let controller = MotorController::new(config.mock_mode, config.poll_interval_ms);
-    let router = Arc::new(Router::new(controller));
+    let router = Arc::new(Router::new(controller.clone()));
 
     let addr = format!("{}:{}", config.host, config.port);
     let server = match tiny_http::Server::http(&addr) {
-        Ok(s) => s,
+        Ok(s) => {
+            leds.set_ready();
+            s
+        }
         Err(e) => {
+            leds.set_error();
             eprintln!("[FATAL] Failed to bind HTTP server to {}: {}", addr, e);
             std::process::exit(1);
         }
@@ -36,8 +45,12 @@ fn main() {
     let server = Arc::new(server);
     println!("[INFO] HTTP Server started successfully. Ready for commands.");
 
-    // Worker pool for servicing requests concurrently on ARM/Host
-    let num_workers = 4;
+    let active_ip = sysfs::DisplayController::detect_ip();
+    let battery_v = controller.get_battery().voltage_v;
+    display.show_ready(&active_ip, config.port, battery_v);
+
+    // Worker pool for servicing requests concurrently on ARM/Host (2 workers for single-core CPU)
+    let num_workers = 2;
     let mut handles = Vec::new();
 
     for worker_id in 0..num_workers {

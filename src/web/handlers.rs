@@ -37,6 +37,11 @@ pub struct TankDrivePayload {
     pub right_speed: i32,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PolarityPayload {
+    pub polarity: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ApiResponse<T: Serialize> {
     pub success: bool,
