@@ -102,22 +102,25 @@ Each entry includes status and remediation notes.
   - **Status:** PENDING
   - **Severity:** High
   - **File:** `src/controller.rs`, `web_assets/app.js`
-  - **Description:** If Wi-Fi disconnects or browser closes during motor drive, the robot continues moving forever.
-  - **Solution:** Add a 400ms command timeout watchdog in `src/controller.rs`. Automatically stop motors if no heartbeat or command arrives.
+  - **Description:** If Wi-Fi disconnects or the browser closes during motor drive, the robot continues moving forever. Momentary Tank Drive currently sends only one start packet on press.
+  - **Solution:** Implement a two-tier watchdog in `src/controller.rs` and `web_assets/app.js`:
+    1. **Tank Drive Watchdog (400 ms):** The browser sends a repeat `/api/tank-drive` heartbeat every 150 ms while a D-Pad button or drive key is held. The server stops tank drive motors if no tank-drive command arrives within 400 ms.
+    2. **Client Connection Watchdog (1000 ms):** Individual motor card **Fwd** and **Rev** (`run-forever`) buttons run continuously while the browser is connected, and stop all motors if no `/api/status` poll arrives for 1000 ms.
+    3. **Guardrail Against Sysfs Write Storm:** Track explicit `tank_drive_active` and `continuous_run_active` flags in `MotorController`. Trigger `stop` only one time when transitioning from active to timed-out. Never write `stop` to sysfs on every 50 ms tick while the robot is already idle.
 
 - [ ] **BUG-15: Repeated File Open Syscalls in Telemetry Loop**
   - **Status:** PENDING
   - **Severity:** Medium
   - **File:** `src/sysfs/motor.rs`
   - **Description:** The background poller opens and closes 16 sysfs files every 50 ms. This generates 320 file open syscalls per second. While exact CPU percentage is unbenchmarked, persistent file descriptors eliminate VFS lookup and allocation overhead.
-  - **Solution:** Cache open file descriptors. Use `seek(SeekFrom::Start(0))` before each read to eliminate open/close overhead.
+  - **Solution:** Cache open file descriptors inside an `Arc<Mutex<CachedMotorFiles>>` on `Motor` so `#[derive(Clone)]` remains a cheap pointer clone without calling `File::try_clone()` (`dup()` syscall). Use `seek(SeekFrom::Start(0))` and read into a fixed stack buffer (`[u8; 32]`) to avoid heap allocations on every 50 ms read.
 
 - [ ] **BUG-16: HTTP Worker Thread Over-Subscription on Single-Core CPU**
   - **Status:** PENDING
   - **Severity:** Medium
   - **File:** `src/main.rs`
   - **Description:** The server spawns 4 HTTP worker threads. 7 total threads compete for 1 CPU core and cause cache thrashing in the 16 KB L1 cache.
-  - **Solution:** Reduce the HTTP worker pool size from 4 to 1 or 2 threads.
+  - **Solution:** Reduce the HTTP worker pool size from 4 to 2 threads.
 
 - [ ] **BUG-17: Missing Private Network Access (PNA) Preflight Headers**
   - **Status:** PENDING
@@ -126,18 +129,39 @@ Each entry includes status and remediation notes.
   - **Description:** Modern Chromium browsers enforce Private Network Access. Cross-origin requests to private IP addresses fail without PNA headers.
   - **Solution:** Add `Access-Control-Allow-Private-Network: true` to CORS preflight responses in `Router::handle_request`.
 
-- [ ] **BUG-18: macOS USB Network Setup Verification (CDC Composite Gadget)**
-  - **Status:** PENDING
-  - **Severity:** Low (macOS hosts)
-  - **File:** `PROJECT_PLAN.md`, `deploy.sh`, `README.md`
-  - **Description:** macOS does not support RNDIS, but ev3dev-stretch includes a CDC Composite Gadget (CDC-ECM) natively recognized by macOS. macOS requires adding the CDC interface in Network Settings.
-  - **Solution:** Document the macOS CDC Composite Gadget configuration steps in `PROJECT_PLAN.md` and `README.md`.
+- [x] **BUG-18: macOS USB Network & Wi-Fi Dongle Setup Documentation**
+  - **Status:** DONE (Documentation updated in `PROJECT_PLAN.md` and `README.md`)
+  - **Severity:** Low (macOS hosts & wireless setup)
+  - **File:** `PROJECT_PLAN.md`, `README.md`
+  - **Description:** macOS does not support RNDIS, but `ev3dev-stretch` includes a CDC Composite Gadget (CDC-ECM) natively recognized by macOS. In addition, the EV3 has no internal Wi-Fi and requires a Linux 4.4 compatible USB 2.0 Wi-Fi dongle.
+  - **Fix Note:** Documented macOS CDC Composite Gadget network steps and supported USB Wi-Fi dongles in `PROJECT_PLAN.md` and `README.md`.
 
 - [ ] **BUG-19: TTY Console Screen Contention with `getty@tty1` (Precautionary)**
   - **Status:** PENDING
   - **Severity:** Low
-  - **File:** `ev3-web.service`, `PROJECT_PLAN.md`
-  - **Description:** When `brickman` is disabled, Debian's `getty@tty1.service` may spawn a login prompt on `/dev/tty1`, potentially contending with application console output.
-  - **Solution:** Mask or disable `getty@tty1.service` during boot optimization, and configure `ev3-web.service` with `TTYReset=yes`.
+  - **File:** `ev3-web.service`, `PROJECT_PLAN.md`, `README.md`
+  - **Description:** When `brickman` is disabled, Debian's `getty@tty1.service` may spawn a login prompt on `/dev/tty1`, contending with the on-brick LCD Wi-Fi menu and status display.
+  - **Solution:** Mask or disable `getty@tty1.service` during boot optimization, and configure `ev3-web.service` with `TTYPath=/dev/tty1` and `TTYReset=yes`.
+
+- [ ] **BUG-20: ConnMan Wi-Fi Password Provisioning Trap (Phase 7 Guardrail)**
+  - **Status:** PENDING
+  - **Severity:** High
+  - **File:** `src/sysfs/wifi.rs`
+  - **Description:** `connmanctl connect <service>` does not accept a password on the command line or via standard `stdin` pipes; interactive entry requires an asynchronous D-Bus agent loop (`agent on`).
+  - **Solution:** Write a static ConnMan provisioning file directly to `/var/lib/connman/ev3_wifi.config` with `Type = wifi`, `Name = <SSID>`, and `Passphrase = <PASSWORD>` before running `connmanctl connect <service>`.
+
+- [ ] **BUG-21: 32-Bit vs. 64-Bit Linux `input_event` Struct Size Trap (Phase 7 Guardrail)**
+  - **Status:** PENDING
+  - **Severity:** High
+  - **File:** `src/sysfs/keypad.rs`
+  - **Description:** On 64-bit hosts, `struct input_event` is 24 bytes, but on 32-bit `armv5te-unknown-linux-musleabi` (Linux kernel 4.4 on EV3), `timeval` uses two 32-bit integers, making `struct input_event` 16 bytes. Reading 24-byte chunks on the EV3 misaligns the byte stream and corrupts button events.
+  - **Solution:** Use target-pointer-sized fields (`#[repr(C)]` with `c_long` or `size_of::<usize>()`) when reading `/dev/input/by-path/platform-gpio_keys-event`, and filter strictly for `type == 1 (EV_KEY)` and `value == 1 (KEY_PRESS)` to ignore key-release and key-bounce events.
+
+- [ ] **BUG-22: `/dev/tty1` 22-Column Auto-Wrap & Row-16 Scroll Glitch (Phase 7 Guardrail)**
+  - **Status:** PENDING
+  - **Severity:** Medium
+  - **File:** `src/sysfs/display.rs`
+  - **Description:** The EV3 `fbcon` console (`178x128` pixels, 8x8 font) has 22 columns and 16 rows. Writing 22 characters followed by `\n` causes both an automatic terminal wrap at column 22 and an explicit newline, double-spacing lines and scrolling the top rows off the screen.
+  - **Solution:** Restrict every printed line to **21 characters or fewer**, hide the blinking cursor (`\x1b[?25l`), and never write a trailing `\n` on the 16th row.
 
 

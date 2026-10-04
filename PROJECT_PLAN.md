@@ -15,7 +15,7 @@
 | **Phase 4** | Embedded Web Dashboard & Host Simulation | ✅ **COMPLETE** |
 | **Phase 5** | 1-Click Deployment Scripts (`deploy.ps1`) | ✅ **COMPLETE** |
 | **Phase 6** | End-to-End Verification & Benchmarking | 🔄 **HOST VERIFIED / HARDWARE PENDING** |
-| **Phase 7** | EV3 Brick LED Status & Screen Network Display | ⏳ **PENDING (Planned)** |
+| **Phase 7** | EV3 Brick LEDs, LCD Wi-Fi Picker, Polarity & Battery | ⏳ **PENDING (Planned)** |
 
 ---
 
@@ -29,7 +29,7 @@
 7. [Phase 4: Embedded Web Dashboard and Host Simulation](#7-phase-4-embedded-web-dashboard-and-host-simulation)
 8. [Phase 5: Automated One-Click Deployment Script (`deploy.ps1`)](#8-phase-5-automated-one-click-deployment-script-deployps1)
 9. [Phase 6: Verification Checklist & Diagnostics Matrix](#9-phase-6-verification-checklist--diagnostics-matrix)
-10. [Phase 7: EV3 Brick LED Status and Screen Network Display](#10-phase-7-ev3-brick-led-status-and-screen-network-display)
+10. [Phase 7: EV3 Brick LEDs, LCD Wi-Fi Picker, Polarity & Battery](#10-phase-7-ev3-brick-leds-lcd-wi-fi-picker-polarity--battery)
 
 ---
 
@@ -99,8 +99,10 @@ On a 300 MHz ARM9 processor:
 - [ ] **Step 1.4: Connect USB Cable & Verify Host Network**
   - Connect Mini-USB cable between EV3 PC port and host computer.
   - **Windows:** Test ping in PowerShell: `ping 192.168.2.2`. If ping fails, update device driver in Device Manager to "Microsoft USB Ethernet/RNDIS Gadget".
-  - **macOS:** macOS detects the "CDC Composite Gadget" natively in System Settings -> Network.
-- [ ] **Step 1.5: Test SSH Access**
+  - **macOS:** macOS detects the "CDC Composite Gadget" natively. Open **System Settings -> Network**, add or enable the `CDC Composite Gadget` interface (configured via DHCP or static IP `192.168.2.1`, subnet `255.255.255.0`), and verify with `ping 192.168.2.2`.
+- [ ] **Step 1.5: Optional USB Wi-Fi Dongle Hardware**
+  - The EV3 brick has no internal Wi-Fi radio. Insert a Linux 4.4 compatible USB 2.0 Wi-Fi dongle into the side USB Host port (for example: Edimax EW-7811Un V1 / Realtek `RTL8188CUS`, `RTL8188EU`, Atheros `AR9271`, or Ralink `RT5370`).
+- [ ] **Step 1.6: Test SSH Access**
   - Connect with `ssh robot@192.168.2.2` (password: `maker`).
 
 ---
@@ -111,6 +113,7 @@ On a 300 MHz ARM9 processor:
   ```bash
   sudo su
   systemctl disable --now brickman.service
+  systemctl mask getty@tty1.service
   systemctl mask connman-wait-online.service
   systemctl mask systemd-networkd-wait-online.service
   # Note: Do NOT mask systemd-fsck-root.service; unclean power-offs require fsck to prevent read-only mounts.
@@ -119,8 +122,8 @@ On a 300 MHz ARM9 processor:
   exit
   ```
 - [ ] **Step 2.2: Install Systemd Service File**
-  ```powershell
-  scp .\ev3-web.service robot@192.168.2.2:/tmp/
+  ```bash
+  scp ./ev3-web.service robot@192.168.2.2:/tmp/
   ssh robot@192.168.2.2 "sudo mv /tmp/ev3-web.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable ev3-web.service"
   ```
 
@@ -199,46 +202,84 @@ On a 300 MHz ARM9 processor:
 
 ---
 
-## 10. Phase 7: EV3 Brick LED Status and Screen Network Display
+## 10. Phase 7: EV3 Brick LEDs, LCD Wi-Fi Picker, Polarity & Battery
 
 ### 10.1 Hardware Constraints and Strategy
 - **LED Indicator Limits:**
   - The EV3 brick has two bi-color LEDs (Left and Right) under the buttons.
   - Indicator LEDs cannot display alphanumeric text like IP addresses or port numbers.
-  - LEDs show operational readiness with colors (Amber, Green, Red).
-- **LCD Console Screen:**
-  - The EV3 brick has a 178x128 monochrome LCD screen.
-  - Optimization in Phase 2 disables `brickman.service`.
-  - The Linux console (`/dev/tty1`) is free for direct text output on the LCD screen.
-- **Architectural Decision 🎯 [ADOPTED]:**
-  - **Brick LEDs:** Set to Solid Green when the web server is ready for instructions (Amber during boot, Red on error).
-  - **Brick LCD Screen:** Write the detected IP address, port, and URL directly to `/dev/tty1` when ready.
+  - LEDs show operational readiness with colors (Amber during boot or Wi-Fi setup, Solid Green when ready, Red on error).
+- **LCD Console Screen & Physical Keypad (`22x16` Text UI):**
+  - The EV3 brick has a 178x128 monochrome LCD screen (22 columns by 16 rows with an 8x8 font) and 6 physical buttons (`Up`, `Down`, `Left`, `Right`, `Center`, `Back` on `/dev/input/by-path/platform-gpio_keys-event`).
+  - Optimization in Phase 2 disables `brickman.service` and `getty@tty1.service`, leaving `/dev/tty1` free for direct text rendering.
+- **Architectural Decisions 🎯 [ADOPTED]:**
+  - **Brick LEDs:** Set to Solid Green when the web server is ready for instructions (Amber during boot/Wi-Fi setup, Red on error).
+  - **On-Brick Wi-Fi Selector & Password Picker:** Auto-connect to saved Wi-Fi networks on boot and display the Ready URL screen (`http://<ip>/`) with a `[CENTER] = Wi-Fi Setup` hint. If no Wi-Fi connection is active, automatically open the on-screen Wi-Fi SSID selector and character-picker password prompt on `/dev/tty1` driven by the EV3 buttons and `connmanctl`.
+  - **Virtual EV3 Screen & Keypad in Host Simulation (`--mock`):** Include a Virtual EV3 LCD Screen (22x16), LED status display, and 6-button keypad panel in the web dashboard so the entire Wi-Fi selection and password entry flow can be tested on the host PC before hardware deployment.
+  - **Two-Tier Safety Watchdog (`BUG-14`):** Tank Drive sends a 150 ms repeat heartbeat while held and stops after 400 ms if packets stop arriving; continuous single-motor buttons (`run-forever`) stay active while connected and stop if no `/api/status` poll arrives for 1000 ms.
+  - **Motor Polarity Inversion:** Provide an "Invert" checkbox per motor port (using `/sys/class/tacho-motor/motorX/polarity` `normal` vs. `inversed`) so geared or backward-mounted LEGO motors do not require physical rebuilding.
+  - **Battery Telemetry:** Poll `/sys/class/power_supply/lego-ev3-battery/voltage_now` and `current_now` every 2 seconds on the background discovery loop and display battery voltage/current in the web header.
 
 ---
 
-### 10.2 Phase 7 Checklist
+### 10.2 Phase 7 & Pending Bug Remediation Checklist
 
-- [ ] **Step 7.1: Sysfs LED Driver (`src/sysfs/led.rs`)**
+- [ ] **Step 7.1: Pending Core Fixes (`BUG-14` to `BUG-19`)**
+  - Implement Two-Tier Safety Watchdog (400 ms Tank Drive timeout with 150 ms client heartbeat; 1000 ms `/api/status` disconnect timeout for continuous motors; use `tank_drive_active` and `continuous_run_active` flags to prevent idle sysfs write storms).
+  - Cache open sysfs file descriptors inside `Arc<Mutex<CachedMotorFiles>>` in `src/sysfs/motor.rs` using `seek(SeekFrom::Start(0))` and a stack buffer `[u8; 32]` (`BUG-15`).
+  - Reduce HTTP worker thread pool from 4 to 2 threads in `src/main.rs` (`BUG-16`).
+  - Add `Access-Control-Allow-Private-Network: true` to CORS preflight responses in `src/web/router.rs` (`BUG-17`).
+- [ ] **Step 7.2: Sysfs LED Driver (`src/sysfs/led.rs`)**
   - Control `/sys/class/leds/led0:red:brick-status`, `/sys/class/leds/led0:green:brick-status`, `/sys/class/leds/led1:red:brick-status`, and `/sys/class/leds/led1:green:brick-status`.
-  - Provide `set_color()`, `set_ready()`, `set_starting()`, and `set_error()`.
-  - Graceful fallback when sysfs nodes are missing.
-- [ ] **Step 7.2: Screen Console Display & IP Detection (`src/sysfs/display.rs`)**
-  - Detect active network IP address (USB RNDIS/CDC `192.168.2.2` or Wi-Fi).
-  - Write formatted ready banner and URL to `/dev/tty1` with ANSI clear screen codes (`\x1b[2J\x1b[H`).
-  - Disable console blanking (`TERM=linux setterm -blank 0 > /dev/tty1` or escape codes) to prevent display sleep.
-  - Fallback cleanly to stdout when `/dev/tty1` is unavailable.
-- [ ] **Step 7.3: Host Simulation Support (`src/sysfs/mock.rs`)**
-  - Add mock LED state tracking and banner logging for host testing (`cargo run -- --mock`).
-- [ ] **Step 7.4: Application Integration (`src/main.rs`)**
-  - Set LED to Amber at startup.
-  - Set LED to Solid Green and write IP banner to screen when server is ready.
-  - Set LED to Red on shutdown or panic.
-- [ ] **Step 7.5: Systemd Console Output Configuration (`ev3-web.service`)**
-  - Configure `TTYPath=/dev/tty1` and `StandardOutput=journal+console`.
-- [ ] **Step 7.6: Automated Unit Tests**
-  - Add unit tests for LED color calculations and IP/display formatting.
-- [ ] **Step 7.7: Verification on Physical EV3 Brick**
-  - Verify LEDs turn Amber on service boot.
-  - Verify LEDs turn Solid Green when ready.
-  - Verify LCD screen displays `http://192.168.2.2/`.
+  - Provide `set_color()`, `set_ready()`, `set_starting()`, and `set_error()` with graceful fallback when sysfs nodes are missing.
+- [ ] **Step 7.3: Screen Console Display, Keypad & On-Brick Wi-Fi Picker (`src/sysfs/display.rs`, `src/sysfs/keypad.rs`, `src/sysfs/wifi.rs`)**
+  - Detect active network IP address (USB RNDIS/CDC `192.168.2.2` and Wi-Fi `wlan0`).
+  - Read EV3 physical button events (`Up`, `Down`, `Left`, `Right`, `Center`, `Back`) from `/dev/input/by-path/platform-gpio_keys-event` using 32-bit target-aware `input_event` parsing (`BUG-21`).
+  - Render a 22x16 character UI on `/dev/tty1` with max 21 chars per line, hidden cursor `\x1b[?25l`, and no trailing `\n` on row 16 (`BUG-22`):
+    - Ready screen showing active SSID, IP URL (`http://<ip>/`), battery voltage, and `[CENTER] Wi-Fi Setup`.
+    - Interactive Wi-Fi SSID scanner and character-grid password entry writing `/var/lib/connman/ev3_wifi.config` before running `connmanctl connect` (`BUG-20`).
+- [ ] **Step 7.4: Motor Polarity Inversion & Battery Telemetry (`src/sysfs/motor.rs`, `src/sysfs/battery.rs`, `src/controller.rs`)**
+  - Support per-port polarity toggle (`normal` / `inversed`) via `POST /api/motor/{port}/polarity` and UI checkboxes.
+  - Poll EV3 battery voltage (`voltage_now`) and current (`current_now`) every 2 seconds and expose in `/api/status`.
+- [ ] **Step 7.5: Host Simulation & Virtual EV3 Brick Panel (`src/sysfs/mock.rs`, `web_assets/`)**
+  - Simulate LEDs, 22x16 LCD screen buffer, simulated Wi-Fi networks, button presses, motor polarity, and battery voltage/current in `--mock` mode.
+  - Add a Virtual EV3 Brick Screen, LEDs, and 6-button keypad panel to `web_assets/index.html` and `web_assets/app.js`.
+- [ ] **Step 7.6: Systemd Console Output Configuration (`ev3-web.service`)**
+  - Configure `TTYPath=/dev/tty1`, `TTYReset=yes`, and `StandardOutput=journal`.
+- [ ] **Step 7.7: Automated Unit Tests**
+  - Add unit tests for the two-tier watchdog, polarity inversion, battery telemetry, LED colors, and 22x16 LCD Wi-Fi menu state machine.
+- [ ] **Step 7.8: Verification on Physical EV3 Brick**
+  - Verify LEDs turn Amber on service boot/Wi-Fi setup and Solid Green when ready.
+  - Verify on-brick LCD Wi-Fi SSID selection and password entry connect to Wi-Fi and display `http://<ip>/`.
+
+---
+
+### 10.3 Low-Level Hardware & Linux Implementation Guardrails
+
+Any agent implementing Phase 7 and `BUG-14` through `BUG-22` must follow these 5 hardware rules:
+
+1. **ConnMan Wi-Fi Password Provisioning (`BUG-20`):**
+   - Do **not** pass the Wi-Fi password as a command-line argument or `stdin` pipe to `connmanctl connect <service>`; `connmanctl` requires an interactive D-Bus agent for inline password prompts.
+   - Instead, write a static provisioning file to `/var/lib/connman/ev3_wifi.config`:
+     ```ini
+     [service_ev3_wifi]
+     Type = wifi
+     Name = <SSID>
+     Passphrase = <PASSWORD>
+     ```
+     Then execute `connmanctl connect <service>`. ConnMan reads `/var/lib/connman/*.config` automatically.
+2. **32-Bit ARMv5te `input_event` Struct Size (`BUG-21`):**
+   - On 64-bit hosts, Linux `struct input_event` is 24 bytes. On 32-bit `armv5te-unknown-linux-musleabi` (Linux kernel 4.4 on EV3), `timeval` uses two 32-bit integers, so `struct input_event` is **16 bytes**.
+   - Parse `/dev/input/by-path/platform-gpio_keys-event` using target-pointer-sized fields (`#[repr(C)]` with `c_long` or `size_of::<usize>()`), and trigger actions only when `type == 1 (EV_KEY)` and `value == 1 (KEY_PRESS)`.
+3. **Persistent File Descriptors with `Clone` on `Motor` (`BUG-15`):**
+   - `Motor` is cloned on every 50 ms poller tick and HTTP command. Do **not** call `File::try_clone()` (`dup()` syscall).
+   - Store open sysfs `File` handles inside `Arc<Mutex<CachedMotorFiles>>` within `Motor`, seek to byte `0` (`SeekFrom::Start(0)`), and read into a stack buffer (`[u8; 32]`) with zero heap allocation.
+4. **`/dev/tty1` 22-Column Auto-Wrap & Row-16 Scroll Prevention (`BUG-22`):**
+   - The 178x128 LCD console is 22 columns by 16 rows. Writing 22 characters followed by `\n` causes an automatic line wrap plus an explicit newline (double-spacing and scrolling row 1 off screen).
+   - Keep every line to **<= 21 characters**, hide the cursor (`\x1b[?25l`), and omit the trailing `\n` on row 16.
+5. **One-Shot Watchdog State Transitions (`BUG-14`):**
+   - Do **not** call `stop()` on every 50 ms tick when `elapsed > timeout`.
+   - Maintain `tank_drive_active` and `continuous_run_active` boolean flags in `MotorController` so the watchdog writes `stop` to sysfs **only one time** when transitioning from running to timed-out.
+
+
 

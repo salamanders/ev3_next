@@ -26,9 +26,10 @@ This project operates in two distinct phases:
 - **Low Latency:** Direct communication with the Linux kernel `/sys/class/tacho-motor/` sysfs interface (< 5ms latency).
 - **Low Memory Footprint:** Statically linked Rust binary that uses less than 3 MB RAM. This prevents Out-Of-Memory errors on the 64 MB EV3 brick.
 - **Embedded Web User Interface:** Single-Page Application (HTML5 / CSS3 / JavaScript) embedded directly into the binary with `include_str!`.
-- **Host Simulation Mode (`--mock`):** Run and test simulated motors on Windows, macOS, or Linux without physical EV3 hardware.
-- **No SD Card Swapping:** The `deploy.ps1` script uploads new builds over the USB network cable in 4 seconds.
-- **Robot Drive Controls:** Virtual joystick, directional D-Pad, and keyboard shortcuts (`WASD` and Arrow keys) for two-wheel robots.
+- **Host Simulation Mode (`--mock`):** Run and test simulated motors, virtual EV3 LCD screen, and keypad buttons on Windows, macOS, or Linux without physical EV3 hardware.
+- **No SD Card Swapping:** The `deploy.sh` (macOS/Linux) and `deploy.ps1` (Windows) scripts upload new builds over the USB or Wi-Fi network in 4 seconds.
+- **Robot Drive Controls & Safety Watchdog:** Directional D-Pad, keyboard shortcuts (`WASD` and Arrow keys), per-port polarity inversion, and a two-tier safety watchdog (400 ms Tank Drive heartbeat timeout and 1000 ms browser disconnect timeout).
+- **On-Brick LCD Wi-Fi Setup & Battery Telemetry (Phase 7):** Native 22x16 text menu on `/dev/tty1` using the EV3 physical buttons to select a Wi-Fi SSID, enter a password, and display the live `http://<ip>/` URL, plus 2-second battery voltage/current polling.
 - **Background Telemetry Thread:** Non-blocking 50ms polling thread caches motor encoder data in memory. HTTP requests read from memory in less than 0.05ms.
 
 ---
@@ -67,16 +68,22 @@ Follow this setup **one time**. After initial setup, you never remove the MicroS
 3. Download and open [BalenaEtcher](https://etcher.balena.io/).
 4. Select the downloaded `.zip` file, select your MicroSD card drive, and click **Flash!**.
 
-### 2. First Boot & USB Connection
+### 2. First Boot, USB Connection & Optional Wi-Fi Dongle
 1. Insert the MicroSD card into the EV3 brick.
-2. Press the **Center Button** to power on. Wait 1 to 2 minutes for the initial boot.
-3. Connect the Mini-USB cable between the EV3 **PC port** and your Windows PC.
-4. Open Windows PowerShell and verify the network connection:
-   ```powershell
+2. *(Optional for Wireless Control)* Insert a Linux 4.4 compatible USB 2.0 Wi-Fi dongle into the EV3 side **USB Host port** (for example: Edimax EW-7811Un V1 / Realtek `RTL8188CUS`, `RTL8188EU`, Atheros `AR9271`, or Ralink `RT5370`).
+3. Press the **Center Button** to power on. Wait 1 to 2 minutes for the initial boot.
+4. Connect the Mini-USB cable between the EV3 **PC port** and your host computer.
+5. Verify the USB network connection:
+   ```bash
    ping 192.168.2.2
    ```
 
 > [!TIP]
+> **macOS USB Network Setup (`CDC Composite Gadget`):**
+> 1. `ev3dev-stretch` exposes a CDC-ECM USB network interface that macOS supports without third-party drivers.
+> 2. Open **System Settings -> Network** on macOS.
+> 3. Select **CDC Composite Gadget** (add it with the `+` button if not listed) and configure IPv4 using **DHCP** (or manually set IP `192.168.2.1` and Subnet Mask `255.255.255.0`).
+>
 > **Windows USB Driver Fix (if ping fails):**
 > 1. Open Windows **Device Manager** (`Win + X` -> `Device Manager`).
 > 2. Right-click `RNDIS/Ethernet Gadget` -> **Update driver**.
@@ -86,16 +93,17 @@ Follow this setup **one time**. After initial setup, you never remove the MicroS
 
 ### 3. One-Time Boot Acceleration & Service Setup
 Connect to the EV3 with SSH (default password is `maker`):
-```powershell
+```bash
 ssh robot@192.168.2.2
 ```
 
-Run these commands to decrease future boot times to **10–15 seconds** and free 20 MB of RAM:
+Run these commands to decrease future boot times to **10–15 seconds**, free 20 MB of RAM, and reserve `/dev/tty1` for the on-brick LCD Wi-Fi and status display:
 ```bash
 sudo su
 
-# 1. Disable the LCD GUI:
+# 1. Disable the heavy LCD GUI and tty1 login prompt:
 systemctl disable --now brickman.service
+systemctl mask getty@tty1.service
 
 # 2. Mask blocking startup services:
 systemctl mask connman-wait-online.service
@@ -109,23 +117,27 @@ exit
 ```
 
 Install the auto-start background service:
-```powershell
-scp .\ev3-web.service robot@192.168.2.2:/tmp/
+```bash
+scp ./ev3-web.service robot@192.168.2.2:/tmp/
 ssh robot@192.168.2.2 "sudo mv /tmp/ev3-web.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable ev3-web.service"
 ```
 
 ### 4. Deploy the Application (1-Click)
-Run this command from Windows PowerShell in the project directory:
-```powershell
-.\deploy.ps1 -TargetIp 192.168.2.2
-```
+Run the deployment script from the project directory:
+
+- **macOS / Linux:**
+  ```bash
+  ./deploy.sh 192.168.2.2
+  ```
+- **Windows PowerShell:**
+  ```powershell
+  .\deploy.ps1 -TargetIp 192.168.2.2
+  ```
 *This cross-compiles for ARMv5te, uploads the binary to `/home/robot/ev3-web-motor`, and restarts the service in 4 seconds.*
 
-### 5. Access the Web Dashboard
-Open your web browser and navigate to:
-```
-http://192.168.2.2/
-```
+### 5. Access the Web Dashboard (USB or Wi-Fi)
+- Over USB, open `http://192.168.2.2/` in your web browser.
+- Over Wi-Fi (Phase 7), use the EV3 physical buttons on the LCD screen to select your Wi-Fi SSID and enter your password. Once connected, the EV3 LCD displays the live Wi-Fi URL (`http://<wifi-ip>/`).
 
 ---
 
