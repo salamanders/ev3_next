@@ -35,3 +35,7 @@ Instructions for AGENT development.
 10. **External Link & Asset Verification Rule:**
     - Never assume external download URLs, release tag names, or file extensions from legacy notes or memory.
     - Always verify that external links and asset names are live and correct before documenting them.
+
+11. **GitHub Issue & Bug Tracking Rule:**
+    - Always use GitHub Issues for tracking bugs, hardware investigations, and remediation moving forward.
+    - Do not create or maintain local markdown bug tracker documents. Closed historical bugs are preserved in `archive/BUGS.md`.

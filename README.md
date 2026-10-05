@@ -168,11 +168,16 @@ Run the deployment script from the project directory:
 ev3_next/
 ├── Cargo.toml               # Cargo package configuration
 ├── ev3-web.service          # Systemd unit file for auto-start on boot
-├── deploy.ps1               # Deployment script for Windows PowerShell
-├── deploy.sh                # Deployment script for Linux and macOS
-├── zig-lld-arm.cmd          # Windows cross-linker script
-├── zig-lld-arm.sh           # Unix cross-linker wrapper
-├── zig-linker.py            # Windows/Unix linker argument adapter
+├── tools/
+│   └── bake-image.sh        # Appliance disk image baker with --ssid and --password
+├── zig-lld-arm.sh           # Linux cross-linker wrapper
+├── zig-linker.py            # Linker argument adapter for Zig LLD
+├── archive/                 # Historical documents and legacy USB deploy scripts
+│   ├── BUGS.md              # Historical bug tracking log (remediated)
+│   ├── REPORT.md            # Early architectural feasibility report
+│   ├── deploy.ps1           # Legacy USB deployment script for PowerShell
+│   ├── deploy.sh            # Legacy USB deployment script for Bash
+│   └── zig-lld-arm.cmd      # Legacy Windows batch linker
 ├── src/
 │   ├── main.rs              # Program entry point and HTTP worker pool
 │   ├── config.rs            # Command line argument parser

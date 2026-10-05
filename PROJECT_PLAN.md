@@ -3,7 +3,7 @@
 > **Design Principle:** Assume errors will occur. Flash the SD card only one time. Test 100% of user interface and API logic on the Windows host using simulation first. Deploy to EV3 over USB in less than 5 seconds (**TARGET**, not measured. See `BUG-43`).
 
 > [!IMPORTANT]
-> **Second-Opinion Triage (2026-10-04):** A second model reviewed all docs against the code. It did **not** change code. It found 25 new items (`BUG-23` to `BUG-47`) and reopened or downgraded 7 earlier items. **No code has run on ARM hardware or in an ARM emulator yet.** Read [Phase 8](#11-phase-8-second-opinion-triage--remediation) and the Triage Summary in [`BUGS.md`](BUGS.md) before you start work.
+> **Second-Opinion Triage (2026-10-04):** A second model reviewed all docs against the code. It did **not** change code. It found 25 new items (`BUG-23` to `BUG-47`) and reopened or downgraded 7 earlier items. **No code has run on ARM hardware or in an ARM emulator yet.** Read [Phase 8](#11-phase-8-second-opinion-triage--remediation) and the Triage Summary in [`archive/BUGS.md`](archive/BUGS.md) before you start work.
 
 ---
 

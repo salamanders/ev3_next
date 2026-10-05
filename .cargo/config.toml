@@ -1,5 +1,5 @@
 [target.armv5te-unknown-linux-musleabi]
-linker = "zig-lld-arm.cmd"
+linker = "zig-lld-arm.sh"
 rustflags = [
     "-C", "target-cpu=arm926ej-s",
     "-C", "linker-flavor=ld.lld"
