@@ -1,0 +1,60 @@
+name: Bake Appliance Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      wifi_ssid:
+        description: 'Wi-Fi SSID (Optional: pre-bake Wi-Fi into image)'
+        required: false
+        type: string
+        default: ''
+      wifi_password:
+        description: 'Wi-Fi Password (Optional: 8-63 characters)'
+        required: false
+        type: string
+        default: ''
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  bake:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: armv5te-unknown-linux-musleabi
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zig xz-utils curl unzip fdisk
+
+      - name: Build ARMv5te release binary
+        run: |
+          export PATH="$PWD:$PATH"
+          chmod +x zig-lld-arm.sh
+          CARGO_TARGET_ARMV5TE_UNKNOWN_LINUX_MUSLEABI_LINKER="$PWD/zig-lld-arm.sh" \
+          cargo build --target armv5te-unknown-linux-musleabi --release
+
+      - name: Bake appliance disk image
+        run: |
+          chmod +x tools/bake-image.sh
+          SSID_ARG=""
+          PASS_ARG=""
+          if [ -n "${{ github.event.inputs.wifi_ssid }}" ]; then
+            SSID_ARG="--ssid '${{ github.event.inputs.wifi_ssid }}'"
+            PASS_ARG="--password '${{ github.event.inputs.wifi_password }}'"
+          fi
+          sudo eval ./tools/bake-image.sh $SSID_ARG $PASS_ARG
+
+      - name: Upload appliance image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ev3-web-motor-ready.img.xz
+          path: ev3-web-motor-ready.img.xz
+          if-no-files-found: error

@@ -84,12 +84,9 @@ impl DisplayController {
         }
     }
 
-    /// Display the ready screen on EV3 LCD console (/dev/tty1) or simulation log
-    pub fn show_ready(&self, ip: &str, port: u16, battery_v: f32) {
-        let content = Self::format_ready_screen(ip, port, battery_v);
-
+    /// Write arbitrary formatted screen string to /dev/tty1 or stdout in mock
+    pub fn show_screen(&self, content: &str) {
         if self.mock_mode || !Path::new(self.tty_path).exists() {
-            println!("[DISPLAY] LCD Ready Screen rendered (IP: {}, Port: {}, Battery: {:.1}V)", ip, port, battery_v);
             return;
         }
 
@@ -103,6 +100,18 @@ impl DisplayController {
                 eprintln!("[WARN] Could not open LCD console {}: {}", self.tty_path, e);
             }
         }
+    }
+
+    /// Display the ready screen on EV3 LCD console (/dev/tty1) or simulation log
+    pub fn show_ready(&self, ip: &str, port: u16, battery_v: f32) {
+        let content = Self::format_ready_screen(ip, port, battery_v);
+
+        if self.mock_mode || !Path::new(self.tty_path).exists() {
+            println!("[DISPLAY] LCD Ready Screen rendered (IP: {}, Port: {}, Battery: {:.1}V)", ip, port, battery_v);
+            return;
+        }
+
+        self.show_screen(&content);
     }
 }
 

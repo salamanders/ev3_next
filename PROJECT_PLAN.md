@@ -20,6 +20,7 @@
 | **Phase 6** | Verification Checklist & Diagnostics | ⏳ **PENDING (Physical Hardware)** |
 | **Phase 7** | Watchdog, Battery, Polarity, LEDs & LCD Display | ✅ **COMPLETE**. Two-tier watchdog, battery polling, persistent polarity, LED controller, 7-row LCD, `wifi.txt` provisioning (`BUG-32`, `BUG-35`) |
 | **Phase 8** | Second-Opinion Triage & Remediation | ✅ **HOST GATES COMPLETE**. All 25 host triage items resolved and tested |
+| **Phase 9** | Streamlined Appliance Mode & Pre-Baked Image | ⏳ **CODE COMPLETE, PENDING LINUX BAKE** (Keypad, UI, and Baker script ready; Step 9.5 pending Linux) |
 
 ---
 
@@ -35,6 +36,7 @@
 9. [Phase 6: Verification Checklist & Diagnostics Matrix](#9-phase-6-verification-checklist--diagnostics-matrix)
 10. [Phase 7: EV3 Brick LEDs, LCD Wi-Fi Picker, Polarity & Battery](#10-phase-7-ev3-brick-leds-lcd-wi-fi-picker-polarity--battery)
 11. [Phase 8: Second-Opinion Triage & Remediation](#11-phase-8-second-opinion-triage--remediation)
+12. [Phase 9: Streamlined Appliance Mode & Pre-Baked Disk Image](#12-phase-9-streamlined-appliance-mode--pre-baked-disk-image)
 
 ---
 
@@ -422,3 +424,89 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
 | `BUG-17` | RESOLVED | Reverted through `BUG-30`. |
 | `BUG-19` | RESOLVED | `getty@tty1` masked and `dmesg -n 1` set (`BUG-34`). |
 | `BUG-22` | RESOLVED | Fixed through `BUG-32`. |
+
+---
+
+## 12. Phase 9: Streamlined Appliance Mode & Pre-Baked Disk Image
+
+> **Target User Flow:**
+> 1. Flash `ev3-web-motor-ready.img.xz` to a MicroSD card.
+> 2. Insert the card into the EV3 brick and power on.
+> 3. Select Wi-Fi network and enter password on the EV3 screen with the 6 EV3 buttons.
+> 4. Open `http://<ip>/` in a web browser to control motors.
+> 
+> No USB network cables. No terminal commands. No manual configuration.
+
+### 12.1 Architectural Decisions and Status Labels
+
+| Component | Status Label | Technical Rationale |
+| :--- | :--- | :--- |
+| **Rust On-Brick UI Replacement** | `[ADOPTED]` | Replaces `brickman` with a lightweight UI inside `ev3-web-motor`. Saves 18 MB RAM, boots 10–15 seconds faster, and provides a direct appliance flow. |
+| **Pre-Baked Flashable Disk Image** | `[ADOPTED]` | Injects `ev3-web-motor` and service directly into the official `ev3dev-stretch` disk image. Eliminates manual USB/SSH setup. |
+| **Keeping Stock `brickman`** | `[REJECTED]` | Rejected per user choice. `brickman` uses ~18 MB RAM and contains unused menus (Bluetooth, sound, script runner). |
+| **Manual USB Setup / SSH Deploy** | `[MOVED TO DEV]` | Retained as secondary developer path for debugging driver code. |
+
+### 12.2 Technical Specifications
+
+#### 1. EV3 Keypad Driver (`src/sysfs/keypad.rs`)
+- **Device Path:** `/dev/input/by-path/platform-gpio_keys-event`.
+- **Event Record Format:** 16-byte `input_event` (Linux kernel 4.14 32-bit ARM):
+  ```rust
+  #[repr(C)]
+  #[derive(Debug, Clone, Copy)]
+  pub struct InputEvent {
+      pub time_sec: u32,
+      pub time_usec: u32,
+      pub type_: u16,
+      pub code: u16,
+      pub value: i32,
+  }
+  ```
+- **Button Codes:**
+  - `KEY_UP` = 103, `KEY_DOWN` = 108, `KEY_LEFT` = 105, `KEY_RIGHT` = 106.
+  - `KEY_ENTER` (Center button) = 28.
+  - `KEY_BACKSPACE` (Back button) = 14.
+- **Isolation:** Grab input device with `ioctl(fd, EVIOCGRAB, 1)` on open to prevent button presses from leaking escape sequences onto `/dev/tty1`.
+- **Simulation:** In `--mock` mode, read arrow keys, Enter, and Escape from the terminal keyboard or virtual UI.
+
+#### 2. Interactive Console UI (`src/sysfs/ui.rs`)
+Runs directly on `/dev/tty1` with a clean state machine:
+- **NetworkCheck:** If active IP exists (saved Wi-Fi or USB), go to `Ready`. Otherwise, go to `WifiScan`.
+- **WifiScan & WifiSelect:** Run `connmanctl scan wifi` and parse `connmanctl services`. Display scrollable list of SSIDs on `/dev/tty1`. Navigate with `Up`/`Down`, select with `Center`.
+- **PasswordEntry:** Compact 4-row keyboard grid (A–Z, 0–9, symbols, `[< DEL]`, `[DONE]`). Move cursor with arrow buttons, select character with `Center`, finish with `[DONE]`.
+- **Connecting:** Write `/var/lib/connman/ev3_wifi.config` using `WifiProvisioner` and call `connmanctl connect`. On success, go to `Ready`. On failure, return to `WifiSelect`.
+- **Ready:** Display 7-row compact status screen (`DisplayController::format_ready_screen`) with IP, URL (`http://<ip>/`), and battery voltage.
+- **Safe Power-Off:** Holding `Back` button for 2 seconds calls `systemctl poweroff`.
+
+#### 3. Automated Image Baker (`tools/bake-image.sh` & `.github/workflows/bake-image.yml`)
+- Supports optional `--ssid <SSID>` and `--password <PASS>` parameters to pre-configure Wi-Fi in `/var/lib/connman/ev3_wifi.config`.
+- Downloads `ev3dev-stretch-ev3-generic-2020-04-10.zip`.
+- Mounts `ext4` root partition via loopback: `mount -o loop,offset=$ROOT_OFFSET ev3dev.img /mnt/ev3root`.
+- Copies `ev3-web-motor` to `/mnt/ev3root/usr/local/bin/`.
+- Installs and enables `ev3-web.service` in `multi-user.target.wants/`.
+- Disables `brickman.service` and masks `getty@tty1.service` and wait-online daemons.
+- Compresses output with `xz -9` to produce `ev3-web-motor-ready.img.xz`.
+
+### 12.3 Implementation Checklist
+
+- [x] **Step 9.1: EV3 Keypad Driver (`src/sysfs/keypad.rs`)**
+  - Implemented 16-byte `InputEvent` parsing and button code mapping.
+  - Implemented device grab (`EVIOCGRAB`) and non-blocking event loop.
+  - Added mock keypad for host simulation (`--mock`).
+  - Added unit tests for event decoding and button filtering.
+- [x] **Step 9.2: Interactive Console UI (`src/sysfs/ui.rs`)**
+  - Implemented state machine (`NetworkCheck`, `WifiScan`, `WifiSelect`, `PasswordEntry`, `Connecting`, `Ready`, `Shutdown`).
+  - Implemented ConnMan Wi-Fi scan output parser.
+  - Implemented 4-row keyboard grid renderer and navigation.
+  - Connected to `WifiProvisioner` in `src/sysfs/wifi.rs`.
+  - Added long-press Back button safe shutdown handler.
+  - Added unit tests for UI navigation, keyboard selection, and password string assembly.
+- [x] **Step 9.3: Server Integration (`src/main.rs`)**
+  - Launched UI loop in background thread communicating with server state.
+  - 30/30 unit tests pass with `cargo test`.
+  - Cross-compilation target `armv5te-unknown-linux-musleabi` compiles cleanly (763 KB static binary).
+- [x] **Step 9.4: Automated Image Baker Scripts**
+  - Created `tools/bake-image.sh` with loopback mounting, service installation, and daemon masking.
+  - Created `.github/workflows/bake-image.yml` to build and publish `.img.xz` releases.
+- [ ] **Step 9.5: Bake Image on Linux Host**
+  - Execute `sudo ./tools/bake-image.sh` on a Linux host (or in GitHub Actions) to produce `ev3-web-motor-ready.img.xz`.
