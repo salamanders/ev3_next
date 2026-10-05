@@ -450,7 +450,7 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
 
 ### 12.2 Technical Specifications
 
-#### 1. Automated Image Baker (`tools/bake-image.sh` & `.github/workflows/bake-image.yml`)
+#### 1. Automated Image Baker (`tools/bake-image.sh`)
 - Accepts `--ssid <SSID>` and `--password <PASS>` parameters to write `/var/lib/connman/ev3_wifi.config` (mode `0600`).
 - Downloads `ev3dev-stretch-ev3-generic-2020-04-10.zip`.
 - Mounts `ext4` root partition via loopback: `mount -o loop,offset=$ROOT_OFFSET ev3dev.img /mnt/ev3root`.
@@ -467,13 +467,12 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
 
 ### 12.3 Implementation Checklist
 
-- [x] **Step 9.1: Automated Image Baker Scripts**
+- [x] **Step 9.1: Automated Image Baker Script**
   - Created `tools/bake-image.sh` with `--ssid` and `--password` parameters.
-  - Created `.github/workflows/bake-image.yml` to build and publish `.img.xz` releases.
 - [x] **Step 9.2: Runtime Display & Wi-Fi Provisioning**
   - Verified `DisplayController` 7-row status screen and 5-second background refresh.
   - Verified `WifiManager` credential parsing and ConnMan provisioning.
   - All 21 unit tests pass (`cargo test`).
   - Standalone release binary cross-compiled for ARMv5te musl (750 KB).
 - [ ] **Step 9.3: Bake Image on Linux Host**
-  - Execute `sudo ./tools/bake-image.sh --ssid "YourSSID" --password "YourPass"` on a Linux host (or in GitHub Actions) to produce `ev3-web-motor-ready.img.xz`.
+  - Execute `sudo ./tools/bake-image.sh --ssid "YourSSID" --password "YourPass"` on a Linux host to produce `ev3-web-motor-ready.img.xz`.
