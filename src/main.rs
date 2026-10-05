@@ -65,127 +65,21 @@ fn main() {
     let battery_v = controller.get_battery().voltage_v;
     display.show_ready(&active_ip, config.port, battery_v);
 
-    // Spawn interactive on-brick UI manager thread
-    let display_ui = sysfs::DisplayController::new(config.mock_mode);
-    let controller_ui = controller.clone();
-    let mock_mode = config.mock_mode;
+    // Periodic LCD display refresh thread (every 5 seconds) (BUG-35)
+    let display_clone = sysfs::DisplayController::new(config.mock_mode);
+    let controller_disp = controller.clone();
     let port = config.port;
-
     thread::Builder::new()
-        .name("ui-manager".into())
+        .name("display-refresher".into())
         .spawn(move || {
-            let mut ui = sysfs::ui::UiController::new(mock_mode);
-            let mut keypad = sysfs::keypad::KeypadReader::new(mock_mode);
-
-            // Initial network check
-            let initial_ip = sysfs::DisplayController::detect_ip();
-            if initial_ip != "No network" {
-                let bat = controller_ui.get_battery().voltage_v;
-                ui.set_state(sysfs::ui::UiState::Ready {
-                    ip: initial_ip,
-                    port,
-                    battery_v: bat,
-                });
-            } else {
-                let ssids = sysfs::WifiManager::scan_wifi_networks(mock_mode);
-                ui.set_state(sysfs::ui::UiState::SelectingWifi {
-                    ssids,
-                    selected_idx: 0,
-                });
-            }
-
-            display_ui.show_screen(&ui.format_screen());
-
-            let mut last_refresh = std::time::Instant::now();
-
             loop {
-                if let Some(event) = keypad.read_event() {
-                    if event.action == sysfs::keypad::ButtonAction::Press {
-                        match ui.handle_button(event.button) {
-                            sysfs::ui::UiAction::Render => {
-                                display_ui.show_screen(&ui.format_screen());
-                            }
-                            sysfs::ui::UiAction::ScanWifi => {
-                                display_ui.show_screen(&ui.format_screen());
-                                let ssids = sysfs::WifiManager::scan_wifi_networks(mock_mode);
-                                ui.set_state(sysfs::ui::UiState::SelectingWifi {
-                                    ssids,
-                                    selected_idx: 0,
-                                });
-                                display_ui.show_screen(&ui.format_screen());
-                            }
-                            sysfs::ui::UiAction::ConnectWifi { ssid, pass } => {
-                                display_ui.show_screen(&ui.format_screen());
-                                match sysfs::WifiManager::connect_wifi(&ssid, &pass, mock_mode) {
-                                    Ok(()) => {
-                                        let mut connected = false;
-                                        for _ in 0..10 {
-                                            thread::sleep(std::time::Duration::from_millis(500));
-                                            let ip = sysfs::DisplayController::detect_ip();
-                                            if ip != "No network" {
-                                                let bat = controller_ui.get_battery().voltage_v;
-                                                ui.set_state(sysfs::ui::UiState::Ready {
-                                                    ip,
-                                                    port,
-                                                    battery_v: bat,
-                                                });
-                                                display_ui.show_screen(&ui.format_screen());
-                                                connected = true;
-                                                break;
-                                            }
-                                        }
-                                        if !connected {
-                                            let ssids = sysfs::WifiManager::scan_wifi_networks(mock_mode);
-                                            ui.set_state(sysfs::ui::UiState::SelectingWifi {
-                                                ssids,
-                                                selected_idx: 0,
-                                            });
-                                            display_ui.show_screen(&ui.format_screen());
-                                        }
-                                    }
-                                    Err(e) => {
-                                        eprintln!("[UI ERROR] Connection failed: {}", e);
-                                        let ssids = sysfs::WifiManager::scan_wifi_networks(mock_mode);
-                                        ui.set_state(sysfs::ui::UiState::SelectingWifi {
-                                            ssids,
-                                            selected_idx: 0,
-                                        });
-                                        display_ui.show_screen(&ui.format_screen());
-                                    }
-                                }
-                            }
-                            sysfs::ui::UiAction::PowerOff => {
-                                display_ui.show_screen("\x1b[2J\x1b[HShutting down...");
-                                if mock_mode {
-                                    println!("[MOCK] System poweroff executed.");
-                                    std::process::exit(0);
-                                } else {
-                                    let _ = std::process::Command::new("systemctl").arg("poweroff").status();
-                                }
-                            }
-                            sysfs::ui::UiAction::None => {}
-                        }
-                    }
-                } else {
-                    thread::sleep(std::time::Duration::from_millis(50));
-                }
-
-                if let sysfs::ui::UiState::Ready { .. } = ui.state() {
-                    if last_refresh.elapsed() >= std::time::Duration::from_secs(5) {
-                        let ip = sysfs::DisplayController::detect_ip();
-                        let bat = controller_ui.get_battery().voltage_v;
-                        ui.set_state(sysfs::ui::UiState::Ready {
-                            ip,
-                            port,
-                            battery_v: bat,
-                        });
-                        display_ui.show_screen(&ui.format_screen());
-                        last_refresh = std::time::Instant::now();
-                    }
-                }
+                thread::sleep(std::time::Duration::from_secs(5));
+                let ip = sysfs::DisplayController::detect_ip();
+                let bat = controller_disp.get_battery().voltage_v;
+                display_clone.show_ready(&ip, port, bat);
             }
         })
-        .expect("Failed to spawn UI manager thread");
+        .expect("Failed to spawn display refresh thread");
 
     // Worker pool for servicing requests concurrently on ARM/Host (2 workers for single-core CPU)
     let num_workers = 2;
