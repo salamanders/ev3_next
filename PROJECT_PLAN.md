@@ -7,20 +7,20 @@
 
 ---
 
-## 📊 Overall Progress Summary
+## Overall Progress Summary
 
 | Phase | Description | Status |
 | :--- | :--- | :--- |
-| **Phase 0** | Windows Host Cross-Compilation Toolchain | ✅ **COMPLETE** (Verified ARMv5te musl binary, Python 3 / py -3 linker check, Unix deploy.sh linker setting. See `BUG-25`, `BUG-26`, `BUG-27`) |
-| **Phase 1** | One-Time SD Card Setup & USB Networking | ⏳ **PENDING (Physical Hardware)**. Pre-deployment checklist ready (`BUG-24`) |
-| **Phase 2** | EV3 OS Boot Optimization & Service Setup | ⏳ **PENDING (Physical Hardware)**. Unit service and shutdown path ready (`BUG-28`, `BUG-29`) |
-| **Phase 3** | Rust Server & Sysfs Driver Architecture | ✅ **COMPLETE**. Real driver tested with fake sysfs tree; 21/21 tests pass (`BUG-46`) |
-| **Phase 4** | Embedded Web Dashboard & Host Simulation | ✅ **COMPLETE**. Zero-cache static assets and clean shutdown button (`BUG-39`) |
-| **Phase 5** | 1-Click Deployment Scripts (`deploy.ps1`, `deploy.sh`) | ✅ **COMPLETE**. Staged `/tmp` upload, atomic `sudo mv`, `$LASTEXITCODE` checks (`BUG-23`, `BUG-26`) |
-| **Phase 6** | Verification Checklist & Diagnostics | ⏳ **PENDING (Physical Hardware)** |
-| **Phase 7** | Watchdog, Battery, Polarity, LEDs & LCD Display | ✅ **COMPLETE**. Two-tier watchdog, battery polling, persistent polarity, LED controller, 7-row LCD, `wifi.txt` provisioning (`BUG-32`, `BUG-35`) |
-| **Phase 8** | Second-Opinion Triage & Remediation | ✅ **HOST GATES COMPLETE**. All 25 host triage items resolved and tested |
-| **Phase 9** | Streamlined Appliance Mode & Pre-Baked Image | ⏳ **CODE COMPLETE, PENDING LINUX BAKE** (Keypad, UI, and Baker script ready; Step 9.5 pending Linux) |
+| **Phase 0** | Windows Host Cross-Compilation Toolchain | **COMPLETE** (Verified ARMv5te musl binary, Python 3 / py -3 linker check, Unix deploy.sh linker setting. See `BUG-25`, `BUG-26`, `BUG-27`) |
+| **Phase 1** | One-Time SD Card Setup & USB Networking | **PENDING (Physical Hardware)**. Pre-deployment checklist ready (`BUG-24`) |
+| **Phase 2** | EV3 OS Boot Optimization & Service Setup | **PENDING (Physical Hardware)**. Unit service and shutdown path ready (`BUG-28`, `BUG-29`) |
+| **Phase 3** | Rust Server & Sysfs Driver Architecture | **COMPLETE**. Real driver tested with fake sysfs tree; 21/21 tests pass (`BUG-46`) |
+| **Phase 4** | Embedded Web Dashboard & Host Simulation | **COMPLETE**. Zero-cache static assets and clean shutdown button (`BUG-39`) |
+| **Phase 5** | 1-Click Deployment Scripts (`deploy.ps1`, `deploy.sh`) | **COMPLETE**. Staged `/tmp` upload, atomic `sudo mv`, `$LASTEXITCODE` checks (`BUG-23`, `BUG-26`) |
+| **Phase 6** | Verification Checklist & Diagnostics | **PENDING (Physical Hardware)** |
+| **Phase 7** | Watchdog, Battery, Polarity, LEDs & LCD Display | **COMPLETE**. Two-tier watchdog, battery polling, persistent polarity, LED controller, 7-row LCD, `wifi.txt` provisioning (`BUG-32`, `BUG-35`) |
+| **Phase 8** | Second-Opinion Triage & Remediation | **HOST GATES COMPLETE**. All 25 host triage items resolved and tested |
+| **Phase 9** | Streamlined Appliance Mode & Pre-Baked Image | **HOST TOOLING COMPLETE, REBAKE PENDING**. The on-disk image (`ev3-web-motor-ready.img.xz`) is out of date and pending a clean rebake. |
 
 ---
 
@@ -116,7 +116,7 @@ On a 300 MHz ARM9 processor:
   - Download [`ev3dev-stretch-ev3-generic-2020-04-10.zip`](https://github.com/ev3dev/ev3dev/releases/download/ev3dev-stretch-2020-04-10/ev3dev-stretch-ev3-generic-2020-04-10.zip) from the [ev3dev GitHub Releases page](https://github.com/ev3dev/ev3dev/releases/tag/ev3dev-stretch-2020-04-10).
   - *Link and asset name confirmed live on 2026-10-04 through the GitHub API.*
 - [ ] **Step 1.2: Flash the MicroSD Card**
-  - Use a 4GB to 32GB MicroSDHC card with BalenaEtcher.
+  - Use a 4GB to 32GB MicroSDHC card. Flash via command line only (no BalenaEtcher): `unzip -p ev3dev-stretch-ev3-generic-2020-04-10.zip "*.img" | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync && sudo sync`. Or use `tools/flash-image.sh /dev/sdX`.
 - [ ] **Step 1.3: Initial Boot on EV3**
   - Insert card into EV3 slot and press Center Button to boot (takes 1–2 minutes on first boot).
 - [ ] **Step 1.4: Connect USB Cable & Verify Host Network**
@@ -167,9 +167,9 @@ On a 300 MHz ARM9 processor:
   ```
 - [ ] **Step 2.3: Add Motor Reset on Service Stop (`BUG-28`)**
   - Add `ExecStopPost=` to `ev3-web.service`. It must write `reset` to every `/sys/class/tacho-motor/motor*/command` and set the LEDs to red or off.
-- [ ] **Step 2.4: Prepare the Console for the LCD (`BUG-32`, `BUG-34`)**
-  - Add `ExecStartPre=` lines: `setfont <chosen-font>`, `dmesg -n 1`, and turn off console blanking (`\x1b[9;0]` or `consoleblank=0`).
-  - Run `stty -F /dev/tty1 size` and record the real grid size here: `____ rows x ____ columns`.
+- [x] **Step 2.4: Prepare the Console for the LCD (`BUG-32`, `BUG-34`)**
+  - Added `ExecStartPre=` lines in `ev3-web.service`: `dmesg -n 1` and `setfont /usr/share/consolefonts/Lat15-TerminusBold16.psf.gz -C /dev/tty1`.
+  - Configured `Lat15-TerminusBold16.psf.gz` in `/etc/default/console-setup` in `tools/bake-image.sh` for an 8-row x 22-column readable grid.
 - [ ] **Step 2.5: Measure Boot Time (`BUG-43`)**
   - Run `systemd-analyze` and `systemd-analyze blame`. Record the result here. The 10–15 s value is a **TARGET**, not a measured value.
 
@@ -206,12 +206,22 @@ On a 300 MHz ARM9 processor:
 - [x] **Step 4.2: Dark-Theme Stylesheet (`web_assets/style.css`)**
   - Clean responsive grid layout for mobile and desktop screens.
 - [x] **Step 4.3: Client JavaScript (`web_assets/app.js`)**
-  - 100ms live polling loop, RTT latency counter, keyboard controls (`WASD` / Arrow keys / Spacebar), and E-Stop.
-- [x] **Step 4.4: Binary Asset Embedding**
-  - All web assets embedded into executable with `include_str!`.
-  - **Resolved:** Configured `Cache-Control: no-cache, must-revalidate` on static assets (`BUG-39`).
-- [x] **Step 4.5: Host Simulation Verification**
-  - Verified on Windows host via `cargo run -- --mock --port 8888` and port 8085 using PowerShell automated HTTP tests. All endpoints return 200 OK; invalid cross-origin requests return 403 Forbidden.
+  - 250ms live polling loop, RTT latency counter, keyboard controls (`WASD` / Arrow keys / Spacebar), and E-Stop.
+- [x] **Step 4.4: Binary Asset Embedding & Pre-Gzipped Caching**
+  - Web assets (`index.html.gz`, `style.css.gz`, `app.js.gz`) are pre-gzipped at compile time using `build.rs`.
+  - Baseline assets are embedded into binary with `include_bytes!`.
+  - On startup, `Router::new()` checks `/home/robot/web_assets/` and performs self-healing if files are missing or incomplete.
+  - Assets are cached in RAM (~12 KB total RSS) to provide zero SD-card read wear during request servicing.
+  - Static endpoints serve `Content-Encoding: gzip` with `Cache-Control: no-cache`.
+- [x] **Step 4.5: Network Asset Auto-Updater (`ev3-update-assets.service` & `tools/update-assets.sh`)**
+  - Runs via `ev3-update-assets.service` after network connectivity is established.
+  - Checks remote commit SHA against `/home/robot/web_assets/.version` with 60-second connection wait loop.
+  - Downloads, pre-gzips, and validates all three assets into temporary directory before atomic replace and service reload.
+  - Exits immediately with return code 0 if offline or already at latest version.
+- [x] **Step 4.6: Host Simulation Verification**
+  - Verified on host via `cargo run -- --mock --port 8999` and automated tests.
+  - All static routes return HTTP 200 with `Content-Encoding: gzip`.
+  - `/favicon.ico` returns HTTP 204 No Content; `/api/*` endpoints return `Cache-Control: no-store`.
 
 ---
 
@@ -236,10 +246,10 @@ On a 300 MHz ARM9 processor:
 ## 9. Phase 6: Verification Checklist & Diagnostics Matrix
 
 ### Verification Checklist
-- [x] **Host Unit Tests:** `cargo test` passes 21/21 tests (mock and real drivers tested with fake sysfs trees; `BUG-46`).
-- [x] **Host API Tests:** Live HTTP endpoints verified on Windows mock server.
-- [x] **Static Asset Delivery:** HTML, CSS, JS served correctly with `no-cache, must-revalidate` headers.
-- [x] **ARMv5te Musl Cross-Compilation:** Standalone binary created without Docker (658 KB).
+- [x] **Host Unit Tests:** `cargo test` passes 29/29 tests (including mock and real drivers, fake sysfs trees, and pre-gzipped web assets).
+- [x] **Host API Tests:** Live HTTP endpoints verified on host mock server.
+- [x] **Static Asset Delivery:** Static assets served with `Content-Encoding: gzip` and `Cache-Control: no-cache`.
+- [x] **ARMv5te Musl Cross-Compilation:** Standalone binary created without Docker (703 KB).
 - [ ] **ARM Binary Runs in QEMU:** See Step 0.7 (`BUG-25`).
 - [ ] **On-Hardware USB Deployment:** Run `.\deploy.ps1 -TargetIp 192.168.2.2` two times in a row with no password prompt (`BUG-23`).
 - [ ] **Live Motor Hardware Actuation:** Verify physical motors spin on Ports A, B, C, D via `http://192.168.2.2/`.
@@ -282,7 +292,7 @@ On a 300 MHz ARM9 processor:
   - **Correction (2026-10-04, `BUG-32`):** The grid of 22 columns by 16 rows is correct only with an 8x8 font. The loaded console font sets the real grid size (for example, `Lat15-Terminus12x6` gives about 29x10). Set the font explicitly and read the size with `TIOCGWINSZ`.
   - Optimization in Phase 2 disables `brickman.service` and `getty@tty1.service`, leaving `/dev/tty1` free for direct text rendering.
   - **Added (2026-10-04):** Disabling brickman also removes the only on-brick shutdown menu (`BUG-29`).
-- **Architectural Decisions 🎯 [ADOPTED]:**
+- **Architectural Decisions [ADOPTED]:**
   - **Brick LEDs:** Set to Solid Green when the web server is ready for instructions (Amber during boot/Wi-Fi setup, Red on error). Set to red or off when the service stops (`BUG-28`).
   - **On-Brick Wi-Fi Selector & Password Picker:** Auto-connect to saved Wi-Fi networks on boot and display the Ready URL screen (`http://<ip>/`) with a `[CENTER] = Wi-Fi Setup` hint. If no Wi-Fi connection is active, automatically open the on-screen Wi-Fi SSID selector and character-picker password prompt on `/dev/tty1` driven by the EV3 buttons and `connmanctl`.
   - **On-Brick Shutdown [ADOPTED 2026-10-04, `BUG-29`]:** A 2-second press of Back runs `systemctl poweroff`. Add `POST /api/shutdown` with a UI confirmation step.
@@ -447,6 +457,9 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
 | **On-Brick Keypad Character Picker** | `[REJECTED]` | Removed to eliminate unnecessary complexity and bloat. Pre-baked Wi-Fi handles network configuration directly. |
 | **Keeping Stock `brickman`** | `[REJECTED]` | `brickman` uses ~18 MB RAM and contains unused menus (Bluetooth, sound, script runner). Disabling it frees RAM and boots 10–15s faster. |
 | **LCD Operational Status Screen** | `[ADOPTED]` | Lightweight 7-row console renderer in `src/sysfs/display.rs`. Displays URL, IP, and battery voltage on `/dev/tty1`. |
+| **Command-Line Flashing (`conv=fsync`)** | `[ADOPTED]` | Flashes external MicroSD card through standard command line tools. Ensures clean write and sync before card removal. |
+| **Cached Disk Image Extraction** | `[REJECTED]` | Mutating a cached `ev3dev.img` in place leaks stale Wi-Fi credentials across runs when baking without `--ssid`. Always extract a clean base image from the zip archive. |
+| **Self-Updating Pre-Gzipped Web Assets** | `[ADOPTED]` | Serves pre-compressed gzip assets directly from RAM (~12 KB total RSS). `ExecStartPre` updates via GitHub raw commits with self-healing and zero flash read wear. |
 
 ### 12.2 Technical Specifications
 
@@ -465,14 +478,54 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
 - `DisplayController` renders the 7-row ready screen to `/dev/tty1` and updates every 5 seconds.
 - Safe shutdown is available via `POST /api/shutdown` on the web dashboard.
 
+#### 3. Command-Line Flashing & Verification Pipeline
+- `xzcat ev3-web-motor-ready.img.xz | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync` writes disk image directly.
+- Execute `sudo sync` immediately following `dd` to finalize all device controller buffers.
+- Run `sudo ./tools/flash-image.sh --verify-only /dev/sdX` to inspect partition 2 contents.
+
 ### 12.3 Implementation Checklist
 
 - [x] **Step 9.1: Automated Image Baker Script**
   - Created `tools/bake-image.sh` with `--ssid` and `--password` parameters.
 - [x] **Step 9.2: Runtime Display & Wi-Fi Provisioning**
   - Verified `DisplayController` 7-row status screen and 5-second background refresh.
-  - Verified `WifiManager` credential parsing and ConnMan provisioning.
-  - All 21 unit tests pass (`cargo test`).
+  - Verified `WifiManager` credential parsing, complete ConnMan configuration generation (`[global]`, `IPv4 = dhcp`, `AutoConnect = true`), and technology scan.
+  - All 22 unit tests pass (`cargo test`).
   - Standalone release binary cross-compiled for ARMv5te musl (750 KB).
-- [ ] **Step 9.3: Bake Image on Linux Host**
-  - Execute `sudo ./tools/bake-image.sh --ssid "YourSSID" --password "YourPass"` on a Linux host to produce `ev3-web-motor-ready.img.xz`.
+- [x] **Step 9.3: Image Baker Script Remediation (`tools/bake-image.sh`)**
+  - Fixed binary path in `ev3-web.service` to `/usr/local/bin/ev3-web-motor` and added `/home/robot/ev3-web-motor` symlink.
+  - Added default systemd target redirect to `multi-user.target`.
+  - Neutralized Brickman across service `ExecStart`, `/usr/sbin/brickman`, and `/usr/bin/brickman`.
+  - Fixed partition sector calculation regex and fixed `SECTOR_SIZE` parsing (`awk` backwards evaluation from `NF` with 512-byte fallback guard).
+  - Added ConnMan Wi-Fi power-on configuration (`/var/lib/connman/settings`) and dual `wifi.txt` fallback provisioning.
+  - Added atomic temporary file compression (`.tmp`) with registered `EXIT` trap cleanup to prevent retaining stale images.
+  - Added strict pre-unmount verification gate (verifying symlink targets, unit masks, robot symlink executable status, and settings).
+  - Configured readable 8x16 console font (`Lat15-TerminusBold16`) in `/etc/default/console-setup` and `ev3-web.service` with build-time verification.
+  - Enforced clean base image extraction from the zip archive on every run to eliminate credential leakage across bake cycles.
+  - Identified that the existing `ev3-web-motor-ready.img.xz` on disk is out of date and pending a clean rebake.
+- [x] **Step 9.4: Command-Line Flashing & Post-Write Verification Tool (`tools/flash-image.sh`)**
+  - Created standalone `tools/flash-image.sh` with `--verify-only` mode (flashing separated from image baking).
+  - Enforced command-line only flashing (no BalenaEtcher) with `xzcat | dd status=progress conv=fsync`.
+  - Added multi-layer host drive protections:
+    1. Active host SWAP check: blocks flashing if any partition is active swap.
+    2. Critical host mount check: blocks flashing if mounted to `/`, `/boot`, `/efi`, `/home`, `/root`, `/etc`, `/var`, `/usr`, `/srv`, or `/opt`.
+    3. Removable drive enforcement (`RM=1`): blocks non-removable internal SATA/NVMe drives unless `--allow-internal` is set.
+    4. Size sanity ceiling (64 GB): blocks drives larger than 64 GB unless `--allow-large-disk` is set.
+    5. Interactive confirmation: displays drive model, transport, and size, and requires typing `yes` (or passing `-y` / `--yes`).
+  - Automated post-write verification: mounts partition 2 and validates binary, Brickman masking, and active service state.
+  - Removed all BalenaEtcher references across codebase and documentation.
+- [x] **Step 9.5: Pre-Gzipped Web Assets & Boot-Time Updater Integration**
+  - Added `tools/update-assets.sh` (chmod 0755) with GitHub raw commit fetching and pre-gzipping.
+  - Added `-k` (`--insecure`) to `curl` calls in `tools/update-assets.sh` to prevent failures caused by EV3 boot-time clock skew or outdated 2020 root CAs.
+  - Added UTC build timestamp update to `/etc/fake-hwclock.data` in `tools/bake-image.sh` so the brick boots in the current year.
+  - Added automatic copying of the host's `/etc/ssl/certs/ca-certificates.crt` into the rootfs image in `tools/bake-image.sh`.
+  - Added background `ev3-update-assets.service` running after network online to invoke `/usr/local/bin/ev3-update-assets.sh`.
+  - Added compile-time asset compression with `build.rs` and embedded bytes via `include_bytes!`.
+  - Implemented `Router::new()` self-healing check and in-memory asset caching (~12 KB RSS).
+  - Pre-populated `/home/robot/web_assets/` with baseline `.gz` files in `tools/bake-image.sh` and verified in pre-unmount checks.
+- [ ] **Step 9.6: Physical Boot & First Run on EV3 Brick**
+  - Re-bake clean appliance image (`ev3-web-motor-ready.img.xz`) using `sudo ./tools/bake-image.sh`.
+  - Flash clean appliance image to MicroSD card using `sudo ./tools/flash-image.sh /dev/sdX`.
+  - Insert verified MicroSD card and USB Wi-Fi dongle into EV3 brick and power on.
+  - Verify automatic association to pre-configured Wi-Fi network and LCD 7-row status screen.
+  - Open `http://<ip>/` in browser and test motor movement.

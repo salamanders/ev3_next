@@ -92,6 +92,13 @@ impl WifiManager {
         }
     }
 
+    pub fn format_connman_config(ssid: &str, pass: &str) -> String {
+        format!(
+            "[global]\nName = EV3_WiFi\nDescription = EV3 Auto-Connect Wi-Fi\n\n[service_ev3_wifi]\nType = wifi\nName = {}\nPassphrase = {}\nIPv4 = dhcp\nAutoConnect = true\n",
+            ssid, pass
+        )
+    }
+
     pub fn write_connman_config(ssid: &str, pass: &str) -> std::io::Result<()> {
         let config_dir = Path::new("/var/lib/connman");
         if !config_dir.exists() {
@@ -99,10 +106,7 @@ impl WifiManager {
         }
 
         let config_path = config_dir.join("ev3_wifi.config");
-        let content = format!(
-            "[service_ev3_wifi]\nType = wifi\nName = {}\nPassphrase = {}\n",
-            ssid, pass
-        );
+        let content = Self::format_connman_config(ssid, pass);
 
         fs::write(&config_path, content)?;
 
@@ -150,5 +154,15 @@ mod tests {
         // Empty
         let content = "\n\n";
         assert_eq!(WifiManager::parse_credentials(content), None);
+    }
+
+    #[test]
+    fn test_format_connman_config() {
+        let config = WifiManager::format_connman_config("TestNetwork", "Password123");
+        assert!(config.contains("[global]"));
+        assert!(config.contains("Name = TestNetwork"));
+        assert!(config.contains("Passphrase = Password123"));
+        assert!(config.contains("IPv4 = dhcp"));
+        assert!(config.contains("AutoConnect = true"));
     }
 }

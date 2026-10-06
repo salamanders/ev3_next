@@ -16,3 +16,9 @@ lto = true          # Link Time Optimization across all crates
 codegen-units = 1   # Single codegen unit for best optimization
 panic = "abort"     # Remove panic unwinding tables to save memory & flash
 strip = true        # Strip symbols from final binary
+
+[build-dependencies]
+flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
+
+[dev-dependencies]
+flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }

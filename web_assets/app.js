@@ -5,7 +5,7 @@
 
 class EV3App {
     constructor() {
-        this.pollIntervalMs = 100;
+        this.pollIntervalMs = 250;
         this.isPolling = false;
         this.lastLatency = 0;
         this.consecutiveErrors = 0;

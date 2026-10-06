@@ -283,4 +283,12 @@ $RECYCLE.BIN/
 # Windows shortcuts
 *.lnk
 
+# Disk images & appliance build artifacts (may contain sensitive Wi-Fi credentials)
+ev3-web-motor-ready.img.xz
+*.img
+*.img.xz
+*.img.tmp*
+*.img.xz.tmp*
+build_image/
+
 # End of https://www.toptal.com/developers/gitignore/api/windows,linux,java,rust,go,macos,osx,intellij,visualstudiocode

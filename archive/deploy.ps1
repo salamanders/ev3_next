@@ -76,7 +76,7 @@ Write-Host "      Binary uploaded to staging successfully." -ForegroundColor Gre
 
 # 4. Atomic Install & Service Restart
 Write-Host "[4/4] Installing binary and restarting service..." -ForegroundColor Yellow
-ssh -o StrictHostKeyChecking=no "$($User)@$($TargetIp)" "sudo mv /tmp/ev3-web-motor.new /home/robot/ev3-web-motor && sudo chmod +x /home/robot/ev3-web-motor && sudo systemctl restart ev3-web.service"
+ssh -o StrictHostKeyChecking=no "$($User)@$($TargetIp)" "sudo mv /tmp/ev3-web-motor.new /usr/local/bin/ev3-web-motor && sudo chmod +x /usr/local/bin/ev3-web-motor && sudo systemctl restart ev3-web.service"
 if ($LASTEXITCODE -ne 0) {
     Write-Error "[FATAL] Failed to install binary or restart ev3-web.service. Verify sudo rules."
     exit 1

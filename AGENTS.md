@@ -39,3 +39,9 @@ Instructions for AGENT development.
 11. **GitHub Issue & Bug Tracking Rule:**
     - Always use GitHub Issues for tracking bugs, hardware investigations, and remediation moving forward.
     - Do not create or maintain local markdown bug tracker documents. Closed historical bugs are preserved in `archive/BUGS.md`.
+
+12. **Privacy & Personal Information Protection Rule:**
+    - Never commit or push personal information, usernames, network names, or credentials to any remote Git repository (such as GitHub).
+    - Never include personal identifiers, author names, account usernames, or personal username variations.
+    - Never include Wi-Fi network names (SSIDs), passwords, home network information, or private IP addresses in committed files.
+    - Always use generic placeholders (for example, `<SSID>`, `<PASSWORD>`, `<USERNAME>`) in all committed code, plan files, and documentation.

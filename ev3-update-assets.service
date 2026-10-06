@@ -1,0 +1,17 @@
+[Unit]
+Description=EV3 Web Asset Updater (waits for network, then refreshes web_assets from GitHub)
+After=network.target connman.service ev3-web.service
+
+[Service]
+Type=oneshot
+# The script waits up to WAIT_FOR_NETWORK_SECS for a default route.
+# If it installs new assets, it restarts ev3-web.service to load them into RAM.
+Environment=WAIT_FOR_NETWORK_SECS=120
+ExecStart=/usr/local/bin/ev3-update-assets.sh
+TimeoutStartSec=300
+StandardOutput=journal
+StandardError=journal
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

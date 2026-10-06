@@ -28,7 +28,7 @@ echo "==> [3/4] Uploading binary to EV3 via SCP (/tmp staging)..."
 scp -o StrictHostKeyChecking=no "$BINARY_PATH" "$USER@$TARGET_IP:/tmp/ev3-web-motor.new"
 
 echo "==> [4/4] Installing binary and restarting service on EV3..."
-ssh -o StrictHostKeyChecking=no "$USER@$TARGET_IP" "sudo mv /tmp/ev3-web-motor.new /home/robot/ev3-web-motor && sudo chmod +x /home/robot/ev3-web-motor && sudo systemctl restart ev3-web.service"
+ssh -o StrictHostKeyChecking=no "$USER@$TARGET_IP" "sudo mv /tmp/ev3-web-motor.new /usr/local/bin/ev3-web-motor && sudo chmod +x /usr/local/bin/ev3-web-motor && sudo systemctl restart ev3-web.service"
 
 echo "==> Verifying service status..."
 if ssh -o StrictHostKeyChecking=no "$USER@$TARGET_IP" "systemctl is-active --quiet ev3-web.service"; then
