@@ -242,6 +242,14 @@ impl Router {
                 }
             }
 
+            // Rescan Hardware Devices Endpoint
+            (Method::Post, "/api/rescan") => {
+                match self.controller.rescan() {
+                    Ok(motors) => self.respond_json(request, StatusCode(200), &ApiResponse::ok(motors)),
+                    Err(e) => self.respond_json(request, StatusCode(500), &ApiResponse::<()>::err(e)),
+                }
+            }
+
             // Tank Drive Endpoint
             (Method::Post, "/api/tank-drive") => {
                 match self.read_json_body::<TankDrivePayload>(&mut request) {
@@ -557,7 +565,7 @@ mod tests {
         let router_clone = router.clone();
         let server_clone = server;
         let thread_handle = std::thread::spawn(move || {
-            for _ in 0..7 {
+            for _ in 0..8 {
                 if let Ok(req) = server_clone.recv() {
                     router_clone.handle_request(req);
                 }
@@ -653,6 +661,19 @@ mod tests {
             assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
             assert!(resp_str.contains("Cache-Control: no-store"));
             assert!(resp_str.contains("Content-Type: application/json"));
+        }
+
+        // 8. Test POST /api/rescan
+        {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream.write_all(b"POST /api/rescan HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: 0\r\n\r\n").unwrap();
+            let mut resp = Vec::new();
+            stream.read_to_end(&mut resp).unwrap();
+            let resp_str = String::from_utf8_lossy(&resp);
+
+            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
+            assert!(resp_str.contains("Content-Type: application/json"));
+            assert!(resp_str.contains("\"success\":true"));
         }
 
         thread_handle.join().unwrap();

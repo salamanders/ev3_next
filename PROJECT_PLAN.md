@@ -21,7 +21,7 @@
 | **Phase 7** | Watchdog, Battery, Polarity, LEDs & LCD Display | **COMPLETE**. Two-tier watchdog, battery polling, persistent polarity, LED controller, 7-row LCD, `wifi.txt` provisioning (`BUG-32`, `BUG-35`) |
 | **Phase 8** | Second-Opinion Triage & Remediation | **HOST GATES COMPLETE**. All 25 host triage items resolved and tested |
 | **Phase 9** | Streamlined Appliance Mode & Pre-Baked Image | **HOST TOOLING COMPLETE, REBAKE PENDING**. The on-disk image (`ev3-web-motor-ready.img.xz`) is out of date and pending a clean rebake. |
-| **Phase 10** | Modular Dashboard Builder (Design & Run Modes) | **PLANNING / SCOPING**. Card-based widget builder, Design/Run modes, and rescan discovery. |
+| **Phase 10** | Modular Dashboard Builder (Design & Run Modes) | **COMPLETE**. Card-based widget builder, Design & Run modes, 2D joystick (15 Hz rate-limited), and POST /api/rescan. |
 
 ---
 
@@ -559,13 +559,15 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
 
 ### 13.3 Implementation Checklist
 
-- [ ] **Step 10.1: Rescan API Endpoint (`POST /api/rescan`)**
-  - Re-enumerates connected tacho-motors and returns updated hardware list.
-- [ ] **Step 10.2: UI Mode Switcher (Design Mode vs Run Mode)**
+- [x] **Step 10.1: Rescan API Endpoint (`POST /api/rescan`)**
+  - Re-enumerates connected tacho-motors and returns updated hardware list on the background poller thread without blocking the HTTP request thread.
+- [x] **Step 10.2: UI Mode Switcher (Design Mode vs Run Mode)**
   - Clean header toggle between configuration mode and execution mode.
-- [ ] **Step 10.3: Card-Based Widget Container**
-  - Add and remove control cards dynamically in Design Mode.
-- [ ] **Step 10.4: 2D Joystick Widget**
-  - DOM/Pointer-based 2D joystick mapping X/Y axes to two motor ports with 15 Hz rate limiting.
-- [ ] **Step 10.5: Basic Control Widgets**
-  - Continuous slider, momentary button, toggle button.
+- [x] **Step 10.3: Card-Based Widget Container**
+  - Add and remove control cards dynamically in Design Mode with detected hardware inventory.
+- [x] **Step 10.4: 2D Joystick Widget**
+  - Pointer-based 2D joystick supporting both differential drive and independent axes, with touch-action isolation, auto-centering, and 15 Hz client-side rate limiting.
+- [x] **Step 10.5: Basic Control Widgets**
+  - Continuous slider, momentary button, toggle button, timed move, step move.
+- [x] **Step 10.6: Host Simulation & Automated Testing**
+  - 31 unit tests pass (`cargo test`); mock simulation verified with curl endpoints.
