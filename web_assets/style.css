@@ -122,6 +122,19 @@ body {
     border: 1px solid var(--border);
 }
 
+#latency-badge {
+    min-width: 96px;
+    justify-content: center;
+    font-variant-numeric: tabular-nums;
+}
+
+#latency-val {
+    font-variant-numeric: tabular-nums;
+    display: inline-block;
+    min-width: 20px;
+    text-align: right;
+}
+
 /* Buttons */
 .btn {
     padding: 8px 16px;

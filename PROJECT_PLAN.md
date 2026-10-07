@@ -21,6 +21,7 @@
 | **Phase 7** | Watchdog, Battery, Polarity, LEDs & LCD Display | **COMPLETE**. Two-tier watchdog, battery polling, persistent polarity, LED controller, 7-row LCD, `wifi.txt` provisioning (`BUG-32`, `BUG-35`) |
 | **Phase 8** | Second-Opinion Triage & Remediation | **HOST GATES COMPLETE**. All 25 host triage items resolved and tested |
 | **Phase 9** | Streamlined Appliance Mode & Pre-Baked Image | **HOST TOOLING COMPLETE, REBAKE PENDING**. The on-disk image (`ev3-web-motor-ready.img.xz`) is out of date and pending a clean rebake. |
+| **Phase 10** | Modular Dashboard Builder (Design & Run Modes) | **PLANNING / SCOPING**. Card-based widget builder, Design/Run modes, and rescan discovery. |
 
 ---
 
@@ -37,6 +38,7 @@
 10. [Phase 7: EV3 Brick LEDs, LCD Wi-Fi Picker, Polarity & Battery](#10-phase-7-ev3-brick-leds-lcd-wi-fi-picker-polarity--battery)
 11. [Phase 8: Second-Opinion Triage & Remediation](#11-phase-8-second-opinion-triage--remediation)
 12. [Phase 9: Streamlined Appliance Mode & Pre-Baked Disk Image](#12-phase-9-streamlined-appliance-mode--pre-baked-disk-image)
+13. [Phase 10: Modular Dashboard Builder (Design Mode vs Run Mode)](#13-phase-10-modular-dashboard-builder-design-mode-vs-run-mode)
 
 ---
 
@@ -529,3 +531,41 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
   - Insert verified MicroSD card and USB Wi-Fi dongle into EV3 brick and power on.
   - Verify automatic association to pre-configured Wi-Fi network and LCD 7-row status screen.
   - Open `http://<ip>/` in browser and test motor movement.
+
+---
+
+## 13. Phase 10: Modular Dashboard Builder (Design Mode vs Run Mode)
+
+### 13.1 Core Principles and Scope Limits
+- **Resist Over-Building:** Do not build a complex 2D drag-and-drop grid system. Do not add arbitrary widgets without explicit design approval.
+- **Two Distinct Modes:**
+  - **Design Mode:** User inspects detected motors and sensors, adds widgets from a defined list, and assigns hardware ports and axes.
+  - **Run Mode:** Clean, uncluttered control interface optimized for mobile and desktop screens.
+- **Client-Side Throttling:** Continuous control widgets (such as 2D joysticks and sliders) must throttle HTTP requests to 15 Hz maximum to protect the 300 MHz CPU.
+
+### 13.2 Architectural Decisions and Status Labels
+
+| Decision / Component | Status Label | Technical Rationale |
+| :--- | :--- | :--- |
+| **Two-Mode Architecture (Design vs Run)** | `[ADOPTED]` | Separates widget configuration from execution. Provides a clean mobile interface without design clutter. |
+| **Card List Widget Layout** | `[ADOPTED]` | Simple, responsive vertical card list. Avoids complex 2D grid positioning engines and external dependencies. |
+| **On-Demand Device Rescan Button** | `[ADOPTED]` | Adds a "Rescan Devices" button in Design Mode. Avoids complex kernel `udev` event listeners and hotplug monitoring threads. |
+| **2D Virtual Joystick Widget** | `[ADOPTED]` | Maps X and Y axes to selected motor ports (with optional axis inversion). Throttled to 15 Hz. |
+| **Initial Widget Catalog** | `[ADOPTED]` | Continuous speed slider, momentary button, toggle button, and 2D joystick. |
+| **Layout Storage Location** | `[PENDING]` | Under evaluation (browser `localStorage`, EV3 brick JSON file, or external storage). Deferred to a future phase. |
+| **Free-Form 2D Drag-and-Drop Grid** | `[REJECTED]` | Excessive complexity and code bloat for vanilla JavaScript without external libraries. |
+| **Dynamic Background Hot-Plug Daemon** | `[REJECTED]` | Unnecessary CPU and memory overhead on 300 MHz ARM9. On-demand rescan is sufficient. |
+| **Compound Sequences (Move N Deg then Return)** | `[NOT USED in Phase 10]` | Deferred to a dedicated future feature request (tracked in GitHub Issues). |
+
+### 13.3 Implementation Checklist
+
+- [ ] **Step 10.1: Rescan API Endpoint (`POST /api/rescan`)**
+  - Re-enumerates connected tacho-motors and returns updated hardware list.
+- [ ] **Step 10.2: UI Mode Switcher (Design Mode vs Run Mode)**
+  - Clean header toggle between configuration mode and execution mode.
+- [ ] **Step 10.3: Card-Based Widget Container**
+  - Add and remove control cards dynamically in Design Mode.
+- [ ] **Step 10.4: 2D Joystick Widget**
+  - DOM/Pointer-based 2D joystick mapping X/Y axes to two motor ports with 15 Hz rate limiting.
+- [ ] **Step 10.5: Basic Control Widgets**
+  - Continuous slider, momentary button, toggle button.

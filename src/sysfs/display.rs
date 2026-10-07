@@ -46,16 +46,15 @@ impl DisplayController {
 
         lines.push("=== EV3 MOTOR WEB ===".to_string());
         lines.push(Self::truncate_pad("Status: ONLINE"));
-        lines.push(Self::truncate_pad(&format!("IP:     {}", ip)));
         if ip == "No network" {
-            lines.push(Self::truncate_pad("URL:    (Waiting...)"));
+            lines.push(Self::truncate_pad("IP: (Waiting...)"));
         } else if port == 80 {
-            lines.push(Self::truncate_pad(&format!("URL:    http://{}/", ip)));
+            lines.push(Self::truncate_pad(&format!("IP: {}", ip)));
         } else {
-            lines.push(Self::truncate_pad(&format!("URL:    http://{}:{}/", ip, port)));
+            lines.push(Self::truncate_pad(&format!("IP: {}:{}", ip, port)));
         }
-        lines.push(Self::truncate_pad(&format!("Batt:   {:.1} V", battery_v)));
-        lines.push(Self::truncate_pad("Stop:   Spacebar/UI"));
+        lines.push(Self::truncate_pad(&format!("Batt: {:.1} V", battery_v)));
+        lines.push(Self::truncate_pad("Stop: Spacebar/UI"));
         lines.push("=====================".to_string());
 
         // Join lines with newline; last line has NO trailing newline (BUG-22)
@@ -150,5 +149,23 @@ mod tests {
     fn test_mock_display_show() {
         let display = DisplayController::new(true);
         display.show_ready("127.0.0.1", 8080, 8.0);
+    }
+
+    #[test]
+    fn test_format_ready_screen_long_ip_does_not_clip() {
+        let screen = DisplayController::format_ready_screen("192.168.100.200", 80, 7.8);
+        let body = screen.trim_start_matches("\x1b[?25l\x1b[2J\x1b[H");
+        let lines: Vec<&str> = body.split('\n').collect();
+
+        assert!(lines.contains(&"IP: 192.168.100.200"), "Full IP address must be present without clipping");
+        for (idx, line) in lines.iter().enumerate() {
+            assert!(
+                line.chars().count() <= DisplayController::MAX_COLS,
+                "Line {} exceeded max columns ({}): '{}'",
+                idx + 1,
+                line.chars().count(),
+                line
+            );
+        }
     }
 }
