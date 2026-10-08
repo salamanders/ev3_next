@@ -1,10 +1,23 @@
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use super::motor::MotorStatus;
+use crate::web::handlers::SensorStatus;
 
 #[derive(Clone)]
 pub struct MockController {
     motors: Arc<Mutex<[MockMotorState; 4]>>,
+    sensors: Arc<Mutex<[MockSensorState; 4]>>,
+}
+
+#[derive(Clone)]
+struct MockSensorState {
+    port: &'static str,
+    address: &'static str,
+    driver_name: &'static str,
+    mode: String,
+    modes: Vec<String>,
+    value0: f32,
+    units: &'static str,
 }
 
 #[derive(Clone)]
@@ -93,6 +106,44 @@ impl MockController {
                     stop_action: "brake".into(),
                     polarity: "normal".into(),
                     last_tick: now,
+                },
+            ])),
+            sensors: Arc::new(Mutex::new([
+                MockSensorState {
+                    port: "1",
+                    address: "in1",
+                    driver_name: "lego-ev3-touch (mock)",
+                    mode: "TOUCH".into(),
+                    modes: vec!["TOUCH".into()],
+                    value0: 0.0,
+                    units: "state",
+                },
+                MockSensorState {
+                    port: "2",
+                    address: "in2",
+                    driver_name: "lego-ev3-color (mock)",
+                    mode: "COL-COLOR".into(),
+                    modes: vec!["COL-COLOR".into(), "COL-REFLECT".into(), "COL-AMBIENT".into()],
+                    value0: 2.0,
+                    units: "color_id",
+                },
+                MockSensorState {
+                    port: "3",
+                    address: "in3",
+                    driver_name: "lego-ev3-us (mock)",
+                    mode: "US-DIST-CM".into(),
+                    modes: vec!["US-DIST-CM".into(), "US-DIST-IN".into()],
+                    value0: 25.4,
+                    units: "cm",
+                },
+                MockSensorState {
+                    port: "4",
+                    address: "in4",
+                    driver_name: "lego-ev3-gyro (mock)",
+                    mode: "GYRO-ANG".into(),
+                    modes: vec!["GYRO-ANG".into(), "GYRO-RATE".into()],
+                    value0: 0.0,
+                    units: "deg",
                 },
             ])),
         }
@@ -301,6 +352,71 @@ impl MockController {
             }
         }).collect()
     }
+
+    pub fn poll_and_get_all_sensors(&self) -> Vec<SensorStatus> {
+        let s = self.sensors.lock().unwrap();
+        s.iter()
+            .map(|sensor| SensorStatus {
+                port: sensor.port.to_string(),
+                address: sensor.address.to_string(),
+                driver_name: sensor.driver_name.to_string(),
+                connected: true,
+                mode: sensor.mode.clone(),
+                modes: sensor.modes.clone(),
+                value0: sensor.value0,
+                units: sensor.units.to_string(),
+            })
+            .collect()
+    }
+
+    pub fn set_sensor_mode(&self, port: &str, mode: &str) -> Result<(), String> {
+        let mut s = self.sensors.lock().unwrap();
+        if let Some(sensor) = s.iter_mut().find(|s| s.port.eq_ignore_ascii_case(port)) {
+            let matched_mode = sensor
+                .modes
+                .iter()
+                .find(|m| m.eq_ignore_ascii_case(mode))
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "Mode '{}' not supported on port {}. Available: {:?}",
+                        mode, port, sensor.modes
+                    )
+                })?;
+
+            sensor.mode = matched_mode;
+            match sensor.mode.as_str() {
+                "COL-REFLECT" | "COL-AMBIENT" => {
+                    sensor.units = "pct";
+                    sensor.value0 = 42.0;
+                }
+                "COL-COLOR" => {
+                    sensor.units = "color_id";
+                    sensor.value0 = 2.0;
+                }
+                "US-DIST-CM" => {
+                    sensor.units = "cm";
+                    sensor.value0 = 25.4;
+                }
+                "US-DIST-IN" => {
+                    sensor.units = "in";
+                    sensor.value0 = 10.0;
+                }
+                "GYRO-ANG" => {
+                    sensor.units = "deg";
+                    sensor.value0 = 0.0;
+                }
+                "GYRO-RATE" => {
+                    sensor.units = "dps";
+                    sensor.value0 = 0.0;
+                }
+                _ => {}
+            }
+            Ok(())
+        } else {
+            Err(format!("Sensor port '{}' not found", port))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -379,6 +495,33 @@ mod tests {
         mock.run_forever("A", -5000);
         let statuses = mock.poll_and_get_all_status();
         assert_eq!(statuses[0].speed, -1050);
+    }
+
+    #[test]
+    fn test_mock_sensors() {
+        let mock = MockController::new();
+        let sensors = mock.poll_and_get_all_sensors();
+        assert_eq!(sensors.len(), 4);
+        assert_eq!(sensors[0].port, "1");
+        assert_eq!(sensors[0].mode, "TOUCH");
+        assert_eq!(sensors[1].port, "2");
+        assert_eq!(sensors[1].mode, "COL-COLOR");
+        assert_eq!(sensors[2].port, "3");
+        assert_eq!(sensors[2].units, "cm");
+        assert_eq!(sensors[3].port, "4");
+        assert_eq!(sensors[3].units, "deg");
+
+        // Change mode on Port 2
+        assert!(mock.set_sensor_mode("2", "COL-REFLECT").is_ok());
+        let updated = mock.poll_and_get_all_sensors();
+        assert_eq!(updated[1].mode, "COL-REFLECT");
+        assert_eq!(updated[1].units, "pct");
+
+        // Invalid mode error
+        assert!(mock.set_sensor_mode("2", "NONEXISTENT").is_err());
+
+        // Invalid port error
+        assert!(mock.set_sensor_mode("9", "TOUCH").is_err());
     }
 }
 

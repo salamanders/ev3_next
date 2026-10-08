@@ -4,7 +4,8 @@ use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
-use crate::sysfs::{MockController, Motor, MotorStatus};
+use crate::sysfs::{MockController, Motor, MotorStatus, Sensor};
+use crate::web::handlers::{AllPortsStatus, ResolvedPortCommand, SensorStatus};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatteryStatus {
@@ -15,6 +16,7 @@ pub struct BatteryStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemStatus {
     pub motors: Vec<MotorStatus>,
+    pub sensors: Vec<SensorStatus>,
     pub battery: BatteryStatus,
 }
 
@@ -35,6 +37,8 @@ pub struct MotorController {
     backend: HardwareBackend,
     cached_status: Arc<RwLock<Vec<MotorStatus>>>,
     motors: Arc<RwLock<Vec<Motor>>>,
+    cached_sensors: Arc<RwLock<Vec<SensorStatus>>>,
+    sensors: Arc<RwLock<Vec<Sensor>>>,
     cached_battery: Arc<RwLock<BatteryStatus>>,
     poll_interval_ms: u64,
     watchdog: Mutex<WatchdogState>,
@@ -43,23 +47,29 @@ pub struct MotorController {
 
 impl MotorController {
     pub fn new(mock_mode: bool, poll_interval_ms: u64) -> Arc<Self> {
-        let (backend, boot_motors) = if mock_mode {
-            println!("[CONTROLLER] Initializing in MOCK mode (simulated motors).");
-            (HardwareBackend::Mock(MockController::new()), Vec::new())
+        let (backend, boot_motors, boot_sensors) = if mock_mode {
+            println!("[CONTROLLER] Initializing in MOCK mode (simulated motors and sensors).");
+            (HardwareBackend::Mock(MockController::new()), Vec::new(), Vec::new())
         } else {
-            println!("[CONTROLLER] Initializing in REAL hardware mode (sysfs /sys/class/tacho-motor).");
+            println!("[CONTROLLER] Initializing in REAL hardware mode (sysfs /sys/class/tacho-motor and lego-sensor).");
             let motors = Motor::find_all();
             for m in &motors {
                 if let Err(e) = m.send_command("reset") {
                     eprintln!("[WARN] Initial reset failed for motor on Port {}: {}", m.port, e);
                 }
             }
-            (HardwareBackend::Real, motors)
+            let sensors = Sensor::find_all();
+            (HardwareBackend::Real, motors, sensors)
         };
 
         let initial_status = match &backend {
             HardwareBackend::Mock(mock) => mock.poll_and_get_all_status(),
             HardwareBackend::Real => Self::query_real_motors(&boot_motors),
+        };
+
+        let initial_sensors = match &backend {
+            HardwareBackend::Mock(mock) => mock.poll_and_get_all_sensors(),
+            HardwareBackend::Real => Self::query_real_sensors(&boot_sensors),
         };
 
         let initial_battery = match &backend {
@@ -69,11 +79,14 @@ impl MotorController {
 
         let now = Instant::now();
         let motors_arc = Arc::new(RwLock::new(boot_motors));
+        let sensors_arc = Arc::new(RwLock::new(boot_sensors));
         let rescan_signal = Arc::new((Mutex::new(false), Condvar::new()));
         let controller = Arc::new(Self {
             backend,
             cached_status: Arc::new(RwLock::new(initial_status)),
             motors: motors_arc,
+            cached_sensors: Arc::new(RwLock::new(initial_sensors)),
+            sensors: sensors_arc,
             cached_battery: Arc::new(RwLock::new(initial_battery)),
             poll_interval_ms,
             watchdog: Mutex::new(WatchdogState {
@@ -117,6 +130,27 @@ impl MotorController {
                     count_per_rot: 360,
                     connected: false,
                     polarity: "normal".into(),
+                });
+            }
+        }
+        statuses
+    }
+
+    fn query_real_sensors(sensors: &[Sensor]) -> Vec<SensorStatus> {
+        let mut statuses = Vec::new();
+        for port_num in ["1", "2", "3", "4"] {
+            if let Some(s) = sensors.iter().find(|s| s.port == port_num) {
+                statuses.push(s.read_status());
+            } else {
+                statuses.push(SensorStatus {
+                    port: port_num.to_string(),
+                    address: format!("in{}", port_num),
+                    driver_name: "none".into(),
+                    connected: false,
+                    mode: "".into(),
+                    modes: vec![],
+                    value0: 0.0,
+                    units: "".into(),
                 });
             }
         }
@@ -170,6 +204,11 @@ impl MotorController {
                         if let Ok(mut w) = self.motors.write() {
                             *w = scanned;
                         }
+
+                        let scanned_sensors = Sensor::find_all();
+                        if let Ok(mut w) = self.sensors.write() {
+                            *w = scanned_sensors;
+                        }
                     }
                     *requested = false;
                     cvar.notify_all();
@@ -191,8 +230,20 @@ impl MotorController {
                 }
             };
 
+            let sensor_statuses = match &self.backend {
+                HardwareBackend::Mock(mock) => mock.poll_and_get_all_sensors(),
+                HardwareBackend::Real => {
+                    let current_sensors = self.sensors.read().unwrap();
+                    Self::query_real_sensors(&current_sensors)
+                }
+            };
+
             if let Ok(mut cache) = self.cached_status.write() {
                 *cache = statuses;
+            }
+
+            if let Ok(mut cache) = self.cached_sensors.write() {
+                *cache = sensor_statuses;
             }
 
             self.check_watchdogs();
@@ -269,12 +320,125 @@ impl MotorController {
         self.touch_client_poll();
         SystemStatus {
             motors: self.cached_status.read().unwrap().clone(),
+            sensors: self.cached_sensors.read().unwrap().clone(),
             battery: self.cached_battery.read().unwrap().clone(),
         }
     }
 
     pub fn get_battery(&self) -> BatteryStatus {
         self.cached_battery.read().unwrap().clone()
+    }
+
+    pub fn get_port_motor_status(&self, port: &str) -> Result<MotorStatus, String> {
+        self.touch_client_poll();
+        let cache = self.cached_status.read().map_err(|e| e.to_string())?;
+        cache
+            .iter()
+            .find(|m| m.port.eq_ignore_ascii_case(port))
+            .cloned()
+            .ok_or_else(|| format!("Port '{}' not found", port))
+    }
+
+    pub fn get_port_status(&self, port: &str) -> Result<serde_json::Value, String> {
+        self.touch_client_poll();
+        if ["A", "B", "C", "D"].iter().any(|p| p.eq_ignore_ascii_case(port)) {
+            let cache = self.cached_status.read().map_err(|e| e.to_string())?;
+            let status = cache
+                .iter()
+                .find(|m| m.port.eq_ignore_ascii_case(port))
+                .cloned()
+                .ok_or_else(|| format!("Port '{}' not found", port))?;
+            serde_json::to_value(status).map_err(|e| e.to_string())
+        } else if ["1", "2", "3", "4"].iter().any(|p| p.eq_ignore_ascii_case(port)) {
+            let cache = self.cached_sensors.read().map_err(|e| e.to_string())?;
+            let status = cache
+                .iter()
+                .find(|s| s.port == port)
+                .cloned()
+                .ok_or_else(|| format!("Port '{}' not found", port))?;
+            serde_json::to_value(status).map_err(|e| e.to_string())
+        } else {
+            Err(format!("Port '{}' not found", port))
+        }
+    }
+
+    pub fn get_all_ports_status(&self) -> AllPortsStatus {
+        self.touch_client_poll();
+        let motors = self.cached_status.read().unwrap().clone();
+        let sensors = self.cached_sensors.read().unwrap().clone();
+        AllPortsStatus { motors, sensors }
+    }
+
+    pub fn set_sensor_mode(&self, port: &str, mode: &str) -> Result<(), String> {
+        match &self.backend {
+            HardwareBackend::Mock(mock) => mock.set_sensor_mode(port, mode),
+            HardwareBackend::Real => {
+                let sensor = self.get_real_sensor(port)?;
+                sensor.set_mode(mode).map_err(|e| e.to_string())
+            }
+        }
+    }
+
+    fn get_real_sensor(&self, port: &str) -> Result<Sensor, String> {
+        self.sensors
+            .read()
+            .map_err(|e| e.to_string())?
+            .iter()
+            .find(|s| s.port == port)
+            .cloned()
+            .ok_or_else(|| format!("Sensor on Port {} is not connected", port))
+    }
+
+    pub fn execute_port_command(
+        &self,
+        port: &str,
+        cmd: &ResolvedPortCommand,
+    ) -> Result<String, String> {
+        if ["1", "2", "3", "4"].iter().any(|p| p.eq_ignore_ascii_case(port)) {
+            match cmd {
+                ResolvedPortCommand::SetMode { mode } => {
+                    self.set_sensor_mode(port, mode)?;
+                    Ok(format!("Sensor on Port {} mode set to {}", port, mode))
+                }
+                _ => Err(format!("Port {} is a sensor and only accepts mode commands", port)),
+            }
+        } else if ["A", "B", "C", "D"].iter().any(|p| p.eq_ignore_ascii_case(port)) {
+            match cmd {
+                ResolvedPortCommand::RunForever { speed } => {
+                    self.run_forever(port, *speed)?;
+                    Ok(format!("Motor on Port {} running forever at speed {}", port, speed))
+                }
+                ResolvedPortCommand::RunTimed { speed, time_ms, stop_action } => {
+                    self.run_timed(port, *speed, *time_ms, Some(stop_action.clone()))?;
+                    Ok(format!("Motor on Port {} running timed ({} ms at speed {})", port, time_ms, speed))
+                }
+                ResolvedPortCommand::RunToRelPos { speed, position_sp, stop_action } => {
+                    self.run_to_rel_pos(port, *speed, *position_sp, Some(stop_action.clone()))?;
+                    Ok(format!("Motor on Port {} stepping {} counts at speed {}", port, position_sp, speed))
+                }
+                ResolvedPortCommand::RunDirect { duty_cycle } => {
+                    self.run_direct(port, *duty_cycle)?;
+                    Ok(format!("Motor on Port {} direct duty {}%", port, duty_cycle))
+                }
+                ResolvedPortCommand::Stop { stop_action } => {
+                    self.stop(port, Some(stop_action.clone()))?;
+                    Ok(format!("Motor on Port {} stopped ({})", port, stop_action))
+                }
+                ResolvedPortCommand::Reset => {
+                    self.reset(port)?;
+                    Ok(format!("Motor on Port {} reset", port))
+                }
+                ResolvedPortCommand::SetPolarity { polarity } => {
+                    self.set_polarity(port, polarity)?;
+                    Ok(format!("Motor on Port {} polarity set to {}", port, polarity))
+                }
+                ResolvedPortCommand::SetMode { .. } => {
+                    Err(format!("Port {} is a motor and does not support mode commands", port))
+                }
+            }
+        } else {
+            Err(format!("Invalid port '{}'", port))
+        }
     }
 
     pub fn is_mock(&self) -> bool {
@@ -470,8 +634,12 @@ impl MotorController {
         match &self.backend {
             HardwareBackend::Mock(mock) => {
                 let status = mock.poll_and_get_all_status();
+                let sensors = mock.poll_and_get_all_sensors();
                 if let Ok(mut cache) = self.cached_status.write() {
                     *cache = status.clone();
+                }
+                if let Ok(mut cache) = self.cached_sensors.write() {
+                    *cache = sensors;
                 }
                 Ok(status)
             }

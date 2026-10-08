@@ -265,6 +265,22 @@ impl Router {
                 }
             }
 
+            // All Ports Endpoint (Motors and Sensors)
+            (Method::Get, "/api/ports") => {
+                let status = self.controller.get_all_ports_status();
+                self.respond_json(request, StatusCode(200), &ApiResponse::ok(status));
+            }
+
+            // Single Port Query Endpoint: GET /api/port/{port}
+            (Method::Get, p) if p.starts_with("/api/port/") => {
+                self.handle_port_get(request, p);
+            }
+
+            // Unified Port Command Endpoint: POST /api/port/{port}
+            (Method::Post, p) if p.starts_with("/api/port/") => {
+                self.handle_port_post(request, p);
+            }
+
             // Motor-specific Endpoints: /api/motor/{port}/{command}
             (Method::Post, p) if p.starts_with("/api/motor/") => {
                 self.handle_motor_post(request, p);
@@ -273,6 +289,53 @@ impl Router {
             _ => {
                 self.respond_json(request, StatusCode(404), &ApiResponse::<()>::err("Endpoint not found"));
             }
+        }
+    }
+
+    fn handle_port_get(&self, request: Request, path: &str) {
+        let raw_port = path.trim_start_matches("/api/port/");
+        let normalized = match normalize_port_name(raw_port) {
+            Some(p) => p,
+            None => {
+                self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(format!("Invalid port: '{}'", raw_port)));
+                return;
+            }
+        };
+
+        match self.controller.get_port_status(&normalized) {
+            Ok(status) => self.respond_json(request, StatusCode(200), &ApiResponse::ok(status)),
+            Err(e) => self.respond_json(request, StatusCode(404), &ApiResponse::<()>::err(e)),
+        }
+    }
+
+    fn handle_port_post(&self, mut request: Request, path: &str) {
+        let raw_port = path.trim_start_matches("/api/port/");
+        let normalized = match normalize_port_name(raw_port) {
+            Some(p) => p,
+            None => {
+                self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(format!("Invalid port: '{}'", raw_port)));
+                return;
+            }
+        };
+
+        let max_speed = if ["A", "B", "C", "D"].contains(&normalized.as_str()) {
+            self.controller
+                .get_port_motor_status(&normalized)
+                .map(|s| s.max_speed)
+                .unwrap_or(1050)
+        } else {
+            1050
+        };
+
+        match self.read_json_body::<PortCommandPayload>(&mut request) {
+            Ok(payload) => match payload.resolve(max_speed) {
+                Ok(cmd) => match self.controller.execute_port_command(&normalized, &cmd) {
+                    Ok(msg) => self.respond_json(request, StatusCode(200), &ApiResponse::ok(msg)),
+                    Err(e) => self.respond_json(request, StatusCode(500), &ApiResponse::<()>::err(e)),
+                },
+                Err(e) => self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(e)),
+            },
+            Err(e) => self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(e)),
         }
     }
 
@@ -565,7 +628,7 @@ mod tests {
         let router_clone = router.clone();
         let server_clone = server;
         let thread_handle = std::thread::spawn(move || {
-            for _ in 0..8 {
+            for _ in 0..14 {
                 if let Ok(req) = server_clone.recv() {
                     router_clone.handle_request(req);
                 }
@@ -673,6 +736,93 @@ mod tests {
 
             assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
             assert!(resp_str.contains("Content-Type: application/json"));
+            assert!(resp_str.contains("\"success\":true"));
+        }
+
+        // 9. Test GET /api/ports
+        {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream.write_all(b"GET /api/ports HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
+            let mut resp = Vec::new();
+            stream.read_to_end(&mut resp).unwrap();
+            let resp_str = String::from_utf8_lossy(&resp);
+
+            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
+            assert!(resp_str.contains("\"motors\":["));
+            assert!(resp_str.contains("\"sensors\":["));
+        }
+
+        // 10. Test GET /api/port/A
+        {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream.write_all(b"GET /api/port/A HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
+            let mut resp = Vec::new();
+            stream.read_to_end(&mut resp).unwrap();
+            let resp_str = String::from_utf8_lossy(&resp);
+
+            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
+            assert!(resp_str.contains("\"port\":\"A\""));
+            assert!(resp_str.contains("\"address\":\"outA\""));
+        }
+
+        // 11. Test POST /api/port/outA with inferred timed run and float speed
+        {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let body = b"{\"speed\": 0.5, \"duration_s\": 1.0}";
+            let req = format!(
+                "POST /api/port/outA HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                std::str::from_utf8(body).unwrap()
+            );
+            stream.write_all(req.as_bytes()).unwrap();
+            let mut resp = Vec::new();
+            stream.read_to_end(&mut resp).unwrap();
+            let resp_str = String::from_utf8_lossy(&resp);
+
+            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
+            assert!(resp_str.contains("\"success\":true"));
+        }
+
+        // 12. Test GET /api/port/invalid (400 Bad Request)
+        {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream.write_all(b"GET /api/port/invalid HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
+            let mut resp = Vec::new();
+            stream.read_to_end(&mut resp).unwrap();
+            let resp_str = String::from_utf8_lossy(&resp);
+
+            assert!(resp_str.starts_with("HTTP/1.1 400 Bad Request"));
+            assert!(resp_str.contains("\"success\":false"));
+        }
+
+        // 13. Test GET /api/port/1 (Sensor on input port 1)
+        {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream.write_all(b"GET /api/port/1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
+            let mut resp = Vec::new();
+            stream.read_to_end(&mut resp).unwrap();
+            let resp_str = String::from_utf8_lossy(&resp);
+
+            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
+            assert!(resp_str.contains("\"port\":\"1\""));
+            assert!(resp_str.contains("\"driver_name\":\"lego-ev3-touch (mock)\""));
+        }
+
+        // 14. Test POST /api/port/2 (Change sensor mode)
+        {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let body = b"{\"mode\": \"COL-REFLECT\"}";
+            let req = format!(
+                "POST /api/port/2 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                std::str::from_utf8(body).unwrap()
+            );
+            stream.write_all(req.as_bytes()).unwrap();
+            let mut resp = Vec::new();
+            stream.read_to_end(&mut resp).unwrap();
+            let resp_str = String::from_utf8_lossy(&resp);
+
+            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
             assert!(resp_str.contains("\"success\":true"));
         }
 

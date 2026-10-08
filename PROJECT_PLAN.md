@@ -22,6 +22,7 @@
 | **Phase 8** | Second-Opinion Triage & Remediation | **HOST GATES COMPLETE**. All 25 host triage items resolved and tested |
 | **Phase 9** | Streamlined Appliance Mode & Pre-Baked Image | **HOST TOOLING COMPLETE, REBAKE PENDING**. The on-disk image (`ev3-web-motor-ready.img.xz`) is out of date and pending a clean rebake. |
 | **Phase 10** | Modular Dashboard Builder (Design & Run Modes) | **COMPLETE**. Card-based widget builder, Design & Run modes, 2D joystick (15 Hz rate-limited), and POST /api/rescan. |
+| **Phase 11** | Unified Low-Level Port Control API (`GET` & `POST /api/port/{port}`) | **COMPLETE**. Sysfs sensor driver, 4 mock sensors, hybrid JSON command resolver, cached non-blocking telemetry, and Sensor Display widget. |
 
 ---
 
@@ -39,6 +40,7 @@
 11. [Phase 8: Second-Opinion Triage & Remediation](#11-phase-8-second-opinion-triage--remediation)
 12. [Phase 9: Streamlined Appliance Mode & Pre-Baked Disk Image](#12-phase-9-streamlined-appliance-mode--pre-baked-disk-image)
 13. [Phase 10: Modular Dashboard Builder (Design Mode vs Run Mode)](#13-phase-10-modular-dashboard-builder-design-mode-vs-run-mode)
+14. [Phase 11: Unified Low-Level Port Control API (`GET` & `POST /api/port/{port}`)](#14-phase-11-unified-low-level-port-control-api-get--post-apiportport)
 
 ---
 
@@ -571,3 +573,54 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
   - Continuous slider, momentary button, toggle button, timed move, step move.
 - [x] **Step 10.6: Host Simulation & Automated Testing**
   - 31 unit tests pass (`cargo test`); mock simulation verified with curl endpoints.
+
+---
+
+## 14. Phase 11: Unified Low-Level Port Control API (`GET` & `POST /api/port/{port}`)
+
+### 14.1 Core Principles and Scope Limits
+- **Unified Port Addressing:** Accept both short (`A`..`D`, `1`..`4`) and long (`outA`..`outD`, `in1`..`in4`) port names case-insensitively.
+- **Hybrid JSON Payload:** Accept raw sysfs keys (`speed_sp`, `time_sp`, `command`, `mode`) and convenience aliases (`speed`, `duration_s`, `degrees`, `duty`).
+- **Strict Rule 6 Compliance:** All `GET /api/port/{port}` and `GET /api/ports` requests read from in-memory cache in RAM. Zero sysfs reads occur on the HTTP request thread.
+- **Watchdog Protection:** Any continuous motor movement command arms the 1,000 ms client disconnect watchdog automatically.
+- **Host-First Simulation:** Mock simulation for input ports 1–4 enables full testing on host machines without hardware.
+
+### 14.2 Architectural Decisions and Status Labels
+
+| Decision / Component | Status Label | Technical Rationale |
+| :--- | :--- | :--- |
+| **Unified Port Endpoint (`/api/port/{port}`)** | `[ADOPTED]` | Replaces multiple motor-specific routes with a consistent single-port endpoint for motors and sensors. |
+| **All Ports Inventory Endpoint (`/api/ports`)** | `[ADOPTED]` | Returns complete inventory of all 8 physical ports (4 motors, 4 sensors) from memory cache. |
+| **Hybrid Attribute Map Schema** | `[ADOPTED]` | Accepts raw kernel sysfs attributes and convenience aliases with automatic type conversion. |
+| **Sysfs Sensor Driver (`src/sysfs/sensor.rs`)** | `[IMPLEMENTED]` | Reads `/sys/class/lego-sensor/` with decimal scaling, mode changes, and cached file handles. |
+| **Sensor Display Widget** | `[IMPLEMENTED]` | Allows users to display live sensor values and change sensor modes in the web dashboard. |
+| **Complex Math Transforms in Rust** | `[REJECTED]` | JavaScript widgets compute values directly; the Rust server handles only port attributes and safety limits. |
+| **Dynamic sysfs Polling on HTTP Thread** | `[REJECTED]` | Violates Rule 6. Polling must execute exclusively on the background thread. |
+
+### 14.3 Implementation Checklist
+
+- [x] **Step 11.1: Sysfs Sensor Driver (`src/sysfs/sensor.rs`)**
+  - Implemented `Sensor` struct reading `address`, `driver_name`, `mode`, `modes`, `decimals`, `units`, and `value0`.
+  - Added cached file descriptor reading for high-speed non-blocking background polling.
+- [x] **Step 11.2: Mock Sensor Simulation (`src/sysfs/mock.rs`)**
+  - Added simulated sensors on ports 1–4: Touch (Port 1), Color (Port 2), Ultrasonic (Port 3), and Gyro (Port 4).
+  - Implemented `poll_and_get_all_sensors` and `set_sensor_mode`.
+- [x] **Step 11.3: Web Handlers & Type Conversions (`src/web/handlers.rs`)**
+  - Expanded `PortCommandPayload` supporting raw sysfs keys and convenience aliases.
+  - Implemented `resolve(max_speed)` with automatic speed scaling, duration conversion, and command inference.
+  - Implemented `normalize_port_name` validating ports `A`..`D` and `1`..`4`.
+- [x] **Step 11.4: Controller Polling & Command Dispatch (`src/controller.rs`)**
+  - Stored `cached_sensors` and updated polling thread to query sensors every cycle.
+  - Implemented `get_port_status`, `get_all_ports_status`, and `execute_port_command`.
+  - Armed client disconnect watchdog on continuous motion commands.
+- [x] **Step 11.5: HTTP Router Endpoints (`src/web/router.rs`)**
+  - Added `GET /api/ports`, `GET /api/port/{port}`, and `POST /api/port/{port}`.
+  - Automated tests added for all port routes (35 total tests pass).
+- [x] **Step 11.6: Web Dashboard & Sensor Display Widget (`web_assets/`)**
+  - Added Sensor Display widget to catalog in Design and Run modes.
+  - Updated hardware inventory bar to display both 4 motors and 4 sensors.
+  - Added client helpers `apiPort(port, payload)` and `getPort(port)`.
+- [x] **Step 11.7: Host Simulation & Automated Testing**
+  - All 35 automated tests pass with `cargo test`.
+  - Verified endpoints in mock host server with curl commands.
+

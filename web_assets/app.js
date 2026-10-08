@@ -11,6 +11,7 @@ class EV3App {
         this.lastLatency = 0;
         this.consecutiveErrors = 0;
         this.hardwareMotors = [];
+        this.hardwareSensors = [];
         this.widgets = [];
         this.throttleMap = new Map();
         this.activeToggles = new Map();
@@ -207,17 +208,22 @@ class EV3App {
     async rescanHardware() {
         this.btnRescan.disabled = true;
         this.btnRescan.textContent = "⏳ Scanning...";
-        this.log("Scanning /sys/class/tacho-motor for connected devices...", "info");
+        this.log("Scanning hardware for connected motors and sensors...", "info");
 
         try {
-            const data = await this.apiPost("/api/rescan", {});
-            if (data.success && Array.isArray(data.data)) {
-                this.hardwareMotors = data.data;
-                this.renderHardwarePanel();
-                this.updatePortSelectOptions();
-                this.log(`Rescan complete: found ${this.hardwareMotors.filter(m => m.connected).length} connected motor(s).`, "success");
-            } else {
-                this.log("Rescan returned no motors or failed.", "error");
+            await this.apiPost("/api/rescan", {});
+            const res = await fetch("/api/ports", { cache: "no-store" });
+            if (res.ok) {
+                const data = await res.json();
+                if (data.success && data.data) {
+                    this.hardwareMotors = data.data.motors || [];
+                    this.hardwareSensors = data.data.sensors || [];
+                    this.renderHardwarePanel();
+                    this.updatePortSelectOptions();
+                    const mCount = this.hardwareMotors.filter(m => m.connected).length;
+                    const sCount = this.hardwareSensors.filter(s => s.connected).length;
+                    this.log(`Rescan complete: found ${mCount} motor(s) and ${sCount} sensor(s).`, "success");
+                }
             }
         } catch (err) {
             this.log("Hardware rescan error: " + err.message, "error");
@@ -228,12 +234,13 @@ class EV3App {
     }
 
     renderHardwarePanel() {
-        const ports = ["A", "B", "C", "D"];
+        const motorPorts = ["A", "B", "C", "D"];
+        const sensorPorts = ["1", "2", "3", "4"];
         let connectedCount = 0;
         let html = "";
 
-        ports.forEach(port => {
-            const motor = this.hardwareMotors.find(m => m.port === port);
+        motorPorts.forEach(port => {
+            const motor = (this.hardwareMotors || []).find(m => m.port === port);
             const isConn = motor && motor.connected;
             if (isConn) connectedCount++;
 
@@ -250,8 +257,26 @@ class EV3App {
             `;
         });
 
+        sensorPorts.forEach(port => {
+            const sensor = (this.hardwareSensors || []).find(s => s.port === port);
+            const isConn = sensor && sensor.connected;
+            if (isConn) connectedCount++;
+
+            html += `
+                <div class="hw-item ${isConn ? 'hw-connected' : 'hw-disconnected'}">
+                    <div>
+                        <span class="hw-port-badge">Port ${port}</span>
+                        <div class="hw-driver">${isConn ? sensor.driver_name : 'No sensor detected'}</div>
+                    </div>
+                    <span class="badge ${isConn ? 'badge-connected' : 'badge-info'}">
+                        ${isConn ? (sensor.mode || 'Connected') : 'Empty'}
+                    </span>
+                </div>
+            `;
+        });
+
         this.hardwareList.innerHTML = html;
-        this.hwCountBadge.textContent = `${connectedCount} / 4 Connected`;
+        this.hwCountBadge.textContent = `${connectedCount} / 8 Connected`;
     }
 
     updatePortSelectOptions() {
@@ -318,6 +343,11 @@ class EV3App {
                 newWidget.port = "A";
                 newWidget.speed = 600;
                 newWidget.degrees = 90;
+                break;
+            case "sensor":
+                newWidget.title = "Sensor Reading";
+                newWidget.port = "1";
+                newWidget.mode = "TOUCH";
                 break;
         }
 
@@ -484,6 +514,37 @@ class EV3App {
                     <input type="number" class="field-degrees" data-id="${w.id}" min="-3600" max="3600" step="45" value="${w.degrees}">
                 </div>
             `;
+        } else if (w.type === "sensor") {
+            const sensorPortOptions = (selectedPort) => {
+                let opts = "";
+                ["1", "2", "3", "4"].forEach(p => {
+                    const sensor = (this.hardwareSensors || []).find(s => s.port === p);
+                    const isConn = sensor && sensor.connected;
+                    const label = isConn ? `Port ${p} (${sensor.driver_name})` : `Port ${p}`;
+                    opts += `<option value="${p}" ${selectedPort === p ? 'selected' : ''}>${label}</option>`;
+                });
+                return opts;
+            };
+
+            const selectedSensor = (this.hardwareSensors || []).find(s => s.port === (w.port || "1"));
+            const modes = (selectedSensor && selectedSensor.modes && selectedSensor.modes.length > 0)
+                ? selectedSensor.modes
+                : ["TOUCH", "COL-COLOR", "COL-REFLECT", "US-DIST-CM", "GYRO-ANG"];
+            let modeOpts = "";
+            modes.forEach(m => {
+                modeOpts += `<option value="${m}" ${w.mode === m ? 'selected' : ''}>${m}</option>`;
+            });
+
+            fieldsHtml = `
+                <div class="widget-config-field">
+                    <label>Input Port</label>
+                    <select class="field-sensor-port" data-id="${w.id}">${sensorPortOptions(w.port || "1")}</select>
+                </div>
+                <div class="widget-config-field">
+                    <label>Sensor Mode</label>
+                    <select class="field-sensor-mode" data-id="${w.id}">${modeOpts}</select>
+                </div>
+            `;
         }
 
         const typeLabels = {
@@ -492,7 +553,8 @@ class EV3App {
             momentary: "🔘 Momentary Button",
             toggle: "🔁 Toggle Button",
             timed: "⏱️ Timed Move",
-            step: "🔄 Step Angle"
+            step: "🔄 Step Angle",
+            sensor: "👁️ Sensor Display"
         };
 
         return `
@@ -534,6 +596,41 @@ class EV3App {
             sel.addEventListener("change", (e) => {
                 this.updateWidget(e.target.dataset.id, { driveMode: e.target.value });
                 this.renderDesignWidgets();
+            });
+        });
+
+        // Sensor input port change
+        document.querySelectorAll(".field-sensor-port").forEach(sel => {
+            sel.addEventListener("change", (e) => {
+                const port = e.target.value;
+                const widget = this.widgets.find(w => w.id === e.target.dataset.id);
+                if (widget) {
+                    widget.port = port;
+                    const sensor = (this.hardwareSensors || []).find(s => s.port === port);
+                    if (sensor && sensor.mode) {
+                        widget.mode = sensor.mode;
+                    }
+                    this.saveWidgets();
+                    this.renderDesignWidgets();
+                }
+            });
+        });
+
+        // Sensor mode change
+        document.querySelectorAll(".field-sensor-mode").forEach(sel => {
+            sel.addEventListener("change", async (e) => {
+                const mode = e.target.value;
+                const widget = this.widgets.find(w => w.id === e.target.dataset.id);
+                if (widget) {
+                    widget.mode = mode;
+                    this.saveWidgets();
+                    try {
+                        await this.apiPort(widget.port, { mode });
+                        this.log(`Sensor port ${widget.port} mode changed to ${mode}`, "info");
+                    } catch (err) {
+                        this.log(`Mode change failed: ${err.message}`, "error");
+                    }
+                }
             });
         });
 
@@ -635,6 +732,21 @@ class EV3App {
                     <button class="btn btn-primary btn-big-action btn-step" id="btn-step-${w.id}" data-id="${w.id}">
                         🔄 Turn ${w.degrees > 0 ? '+' : ''}${w.degrees}° (${w.speed} ticks/s)
                     </button>
+                </div>
+            `;
+        } else if (w.type === "sensor") {
+            const sensor = (this.hardwareSensors || []).find(s => s.port === w.port);
+            const val = (sensor && sensor.connected) ? sensor.value0 : "--";
+            const units = (sensor && sensor.connected) ? sensor.units : "";
+            const mode = (sensor && sensor.connected) ? sensor.mode : (w.mode || "--");
+            contentHtml = `
+                <div class="run-sensor-box" style="text-align: center; padding: 18px 0;">
+                    <div style="font-size: 2.2rem; font-weight: 700; color: #2563eb;" id="sensor-val-${w.id}">
+                        <span id="sensor-num-${w.id}">${val}</span> <span style="font-size: 1.1rem; color: #64748b;" id="sensor-unit-${w.id}">${units}</span>
+                    </div>
+                    <div style="font-size: 0.95rem; color: #475569; margin-top: 8px;">
+                        Mode: <strong id="sensor-mode-${w.id}">${mode}</strong>
+                    </div>
                 </div>
             `;
         }
@@ -996,10 +1108,12 @@ class EV3App {
 
                 if (data.success && data.data) {
                     const motors = Array.isArray(data.data) ? data.data : data.data.motors;
+                    const sensors = (data.data && Array.isArray(data.data.sensors)) ? data.data.sensors : [];
                     if (Array.isArray(motors)) {
                         this.hardwareMotors = motors;
-                        this.updateDiagnostics(motors);
-                        this.updateRunCardStatus(motors);
+                        this.hardwareSensors = sensors;
+                        this.updateDiagnostics(motors, sensors);
+                        this.updateRunCardStatus(motors, sensors);
                     }
 
                     const battery = data.data.battery;
@@ -1032,13 +1146,13 @@ class EV3App {
         }
     }
 
-    updateDiagnostics(motors) {
+    updateDiagnostics(motors, sensors = []) {
         if (!this.telemetryTableBody) return;
         let html = "";
         motors.forEach(m => {
             html += `
                 <tr>
-                    <td><strong>Port ${m.port}</strong></td>
+                    <td><strong>Port ${m.port} (Motor)</strong></td>
                     <td><span class="badge ${m.connected ? 'badge-connected' : 'badge-info'}">${m.connected ? 'Online' : 'Empty'}</span></td>
                     <td>${m.speed} ticks/s</td>
                     <td>${m.position}°</td>
@@ -1047,15 +1161,40 @@ class EV3App {
                 </tr>
             `;
         });
+        sensors.forEach(s => {
+            html += `
+                <tr>
+                    <td><strong>Port ${s.port} (Sensor)</strong></td>
+                    <td><span class="badge ${s.connected ? 'badge-connected' : 'badge-info'}">${s.connected ? s.mode : 'Empty'}</span></td>
+                    <td>${s.value0} ${s.units}</td>
+                    <td>--</td>
+                    <td>--</td>
+                    <td>--</td>
+                </tr>
+            `;
+        });
         this.telemetryTableBody.innerHTML = html;
     }
 
-    updateRunCardStatus(motors) {
+    updateRunCardStatus(motors, sensors = []) {
         this.widgets.forEach(w => {
             const statusElem = document.getElementById(`run-status-${w.id}`);
             if (!statusElem) return;
 
-            if (w.type === "joystick") {
+            if (w.type === "sensor") {
+                const s = sensors.find(item => item.port === w.port);
+                if (s) {
+                    const numElem = document.getElementById(`sensor-num-${w.id}`);
+                    const unitElem = document.getElementById(`sensor-unit-${w.id}`);
+                    const modeElem = document.getElementById(`sensor-mode-${w.id}`);
+                    if (numElem) numElem.textContent = s.connected ? s.value0 : "--";
+                    if (unitElem) unitElem.textContent = s.connected ? s.units : "";
+                    if (modeElem) modeElem.textContent = s.connected ? s.mode : "--";
+                    statusElem.textContent = s.connected
+                        ? `Mode: ${s.mode} | Driver: ${s.driver_name}`
+                        : `Sensor disconnected`;
+                }
+            } else if (w.type === "joystick") {
                 if (w.driveMode === "differential") {
                     const mLeft = motors.find(m => m.port === w.leftPort);
                     const mRight = motors.find(m => m.port === w.rightPort);
@@ -1085,6 +1224,16 @@ class EV3App {
         if (!res.ok) {
             throw new Error(`HTTP ${res.status}`);
         }
+        return await res.json();
+    }
+
+    async apiPort(port, payload) {
+        return await this.apiPost(`/api/port/${port}`, payload);
+    }
+
+    async getPort(port) {
+        const res = await fetch(`/api/port/${port}`, { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return await res.json();
     }
 
