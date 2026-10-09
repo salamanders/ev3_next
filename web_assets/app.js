@@ -61,16 +61,7 @@ class EV3App {
             this.loadDefaultWidgets();
         }
 
-        if (window.location.pathname.includes("design") || (document.getElementById("design-view") && !document.getElementById("run-view"))) {
-            this.activeMode = "design";
-        } else if (window.location.pathname.includes("run") || (document.getElementById("run-view") && !document.getElementById("design-view"))) {
-            this.activeMode = "run";
-        } else {
-            const savedMode = localStorage.getItem("ev3_dashboard_mode");
-            if (savedMode === "run" || savedMode === "design") {
-                this.activeMode = savedMode;
-            }
-        }
+        this.activeMode = document.getElementById("design-view") ? "design" : "run";
     }
 
     loadDefaultWidgets() {
@@ -144,9 +135,7 @@ class EV3App {
         this.btnEstopHeader = document.getElementById("btn-estop-header");
         this.btnShutdownHeader = document.getElementById("btn-shutdown-header");
 
-        // Mode switchers
-        this.btnModeDesign = document.getElementById("btn-mode-design");
-        this.btnModeRun = document.getElementById("btn-mode-run");
+        // Actions
         this.btnRescan = document.getElementById("btn-rescan");
 
         // Views
@@ -165,7 +154,6 @@ class EV3App {
         // Run elements
         this.runWidgetList = document.getElementById("run-widget-list");
         this.runEmptyNotice = document.getElementById("run-empty-notice");
-        this.btnEmptyGotoDesign = document.getElementById("btn-empty-goto-design");
 
         // Diagnostics
         this.telemetryTableBody = document.getElementById("telemetry-table-body");
@@ -174,32 +162,6 @@ class EV3App {
     }
 
     attachEventListeners() {
-        // Mode switching
-        if (this.btnModeDesign) {
-            this.btnModeDesign.addEventListener("click", (e) => {
-                if (this.designView && this.runView) {
-                    e.preventDefault();
-                    this.setMode("design");
-                }
-            });
-        }
-        if (this.btnModeRun) {
-            this.btnModeRun.addEventListener("click", (e) => {
-                if (this.designView && this.runView) {
-                    e.preventDefault();
-                    this.setMode("run");
-                }
-            });
-        }
-        if (this.btnEmptyGotoDesign) {
-            this.btnEmptyGotoDesign.addEventListener("click", (e) => {
-                if (this.designView && this.runView) {
-                    e.preventDefault();
-                    this.setMode("design");
-                }
-            });
-        }
-
         // Hardware rescan
         if (this.btnRescan) {
             this.btnRescan.addEventListener("click", () => this.rescanHardware(true));
@@ -257,26 +219,7 @@ class EV3App {
         }
     }
 
-    // --- Mode Management ---
 
-    setMode(mode) {
-        this.activeMode = mode;
-        localStorage.setItem("ev3_dashboard_mode", mode);
-
-        if (mode === "design") {
-            if (this.btnModeDesign) this.btnModeDesign.classList.add("active");
-            if (this.btnModeRun) this.btnModeRun.classList.remove("active");
-            if (this.designView) this.designView.style.display = "flex";
-            if (this.runView) this.runView.style.display = "none";
-            this.renderDesignWidgets();
-        } else {
-            if (this.btnModeDesign) this.btnModeDesign.classList.remove("active");
-            if (this.btnModeRun) this.btnModeRun.classList.add("active");
-            if (this.designView) this.designView.style.display = "none";
-            if (this.runView) this.runView.style.display = "flex";
-            this.renderRunWidgets();
-        }
-    }
 
     // --- Hardware Rescan ---
 
@@ -465,14 +408,10 @@ class EV3App {
 
     renderAll() {
         this.renderHardwarePanel();
-        if (this.designView && !this.runView) {
+        if (this.designView) {
             this.renderDesignWidgets();
-        } else if (this.runView && !this.designView) {
+        } else if (this.runView) {
             this.renderRunWidgets();
-        } else if (this.activeMode === "design") {
-            this.setMode("design");
-        } else {
-            this.setMode("run");
         }
     }
 
@@ -1288,7 +1227,7 @@ class EV3App {
                     if (unitElem) unitElem.textContent = s.connected ? s.units : "";
                     if (modeElem) modeElem.textContent = s.connected ? s.mode : "--";
                     statusElem.textContent = s.connected
-                        ? `Mode: ${s.mode} | Driver: ${s.driver_name}`
+                        ? `Driver: ${s.driver_name}`
                         : `Sensor disconnected`;
                 }
             } else if (w.type === "joystick") {
