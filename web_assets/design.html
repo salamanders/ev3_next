@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>EV3 Mindstorms - Run Mode</title>
+    <title>EV3 Mindstorms - Design Mode</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -12,7 +12,7 @@
         <div class="logo-group">
             <div class="logo-text">
                 <span class="title">MINDSTORMS <strong>EV3</strong></span>
-                <span class="subtitle">Controls (Run Mode)</span>
+                <span class="subtitle">Configuration (Design Mode)</span>
             </div>
         </div>
 
@@ -41,35 +41,69 @@
         <div class="mode-controls">
             <span class="mode-label">Mode:</span>
             <div class="mode-toggle-group">
-                <a href="/design" id="btn-mode-design" class="btn btn-mode" title="Switch to Design Mode">
+                <a href="/design" id="btn-mode-design" class="btn btn-mode active" title="Configure widgets and assignments">
                     Design Mode
                 </a>
-                <a href="/run" id="btn-mode-run" class="btn btn-mode active" title="Interact with running widgets">
+                <a href="/run" id="btn-mode-run" class="btn btn-mode" title="Switch to Run Mode">
                     Run Mode
                 </a>
             </div>
         </div>
 
         <div class="mode-actions">
-            <a href="/design" class="btn btn-secondary btn-sm" title="Configure Widgets in Design Mode">
-                Configure Widgets
-            </a>
+            <button id="btn-rescan" class="btn btn-secondary btn-sm" title="Scan for connected hardware on all ports">
+                Rescan Hardware
+            </button>
         </div>
     </nav>
 
     <!-- Main Container -->
     <main class="container">
-        <section id="run-view" class="view-panel">
-            <div id="run-empty-notice" class="card empty-notice" style="display: none;">
-                <h3>No Widgets Configured</h3>
-                <p>Switch to <a href="/design"><strong>Design Mode</strong></a> to add controls and assign motor ports.</p>
-                <a href="/design" class="btn btn-primary" style="margin-top: 12px; display: inline-block;">
-                    Go to Design Mode
-                </a>
+        <section id="design-view" class="view-panel">
+            <!-- Hardware Inventory Panel -->
+            <div class="card hardware-card">
+                <div class="card-header">
+                    <h3>Connected Hardware</h3>
+                    <span class="badge badge-info" id="hw-count-badge">Detecting...</span>
+                </div>
+                <div class="hardware-grid" id="hardware-list">
+                    <div class="hw-item">Loading hardware status...</div>
+                </div>
             </div>
 
-            <div id="run-widget-list" class="run-widget-list">
-                <!-- Dynamically populated run-mode cards -->
+            <!-- Widget Builder Toolbar -->
+            <div class="card builder-toolbar-card">
+                <div class="builder-toolbar">
+                    <div class="builder-select-group">
+                        <label for="widget-type-select">Add Widget:</label>
+                        <select id="widget-type-select">
+                            <option value="joystick">2D Joystick</option>
+                            <option value="slider">Speed Slider</option>
+                            <option value="momentary">Momentary Button (Press to Run)</option>
+                            <option value="toggle">Toggle Button (Run / Stop)</option>
+                            <option value="timed">Timed Move Button</option>
+                            <option value="step">Step Angle Button</option>
+                            <option value="sensor">Sensor Display</option>
+                        </select>
+                    </div>
+                    <div class="builder-buttons">
+                        <button id="btn-add-widget" class="btn btn-primary">
+                            Add Widget
+                        </button>
+                        <button id="btn-reset-layout" class="btn btn-secondary btn-sm" title="Restore default starter widgets">
+                            Reset Defaults
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Design Widget Card List -->
+            <div class="widget-list-header">
+                <h3>Configured Widgets</h3>
+                <span class="text-muted" id="widget-count-label">0 widgets</span>
+            </div>
+            <div id="design-widget-list" class="design-widget-list">
+                <!-- Dynamically populated widget config cards -->
             </div>
         </section>
 
@@ -106,7 +140,7 @@
                             <button id="btn-clear-log" class="btn btn-sm btn-secondary">Clear Log</button>
                         </div>
                         <div id="log-box" class="log-box">
-                            <div class="log-entry log-info">[System] Run Mode initialized.</div>
+                            <div class="log-entry log-info">[System] Design Mode initialized.</div>
                         </div>
                     </div>
                 </div>

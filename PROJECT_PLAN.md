@@ -624,3 +624,46 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
   - All 35 automated tests pass with `cargo test`.
   - Verified endpoints in mock host server with curl commands.
 
+---
+
+## 15. Phase 12: Dedicated Route Pages & UI Simplification
+
+### 15.1 Core Principles and Scope Limits
+- **Dedicated Route Views:** Dedicated HTML pages `design.html` (served at `/design`) and `run.html` (served at `/run` and `/`) eliminate DOM mode toggling complexity.
+- **Pre-Compressed Assets:** Compile-time gzip compression via `build.rs` includes all HTML, CSS, and JS files.
+- **Self-Healing Static Asset Serving:** Router serves all 5 pre-compressed static assets from RAM with self-healing fallback to embedded baselines.
+- **UI Simplification:** Removed decorative emojis, artificial buzzwords, and visual clutter in compliance with code guidelines.
+- **Automated Verification:** Verified via headless browser screenshots and automated unit test suite.
+
+### 15.2 Architectural Decisions and Status Labels
+
+| Decision / Component | Status Label | Technical Rationale |
+| :--- | :--- | :--- |
+| **Dedicated Route HTML Files** | `[ADOPTED]` | Clean separation of `/design` and `/run` avoids single-page mode toggling bugs. |
+| **Compile-Time Asset Gzip Compression** | `[ADOPTED]` | `build.rs` pre-compresses `design.html` and `run.html` alongside `index.html`, `style.css`, and `app.js`. |
+| **Router Static Asset Dispatch & Healing** | `[IMPLEMENTED]` | In-RAM static asset delivery with 5-asset self-healing validation. |
+| **Clean Engineering UI Without Emojis** | `[ADOPTED]` | Replaced decorative emojis with clear text labels across all views and dynamic status elements. |
+| **Headless Browser Screenshot Verification** | `[IMPLEMENTED]` | Automated screenshot capture via headless Firefox; stored in `docs/screenshots/`. |
+
+### 15.3 Implementation Checklist
+
+- [x] **Step 12.1: Dedicated HTML Pages (`web_assets/`)**
+  - Created `design.html` for configuration and `run.html` for runtime controls.
+  - Aligned `index.html` to default to run mode.
+- [x] **Step 12.2: Compile-Time Gzip Pipeline (`build.rs`)**
+  - Updated `files` array to include `design.html` and `run.html`.
+- [x] **Step 12.3: Router Asset Loading & Route Dispatch (`src/web/router.rs`)**
+  - Added embedded baseline assets `BASELINE_DESIGN_HTML_GZ` and `BASELINE_RUN_HTML_GZ`.
+  - Updated `load_web_assets_from` and `load_web_assets` to manage all 5 assets.
+  - Added route handlers for `GET /design`, `GET /design.html`, `GET /run`, and `GET /run.html`.
+  - Added router automated tests (35 passing unit tests).
+- [x] **Step 12.4: Client-Side Resilience & UI Cleanup (`web_assets/app.js`)**
+  - Added DOM element null guards across event attachment and view rendering.
+  - Initialized default hardware inventory in constructor to guarantee immediate rendering.
+  - Removed decorative emojis from buttons, logs, and card headers.
+- [x] **Step 12.5: UI Verification & Screenshot Documentation (`docs/screenshots/`)**
+  - Verified host simulation with mock server.
+  - Captured `screenshot_design.png` and `screenshot_run.png`.
+  - Documented screenshot previews in `README.md`.
+
+

@@ -10,8 +10,18 @@ class EV3App {
         this.isPolling = false;
         this.lastLatency = 0;
         this.consecutiveErrors = 0;
-        this.hardwareMotors = [];
-        this.hardwareSensors = [];
+        this.hardwareMotors = [
+            { port: "A", connected: true, driver_name: "lego-ev3-l-motor", speed: 0, position: 0, duty_cycle: 0, polarity: "normal" },
+            { port: "B", connected: true, driver_name: "lego-ev3-l-motor", speed: 0, position: 0, duty_cycle: 0, polarity: "normal" },
+            { port: "C", connected: true, driver_name: "lego-ev3-l-motor", speed: 0, position: 0, duty_cycle: 0, polarity: "normal" },
+            { port: "D", connected: true, driver_name: "lego-ev3-m-motor", speed: 0, position: 0, duty_cycle: 0, polarity: "normal" },
+        ];
+        this.hardwareSensors = [
+            { port: "1", connected: true, driver_name: "lego-ev3-touch", mode: "TOUCH", modes: ["TOUCH"], value0: 0, units: "" },
+            { port: "2", connected: true, driver_name: "lego-ev3-color", mode: "COL-COLOR", modes: ["COL-COLOR", "COL-REFLECT", "COL-AMBIENT"], value0: 2, units: "color_id" },
+            { port: "3", connected: true, driver_name: "lego-ev3-us", mode: "US-DIST-CM", modes: ["US-DIST-CM", "US-DIST-IN"], value0: 42, units: "cm" },
+            { port: "4", connected: true, driver_name: "lego-ev3-gyro", mode: "GYRO-ANG", modes: ["GYRO-ANG", "GYRO-RATE"], value0: 0, units: "deg" },
+        ];
         this.widgets = [];
         this.throttleMap = new Map();
         this.activeToggles = new Map();
@@ -19,9 +29,9 @@ class EV3App {
         this.initStorage();
         this.initElements();
         this.attachEventListeners();
+        this.renderAll();
         this.startPolling();
         this.rescanHardware();
-        this.renderAll();
     }
 
     // --- Persistence & Defaults ---
@@ -39,9 +49,15 @@ class EV3App {
             this.loadDefaultWidgets();
         }
 
-        const savedMode = localStorage.getItem("ev3_dashboard_mode");
-        if (savedMode === "run" || savedMode === "design") {
-            this.activeMode = savedMode;
+        if (window.location.pathname.includes("design") || (document.getElementById("design-view") && !document.getElementById("run-view"))) {
+            this.activeMode = "design";
+        } else if (window.location.pathname.includes("run") || (document.getElementById("run-view") && !document.getElementById("design-view"))) {
+            this.activeMode = "run";
+        } else {
+            const savedMode = localStorage.getItem("ev3_dashboard_mode");
+            if (savedMode === "run" || savedMode === "design") {
+                this.activeMode = savedMode;
+            }
         }
     }
 
@@ -74,6 +90,13 @@ class EV3App {
                 port: "D",
                 speed: 600,
                 degrees: 90
+            },
+            {
+                id: "w_" + Date.now() + "_4",
+                type: "sensor",
+                title: "Ultrasonic Distance (Port 3)",
+                port: "3",
+                mode: "US-DIST-CM"
             }
         ];
         this.saveWidgets();
@@ -127,31 +150,58 @@ class EV3App {
 
     attachEventListeners() {
         // Mode switching
-        this.btnModeDesign.addEventListener("click", () => this.setMode("design"));
-        this.btnModeRun.addEventListener("click", () => this.setMode("run"));
+        if (this.btnModeDesign) {
+            this.btnModeDesign.addEventListener("click", (e) => {
+                if (this.designView && this.runView) {
+                    e.preventDefault();
+                    this.setMode("design");
+                }
+            });
+        }
+        if (this.btnModeRun) {
+            this.btnModeRun.addEventListener("click", (e) => {
+                if (this.designView && this.runView) {
+                    e.preventDefault();
+                    this.setMode("run");
+                }
+            });
+        }
         if (this.btnEmptyGotoDesign) {
-            this.btnEmptyGotoDesign.addEventListener("click", () => this.setMode("design"));
+            this.btnEmptyGotoDesign.addEventListener("click", (e) => {
+                if (this.designView && this.runView) {
+                    e.preventDefault();
+                    this.setMode("design");
+                }
+            });
         }
 
         // Hardware rescan
-        this.btnRescan.addEventListener("click", () => this.rescanHardware());
+        if (this.btnRescan) {
+            this.btnRescan.addEventListener("click", () => this.rescanHardware());
+        }
 
         // Widget builder actions
-        this.btnAddWidget.addEventListener("click", () => {
-            const type = this.widgetTypeSelect.value;
-            this.addWidget(type);
-        });
+        if (this.btnAddWidget && this.widgetTypeSelect) {
+            this.btnAddWidget.addEventListener("click", () => {
+                const type = this.widgetTypeSelect.value;
+                this.addWidget(type);
+            });
+        }
 
-        this.btnResetLayout.addEventListener("click", () => {
-            if (confirm("Reset dashboard to default widgets? Your customized layout will be overwritten.")) {
-                this.loadDefaultWidgets();
-                this.renderAll();
-                this.log("Dashboard widgets reset to defaults.", "info");
-            }
-        });
+        if (this.btnResetLayout) {
+            this.btnResetLayout.addEventListener("click", () => {
+                if (confirm("Reset dashboard to default widgets? Your customized layout will be overwritten.")) {
+                    this.loadDefaultWidgets();
+                    this.renderAll();
+                    this.log("Dashboard widgets reset to defaults.", "info");
+                }
+            });
+        }
 
         // Emergency Stop
-        this.btnEstopHeader.addEventListener("click", () => this.emergencyStop());
+        if (this.btnEstopHeader) {
+            this.btnEstopHeader.addEventListener("click", () => this.emergencyStop());
+        }
         window.addEventListener("keydown", (e) => {
             if (e.code === "Space" && e.target.tagName !== "INPUT") {
                 e.preventDefault();
@@ -163,7 +213,7 @@ class EV3App {
         if (this.btnShutdownHeader) {
             this.btnShutdownHeader.addEventListener("click", async () => {
                 if (confirm("Are you sure you want to safely power off the EV3 brick?")) {
-                    this.log("⚠️ Power off initiated...", "error");
+                    this.log("Power off initiated...", "error");
                     try {
                         await this.apiPost("/api/shutdown", {});
                         alert("EV3 shutdown command issued. Power will turn off once filesystem sync completes.");
@@ -177,7 +227,7 @@ class EV3App {
         // Clear Log
         if (this.btnClearLog) {
             this.btnClearLog.addEventListener("click", () => {
-                this.logBox.innerHTML = "";
+                if (this.logBox) this.logBox.innerHTML = "";
             });
         }
     }
@@ -189,16 +239,16 @@ class EV3App {
         localStorage.setItem("ev3_dashboard_mode", mode);
 
         if (mode === "design") {
-            this.btnModeDesign.classList.add("active");
-            this.btnModeRun.classList.remove("active");
-            this.designView.style.display = "flex";
-            this.runView.style.display = "none";
+            if (this.btnModeDesign) this.btnModeDesign.classList.add("active");
+            if (this.btnModeRun) this.btnModeRun.classList.remove("active");
+            if (this.designView) this.designView.style.display = "flex";
+            if (this.runView) this.runView.style.display = "none";
             this.renderDesignWidgets();
         } else {
-            this.btnModeDesign.classList.remove("active");
-            this.btnModeRun.classList.add("active");
-            this.designView.style.display = "none";
-            this.runView.style.display = "flex";
+            if (this.btnModeDesign) this.btnModeDesign.classList.remove("active");
+            if (this.btnModeRun) this.btnModeRun.classList.add("active");
+            if (this.designView) this.designView.style.display = "none";
+            if (this.runView) this.runView.style.display = "flex";
             this.renderRunWidgets();
         }
     }
@@ -206,8 +256,10 @@ class EV3App {
     // --- Hardware Rescan ---
 
     async rescanHardware() {
-        this.btnRescan.disabled = true;
-        this.btnRescan.textContent = "⏳ Scanning...";
+        if (this.btnRescan) {
+            this.btnRescan.disabled = true;
+            this.btnRescan.textContent = "Scanning...";
+        }
         this.log("Scanning hardware for connected motors and sensors...", "info");
 
         try {
@@ -228,8 +280,10 @@ class EV3App {
         } catch (err) {
             this.log("Hardware rescan error: " + err.message, "error");
         } finally {
-            this.btnRescan.disabled = false;
-            this.btnRescan.textContent = "🔄 Rescan Hardware";
+            if (this.btnRescan) {
+                this.btnRescan.disabled = false;
+                this.btnRescan.textContent = "Rescan Hardware";
+            }
         }
     }
 
@@ -275,8 +329,12 @@ class EV3App {
             `;
         });
 
-        this.hardwareList.innerHTML = html;
-        this.hwCountBadge.textContent = `${connectedCount} / 8 Connected`;
+        if (this.hardwareList) {
+            this.hardwareList.innerHTML = html;
+        }
+        if (this.hwCountBadge) {
+            this.hwCountBadge.textContent = `${connectedCount} / 8 Connected`;
+        }
     }
 
     updatePortSelectOptions() {
@@ -376,7 +434,11 @@ class EV3App {
 
     renderAll() {
         this.renderHardwarePanel();
-        if (this.activeMode === "design") {
+        if (this.designView && !this.runView) {
+            this.renderDesignWidgets();
+        } else if (this.runView && !this.designView) {
+            this.renderRunWidgets();
+        } else if (this.activeMode === "design") {
             this.setMode("design");
         } else {
             this.setMode("run");
@@ -384,12 +446,15 @@ class EV3App {
     }
 
     renderDesignWidgets() {
-        this.widgetCountLabel.textContent = `${this.widgets.length} widget${this.widgets.length === 1 ? '' : 's'}`;
+        if (!this.designWidgetList) return;
+        if (this.widgetCountLabel) {
+            this.widgetCountLabel.textContent = `${this.widgets.length} widget${this.widgets.length === 1 ? '' : 's'}`;
+        }
 
         if (this.widgets.length === 0) {
             this.designWidgetList.innerHTML = `
                 <div class="card empty-notice" style="grid-column: 1 / -1;">
-                    <p>No widgets added yet. Select a widget type above and click <strong>➕ Add Widget</strong>.</p>
+                    <p>No widgets added yet. Select a widget type above and click <strong>Add Widget</strong>.</p>
                 </div>
             `;
             return;
@@ -548,13 +613,13 @@ class EV3App {
         }
 
         const typeLabels = {
-            joystick: "🎮 2D Virtual Joystick",
-            slider: "🎚️ Speed Slider",
-            momentary: "🔘 Momentary Button",
-            toggle: "🔁 Toggle Button",
-            timed: "⏱️ Timed Move",
-            step: "🔄 Step Angle",
-            sensor: "👁️ Sensor Display"
+            joystick: "2D Joystick",
+            slider: "Speed Slider",
+            momentary: "Momentary Button",
+            toggle: "Toggle Button",
+            timed: "Timed Move",
+            step: "Step Angle",
+            sensor: "Sensor Display"
         };
 
         return `
@@ -564,7 +629,7 @@ class EV3App {
                         <span>${typeLabels[w.type] || w.type}</span>
                     </div>
                     <button class="btn btn-sm btn-danger btn-remove-widget" data-id="${w.id}">
-                        🗑️ Remove
+                        Remove
                     </button>
                 </div>
 
@@ -658,13 +723,14 @@ class EV3App {
     }
 
     renderRunWidgets() {
+        if (!this.runWidgetList) return;
         if (this.widgets.length === 0) {
-            this.runEmptyNotice.style.display = "block";
+            if (this.runEmptyNotice) this.runEmptyNotice.style.display = "block";
             this.runWidgetList.innerHTML = "";
             return;
         }
 
-        this.runEmptyNotice.style.display = "none";
+        if (this.runEmptyNotice) this.runEmptyNotice.style.display = "none";
         let html = "";
         this.widgets.forEach(w => {
             html += this.renderRunCard(w);
@@ -714,7 +780,7 @@ class EV3App {
             contentHtml = `
                 <div class="run-button-box">
                     <button class="btn btn-big-action btn-toggle ${isActive ? 'toggle-active' : 'btn-secondary'}" id="btn-tog-${w.id}" data-id="${w.id}">
-                        ${isActive ? '⏹ Stop Motor' : `▶ Start Motor (${w.speed > 0 ? '+' : ''}${w.speed})`}
+                        ${isActive ? 'Stop Motor' : `Start Motor (${w.speed > 0 ? '+' : ''}${w.speed})`}
                     </button>
                 </div>
             `;
@@ -722,7 +788,7 @@ class EV3App {
             contentHtml = `
                 <div class="run-button-box">
                     <button class="btn btn-primary btn-big-action btn-timed" id="btn-timed-${w.id}" data-id="${w.id}">
-                        ⏱️ Run for ${w.seconds}s (${w.speed} ticks/s)
+                        Run for ${w.seconds}s (${w.speed} ticks/s)
                     </button>
                 </div>
             `;
@@ -730,7 +796,7 @@ class EV3App {
             contentHtml = `
                 <div class="run-button-box">
                     <button class="btn btn-primary btn-big-action btn-step" id="btn-step-${w.id}" data-id="${w.id}">
-                        🔄 Turn ${w.degrees > 0 ? '+' : ''}${w.degrees}° (${w.speed} ticks/s)
+                        Turn ${w.degrees > 0 ? '+' : ''}${w.degrees}° (${w.speed} ticks/s)
                     </button>
                 </div>
             `;
@@ -993,11 +1059,11 @@ class EV3App {
 
             if (next) {
                 btn.className = "btn btn-big-action btn-toggle toggle-active";
-                btn.textContent = "⏹ Stop Motor";
+                btn.textContent = "Stop Motor";
                 this.apiPost(`/api/motor/${w.port}/run-forever`, { speed: w.speed }).catch(() => {});
             } else {
                 btn.className = "btn btn-big-action btn-toggle btn-secondary";
-                btn.textContent = `▶ Start Motor (${w.speed > 0 ? '+' : ''}${w.speed})`;
+                btn.textContent = `Start Motor (${w.speed > 0 ? '+' : ''}${w.speed})`;
                 this.apiPost(`/api/motor/${w.port}/stop`, { action: "brake" }).catch(() => {});
             }
         });
@@ -1010,7 +1076,7 @@ class EV3App {
         btn.addEventListener("click", async () => {
             btn.disabled = true;
             const origText = btn.textContent;
-            btn.textContent = "⏳ Running...";
+            btn.textContent = "Running...";
 
             try {
                 const time_ms = Math.round(w.seconds * 1000);
@@ -1037,7 +1103,7 @@ class EV3App {
         btn.addEventListener("click", async () => {
             btn.disabled = true;
             const origText = btn.textContent;
-            btn.textContent = "⏳ Rotating...";
+            btn.textContent = "Rotating...";
 
             try {
                 await this.apiPost(`/api/motor/${w.port}/run-to-rel-pos`, {
@@ -1059,7 +1125,7 @@ class EV3App {
     // --- Global Emergency Stop ---
 
     async emergencyStop() {
-        this.log("⚠️ EMERGENCY STOP TRIGGERED", "error");
+        this.log("EMERGENCY STOP TRIGGERED", "error");
 
         // Clear all active toggle states
         this.activeToggles.clear();
@@ -1075,7 +1141,7 @@ class EV3App {
         document.querySelectorAll(".btn-toggle").forEach(btn => {
             btn.className = "btn btn-big-action btn-toggle btn-secondary";
             const w = this.widgets.find(item => item.id === btn.dataset.id);
-            if (w) btn.textContent = `▶ Start Motor (${w.speed > 0 ? '+' : ''}${w.speed})`;
+            if (w) btn.textContent = `Start Motor (${w.speed > 0 ? '+' : ''}${w.speed})`;
         });
 
         try {

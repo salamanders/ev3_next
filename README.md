@@ -2,6 +2,10 @@
 
 A fast, lightweight web server in Rust for the LEGO Mindstorms EV3 hardware (Texas Instruments Sitara AM1808, ARMv5te @ 300MHz, 64MB DRAM).
 
+| Configuration Mode (`/design`) | Run Mode (`/run`) |
+| :---: | :---: |
+| ![Configuration Mode](docs/screenshots/screenshot_design.png) | ![Run Mode](docs/screenshots/screenshot_run.png) |
+
 ```bash
 sudo ./tools/bake-image.sh --ssid "<your wifi name>" --password "<your wifi password>" && sudo ./tools/flash-image.sh /dev/sdX
 ```

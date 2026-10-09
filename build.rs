@@ -32,7 +32,7 @@ fn main() {
     let out_path = Path::new(&out_dir);
     let web_assets_dir = Path::new("web_assets");
 
-    let files = ["index.html", "style.css", "app.js"];
+    let files = ["index.html", "design.html", "run.html", "style.css", "app.js"];
 
     for filename in &files {
         let src = web_assets_dir.join(filename);
