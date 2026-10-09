@@ -3,18 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>EV3 Mindstorms - Design Mode</title>
+    <title>EV3 Mindstorms - Design</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <!-- Top Tab Navigation -->
     <nav class="top-nav">
         <div class="tab-group">
-            <a href="/design" id="btn-mode-design" class="tab-btn active">Design Mode</a>
-            <a href="/run" id="btn-mode-run" class="tab-btn">Run Mode</a>
+            <a href="/design" id="btn-mode-design" class="tab-btn active">Design</a>
+            <a href="/run" id="btn-mode-run" class="tab-btn">Run</a>
         </div>
         <button id="btn-rescan" class="btn btn-secondary btn-sm" title="Scan for connected hardware on all ports">
-            Rescan Hardware
+            Rescan
         </button>
     </nav>
 
@@ -36,20 +36,20 @@
             <div class="card builder-toolbar-card">
                 <div class="builder-toolbar">
                     <div class="builder-select-group">
-                        <label for="widget-type-select">Add Widget:</label>
+                        <label for="widget-type-select">Type:</label>
                         <select id="widget-type-select">
                             <option value="joystick">2D Joystick</option>
                             <option value="slider">Speed Slider</option>
-                            <option value="momentary">Momentary Button (Press to Run)</option>
-                            <option value="toggle">Toggle Button (Run / Stop)</option>
-                            <option value="timed">Timed Move Button</option>
-                            <option value="step">Step Angle Button</option>
+                            <option value="momentary">Momentary (Hold to Run)</option>
+                            <option value="toggle">Toggle (Run / Stop)</option>
+                            <option value="timed">Timed Move</option>
+                            <option value="step">Step Angle</option>
                             <option value="sensor">Sensor Display</option>
                         </select>
                     </div>
                     <div class="builder-buttons">
                         <button id="btn-add-widget" class="btn btn-primary">
-                            Add Widget
+                            Add
                         </button>
                         <button id="btn-reset-layout" class="btn btn-secondary btn-sm" title="Restore default starter widgets">
                             Reset Defaults
@@ -60,8 +60,8 @@
 
             <!-- Design Widget Card List -->
             <div class="widget-list-header">
-                <h3>Configured Widgets</h3>
-                <span class="text-muted" id="widget-count-label">0 widgets</span>
+                <h3>Active Controls</h3>
+                <span class="text-muted" id="widget-count-label">0 active</span>
             </div>
             <div id="design-widget-list" class="design-widget-list">
                 <!-- Dynamically populated widget config cards -->
@@ -98,10 +98,10 @@
                     <div class="log-container">
                         <div class="log-header">
                             <span>Command &amp; Event Log</span>
-                            <button id="btn-clear-log" class="btn btn-sm btn-secondary">Clear Log</button>
+                            <button id="btn-clear-log" class="btn btn-sm btn-secondary">Clear</button>
                         </div>
                         <div id="log-box" class="log-box">
-                            <div class="log-entry log-info">[System] Design Mode initialized.</div>
+                            <div class="log-entry log-info">[System] Design initialized.</div>
                         </div>
                     </div>
                 </div>

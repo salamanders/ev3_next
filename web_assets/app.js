@@ -418,13 +418,13 @@ class EV3App {
     renderDesignWidgets() {
         if (!this.designWidgetList) return;
         if (this.widgetCountLabel) {
-            this.widgetCountLabel.textContent = `${this.widgets.length} widget${this.widgets.length === 1 ? '' : 's'}`;
+            this.widgetCountLabel.textContent = `${this.widgets.length} active`;
         }
 
         if (this.widgets.length === 0) {
             this.designWidgetList.innerHTML = `
                 <div class="card empty-notice" style="grid-column: 1 / -1;">
-                    <p>No widgets added yet. Select a widget type above and click <strong>Add Widget</strong>.</p>
+                    <p>No controls configured yet. Select a type above and click <strong>Add</strong>.</p>
                 </div>
             `;
             return;
@@ -455,10 +455,10 @@ class EV3App {
         if (w.type === "joystick") {
             fieldsHtml = `
                 <div class="widget-config-field full-width">
-                    <label>Drive Mode</label>
+                    <label>Steering</label>
                     <select class="field-drive-mode" data-id="${w.id}">
-                        <option value="differential" ${w.driveMode === 'differential' ? 'selected' : ''}>Differential Drive (Left & Right)</option>
-                        <option value="independent" ${w.driveMode === 'independent' ? 'selected' : ''}>Independent Axes (X & Y)</option>
+                        <option value="differential" ${w.driveMode === 'differential' ? 'selected' : ''}>Differential (Left & Right)</option>
+                        <option value="independent" ${w.driveMode === 'independent' ? 'selected' : ''}>Independent (X & Y)</option>
                     </select>
                 </div>
                 ${w.driveMode === 'differential' ? `
@@ -472,22 +472,20 @@ class EV3App {
                     </div>
                 ` : `
                     <div class="widget-config-field">
-                        <label>X Axis Motor</label>
+                        <label>X Motor</label>
                         <select class="port-select field-x-port" data-id="${w.id}" data-allow-none="true">${portOptions(w.xPort, true)}</select>
                     </div>
                     <div class="widget-config-field">
-                        <label>Y Axis Motor</label>
+                        <label>Y Motor</label>
                         <select class="port-select field-y-port" data-id="${w.id}" data-allow-none="true">${portOptions(w.yPort, true)}</select>
                     </div>
                 `}
                 <div class="widget-config-field">
-                    <label>Invert X Axis</label>
                     <label style="text-transform:none; font-weight:normal; display:flex; align-items:center; gap:6px;">
                         <input type="checkbox" class="field-invert-x" data-id="${w.id}" ${w.invertX ? 'checked' : ''}> Invert X
                     </label>
                 </div>
                 <div class="widget-config-field">
-                    <label>Invert Y Axis</label>
                     <label style="text-transform:none; font-weight:normal; display:flex; align-items:center; gap:6px;">
                         <input type="checkbox" class="field-invert-y" data-id="${w.id}" ${w.invertY ? 'checked' : ''}> Invert Y
                     </label>
@@ -500,7 +498,7 @@ class EV3App {
         } else if (w.type === "slider") {
             fieldsHtml = `
                 <div class="widget-config-field">
-                    <label>Target Motor</label>
+                    <label>Motor</label>
                     <select class="port-select field-port" data-id="${w.id}">${portOptions(w.port)}</select>
                 </div>
                 <div class="widget-config-field">
@@ -511,7 +509,7 @@ class EV3App {
         } else if (w.type === "momentary" || w.type === "toggle") {
             fieldsHtml = `
                 <div class="widget-config-field">
-                    <label>Target Motor</label>
+                    <label>Motor</label>
                     <select class="port-select field-port" data-id="${w.id}">${portOptions(w.port)}</select>
                 </div>
                 <div class="widget-config-field">
@@ -522,7 +520,7 @@ class EV3App {
         } else if (w.type === "timed") {
             fieldsHtml = `
                 <div class="widget-config-field">
-                    <label>Target Motor</label>
+                    <label>Motor</label>
                     <select class="port-select field-port" data-id="${w.id}">${portOptions(w.port)}</select>
                 </div>
                 <div class="widget-config-field">
@@ -530,14 +528,14 @@ class EV3App {
                     <input type="number" class="field-speed" data-id="${w.id}" min="-1560" max="1560" step="50" value="${w.speed}">
                 </div>
                 <div class="widget-config-field full-width">
-                    <label>Duration (Seconds)</label>
+                    <label>Duration (s)</label>
                     <input type="number" class="field-seconds" data-id="${w.id}" min="0.1" max="60" step="0.1" value="${w.seconds}">
                 </div>
             `;
         } else if (w.type === "step") {
             fieldsHtml = `
                 <div class="widget-config-field">
-                    <label>Target Motor</label>
+                    <label>Motor</label>
                     <select class="port-select field-port" data-id="${w.id}">${portOptions(w.port)}</select>
                 </div>
                 <div class="widget-config-field">
@@ -545,7 +543,7 @@ class EV3App {
                     <input type="number" class="field-speed" data-id="${w.id}" min="50" max="1560" step="50" value="${w.speed}">
                 </div>
                 <div class="widget-config-field full-width">
-                    <label>Angle (Degrees)</label>
+                    <label>Angle (deg)</label>
                     <input type="number" class="field-degrees" data-id="${w.id}" min="-3600" max="3600" step="45" value="${w.degrees}">
                 </div>
             `;
@@ -572,11 +570,11 @@ class EV3App {
 
             fieldsHtml = `
                 <div class="widget-config-field">
-                    <label>Input Port</label>
+                    <label>Port</label>
                     <select class="field-sensor-port" data-id="${w.id}">${sensorPortOptions(w.port || "1")}</select>
                 </div>
                 <div class="widget-config-field">
-                    <label>Sensor Mode</label>
+                    <label>Reading</label>
                     <select class="field-sensor-mode" data-id="${w.id}">${modeOpts}</select>
                 </div>
             `;
@@ -585,8 +583,8 @@ class EV3App {
         const typeLabels = {
             joystick: "2D Joystick",
             slider: "Speed Slider",
-            momentary: "Momentary Button",
-            toggle: "Toggle Button",
+            momentary: "Momentary",
+            toggle: "Toggle",
             timed: "Timed Move",
             step: "Step Angle",
             sensor: "Sensor Display"
@@ -604,7 +602,7 @@ class EV3App {
                 </div>
 
                 <div class="widget-config-field full-width">
-                    <label>Widget Title</label>
+                    <label>Title</label>
                     <input type="text" class="field-title" data-id="${w.id}" value="${w.title}">
                 </div>
 
@@ -651,7 +649,7 @@ class EV3App {
             });
         });
 
-        // Sensor mode change
+        // Sensor reading change
         document.querySelectorAll(".field-sensor-mode").forEach(sel => {
             sel.addEventListener("change", async (e) => {
                 const mode = e.target.value;
@@ -661,9 +659,9 @@ class EV3App {
                     this.saveWidgets();
                     try {
                         await this.apiPort(widget.port, { mode });
-                        this.log(`Sensor port ${widget.port} mode changed to ${mode}`, "info");
+                        this.log(`Sensor port ${widget.port} set to ${mode}`, "info");
                     } catch (err) {
-                        this.log(`Mode change failed: ${err.message}`, "error");
+                        this.log(`Sensor update failed: ${err.message}`, "error");
                     }
                 }
             });
@@ -781,7 +779,7 @@ class EV3App {
                         <span id="sensor-num-${w.id}">${val}</span> <span style="font-size: 1.1rem; color: #64748b;" id="sensor-unit-${w.id}">${units}</span>
                     </div>
                     <div style="font-size: 0.95rem; color: #475569; margin-top: 8px;">
-                        Mode: <strong id="sensor-mode-${w.id}">${mode}</strong>
+                        <strong id="sensor-mode-${w.id}">${mode}</strong>
                     </div>
                 </div>
             `;
@@ -802,7 +800,7 @@ class EV3App {
                 </div>
                 ${contentHtml}
                 <div class="run-card-status" id="run-status-${w.id}">
-                    Status: Ready
+                    Ready
                 </div>
             </div>
         `;
@@ -1233,7 +1231,7 @@ class EV3App {
                     if (modeElem) modeElem.textContent = s.connected ? s.mode : "--";
                     statusElem.textContent = s.connected
                         ? `Driver: ${s.driver_name}`
-                        : `Sensor disconnected`;
+                        : `Disconnected`;
                 }
             } else if (w.type === "joystick") {
                 if (w.driveMode === "differential") {

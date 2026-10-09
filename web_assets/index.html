@@ -3,15 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>EV3 Mindstorms - Run Mode</title>
+    <title>EV3 Mindstorms - Run</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <!-- Top Tab Navigation -->
     <nav class="top-nav">
         <div class="tab-group">
-            <a href="/design" id="btn-mode-design" class="tab-btn">Design Mode</a>
-            <a href="/run" id="btn-mode-run" class="tab-btn active">Run Mode</a>
+            <a href="/design" id="btn-mode-design" class="tab-btn">Design</a>
+            <a href="/run" id="btn-mode-run" class="tab-btn active">Run</a>
         </div>
     </nav>
 
@@ -19,15 +19,15 @@
     <main class="container">
         <section id="run-view" class="view-panel">
             <div id="run-empty-notice" class="card empty-notice" style="display: none;">
-                <h3>No Widgets Configured</h3>
-                <p>Configure controls and motor port assignments in Design Mode.</p>
+                <h3>No Controls Configured</h3>
+                <p>Create robot controls and assign motor ports.</p>
                 <a href="/design" class="btn btn-primary" style="margin-top: 12px; display: inline-block;">
-                    Open Design Mode
+                    Open Design
                 </a>
             </div>
 
             <div id="run-widget-list" class="run-widget-list">
-                <!-- Dynamically populated run-mode cards -->
+                <!-- Dynamically populated run cards -->
             </div>
         </section>
 
@@ -61,10 +61,10 @@
                     <div class="log-container">
                         <div class="log-header">
                             <span>Command &amp; Event Log</span>
-                            <button id="btn-clear-log" class="btn btn-sm btn-secondary">Clear Log</button>
+                            <button id="btn-clear-log" class="btn btn-sm btn-secondary">Clear</button>
                         </div>
                         <div id="log-box" class="log-box">
-                            <div class="log-entry log-info">[System] Run Mode initialized.</div>
+                            <div class="log-entry log-info">[System] Run initialized.</div>
                         </div>
                     </div>
                 </div>
