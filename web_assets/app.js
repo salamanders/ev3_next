@@ -792,8 +792,10 @@ class EV3App {
             portBadge = `Port ${w.port}`;
         }
 
+        const size = w.size || (w.type === "joystick" ? "2x2" : "2x1");
+
         return `
-            <div class="run-card" id="run-card-${w.id}">
+            <div class="run-card run-card-${w.type} run-card-${size}" id="run-card-${w.id}">
                 <div class="run-card-header">
                     <span class="run-card-title">${w.title}</span>
                     <span class="badge badge-info">${portBadge}</span>
@@ -858,7 +860,7 @@ class EV3App {
         if (!boundary || !knob) return;
 
         let dragging = false;
-        const maxRadius = 70; // 200px boundary - 56px knob / 2 ≈ 72px
+        const maxRadius = Math.max(30, (boundary.clientWidth - knob.clientWidth) / 2 || 70);
 
         const updatePosition = (clientX, clientY) => {
             const rect = boundary.getBoundingClientRect();

@@ -579,6 +579,12 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
   - Eliminated the word "Mode" from all visible user interface text (0 occurrences).
   - Removed all redundant labels and duplicate text across cards and controls.
   - Verified touch interaction and captured verified screenshots.
+- [x] **Step 10.8: 2x2 Square and 2x1 Half-Height Grid Layout**
+  - Configured 2-column mobile layout and 4-column desktop layout (`grid-auto-flow: dense`) for `.run-widget-list`.
+  - Added `.run-card-2x2` (1:1 aspect ratio square) for 2D joystick widgets.
+  - Added `.run-card-2x1` (2:1 aspect ratio half-height) for sliders, buttons, and sensor cards.
+  - Sized joystick boundary and inner controls with CSS clamp so a 2x2 joystick with a 2x1 slider cleanly forms a 2x3 mobile layout filling the screen without scrolling.
+  - Verified layout across desktop (1280x800) and mobile (390x844) viewports.
 
 ---
 
