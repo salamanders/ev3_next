@@ -19,6 +19,24 @@ pub struct MotorStatus {
     pub polarity: String,
 }
 
+impl MotorStatus {
+    pub fn disconnected(port: &str) -> Self {
+        Self {
+            port: port.to_string(),
+            address: format!("out{}", port),
+            driver_name: "none".into(),
+            position: 0,
+            speed: 0,
+            duty_cycle: 0,
+            state: vec![],
+            max_speed: 1050,
+            count_per_rot: 360,
+            connected: false,
+            polarity: "normal".into(),
+        }
+    }
+}
+
 #[derive(Default)]
 struct CachedMotorFiles {
     position: Option<File>,
@@ -261,15 +279,6 @@ impl Motor {
         let path = self.sysfs_path.join(attr);
         let mut file = OpenOptions::new().write(true).open(&path)?;
         file.write_all(val.as_bytes())
-    }
-
-    #[allow(dead_code)]
-    fn read_attr(&self, attr: &str) -> io::Result<String> {
-        let path = self.sysfs_path.join(attr);
-        let mut file = File::open(&path)?;
-        let mut content = String::new();
-        file.read_to_string(&mut content)?;
-        Ok(content.trim().to_string())
     }
 }
 

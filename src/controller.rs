@@ -112,49 +112,29 @@ impl MotorController {
     }
 
     fn query_real_motors(motors: &[Motor]) -> Vec<MotorStatus> {
-        let mut statuses = Vec::new();
-        for port_letter in ["A", "B", "C", "D"] {
-            if let Some(m) = motors.iter().find(|m| m.port == port_letter) {
-                statuses.push(m.read_status());
-            } else {
-                // Return disconnected placeholder
-                statuses.push(MotorStatus {
-                    port: port_letter.to_string(),
-                    address: format!("out{}", port_letter),
-                    driver_name: "none".into(),
-                    position: 0,
-                    speed: 0,
-                    duty_cycle: 0,
-                    state: vec![],
-                    max_speed: 1050,
-                    count_per_rot: 360,
-                    connected: false,
-                    polarity: "normal".into(),
-                });
-            }
-        }
-        statuses
+        ["A", "B", "C", "D"]
+            .iter()
+            .map(|&port| {
+                motors
+                    .iter()
+                    .find(|m| m.port == port)
+                    .map(|m| m.read_status())
+                    .unwrap_or_else(|| MotorStatus::disconnected(port))
+            })
+            .collect()
     }
 
     fn query_real_sensors(sensors: &[Sensor]) -> Vec<SensorStatus> {
-        let mut statuses = Vec::new();
-        for port_num in ["1", "2", "3", "4"] {
-            if let Some(s) = sensors.iter().find(|s| s.port == port_num) {
-                statuses.push(s.read_status());
-            } else {
-                statuses.push(SensorStatus {
-                    port: port_num.to_string(),
-                    address: format!("in{}", port_num),
-                    driver_name: "none".into(),
-                    connected: false,
-                    mode: "".into(),
-                    modes: vec![],
-                    value0: 0.0,
-                    units: "".into(),
-                });
-            }
-        }
-        statuses
+        ["1", "2", "3", "4"]
+            .iter()
+            .map(|&port| {
+                sensors
+                    .iter()
+                    .find(|s| s.port == port)
+                    .map(|s| s.read_status())
+                    .unwrap_or_else(|| SensorStatus::disconnected(port))
+            })
+            .collect()
     }
 
     fn query_real_battery() -> BatteryStatus {
@@ -340,16 +320,11 @@ impl MotorController {
     }
 
     pub fn get_port_status(&self, port: &str) -> Result<serde_json::Value, String> {
-        self.touch_client_poll();
         if ["A", "B", "C", "D"].iter().any(|p| p.eq_ignore_ascii_case(port)) {
-            let cache = self.cached_status.read().map_err(|e| e.to_string())?;
-            let status = cache
-                .iter()
-                .find(|m| m.port.eq_ignore_ascii_case(port))
-                .cloned()
-                .ok_or_else(|| format!("Port '{}' not found", port))?;
+            let status = self.get_port_motor_status(port)?;
             serde_json::to_value(status).map_err(|e| e.to_string())
         } else if ["1", "2", "3", "4"].iter().any(|p| p.eq_ignore_ascii_case(port)) {
+            self.touch_client_poll();
             let cache = self.cached_sensors.read().map_err(|e| e.to_string())?;
             let status = cache
                 .iter()
@@ -464,7 +439,10 @@ impl MotorController {
         if let Ok(mut wd) = self.watchdog.lock() {
             wd.continuous_active = true;
         }
+        self.raw_run_forever(port, speed)
+    }
 
+    fn raw_run_forever(&self, port: &str, speed: i32) -> Result<(), String> {
         match &self.backend {
             HardwareBackend::Mock(mock) => {
                 mock.run_forever(port, speed);
@@ -578,25 +556,9 @@ impl MotorController {
             return Ok(());
         }
 
-        self.run_forever_internal(left_port, left_speed)?;
-        self.run_forever_internal(right_port, right_speed)?;
+        self.raw_run_forever(left_port, left_speed)?;
+        self.raw_run_forever(right_port, right_speed)?;
         Ok(())
-    }
-
-    fn run_forever_internal(&self, port: &str, speed: i32) -> Result<(), String> {
-        match &self.backend {
-            HardwareBackend::Mock(mock) => {
-                mock.run_forever(port, speed);
-                Ok(())
-            }
-            HardwareBackend::Real => {
-                let motor = self.get_real_motor(port)?;
-                motor.set_stop_action("coast").map_err(|e| e.to_string())?;
-                motor.set_speed_sp(speed).map_err(|e| e.to_string())?;
-                motor.send_command("run-forever").map_err(|e| e.to_string())?;
-                Ok(())
-            }
-        }
     }
 
     pub fn emergency_stop(&self) -> Result<(), String> {
@@ -630,18 +592,18 @@ impl MotorController {
         }
     }
 
-    pub fn rescan(&self) -> Result<Vec<MotorStatus>, String> {
+    pub fn rescan(&self) -> Result<AllPortsStatus, String> {
         match &self.backend {
             HardwareBackend::Mock(mock) => {
-                let status = mock.poll_and_get_all_status();
+                let motors = mock.poll_and_get_all_status();
                 let sensors = mock.poll_and_get_all_sensors();
                 if let Ok(mut cache) = self.cached_status.write() {
-                    *cache = status.clone();
+                    *cache = motors;
                 }
                 if let Ok(mut cache) = self.cached_sensors.write() {
                     *cache = sensors;
                 }
-                Ok(status)
+                Ok(self.get_all_ports_status())
             }
             HardwareBackend::Real => {
                 let (lock, cvar) = &*self.rescan_signal;
@@ -653,7 +615,7 @@ impl MotorController {
                 if result.1.timed_out() {
                     return Err("Hardware rescan timed out".into());
                 }
-                Ok(self.cached_status.read().unwrap().clone())
+                Ok(self.get_all_ports_status())
             }
         }
     }
@@ -727,9 +689,10 @@ mod tests {
     #[test]
     fn test_controller_rescan_mock() {
         let controller = MotorController::new(true, 15);
-        let rescan_motors = controller.rescan().expect("rescan should succeed in mock mode");
-        assert_eq!(rescan_motors.len(), 4);
-        assert!(rescan_motors.iter().any(|m| m.port == "A"));
-        assert!(rescan_motors.iter().any(|m| m.port == "B"));
+        let rescan = controller.rescan().expect("rescan should succeed in mock mode");
+        assert_eq!(rescan.motors.len(), 4);
+        assert_eq!(rescan.sensors.len(), 4);
+        assert!(rescan.motors.iter().any(|m| m.port == "A"));
+        assert!(rescan.motors.iter().any(|m| m.port == "B"));
     }
 }

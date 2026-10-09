@@ -42,45 +42,34 @@ impl DisplayController {
 
     /// Render compact text layout that fits within 10-row or 16-row consoles without scrolling (BUG-32)
     pub fn format_ready_screen(ip: &str, port: u16, battery_v: f32) -> String {
-        let mut lines = Vec::new();
-
-        lines.push("=== EV3 MOTOR WEB ===".to_string());
-        lines.push(Self::truncate_pad("Status: ONLINE"));
-        if ip == "No network" {
-            lines.push(Self::truncate_pad("IP: (Waiting...)"));
+        let ip_line = if ip == "No network" {
+            "IP: (Waiting...)".to_string()
         } else if port == 80 {
-            lines.push(Self::truncate_pad(&format!("IP: {}", ip)));
+            format!("IP: {}", ip)
         } else {
-            lines.push(Self::truncate_pad(&format!("IP: {}:{}", ip, port)));
-        }
-        lines.push(Self::truncate_pad(&format!("Batt: {:.1} V", battery_v)));
-        lines.push(Self::truncate_pad("Stop: Spacebar/UI"));
-        lines.push("=====================".to_string());
+            format!("IP: {}:{}", ip, port)
+        };
+
+        let raw_lines = [
+            "=== EV3 MOTOR WEB ===",
+            "Status: ONLINE",
+            &ip_line,
+            &format!("Batt: {:.1} V", battery_v),
+            "Stop: Spacebar/UI",
+            "=====================",
+        ];
 
         // Join lines with newline; last line has NO trailing newline (BUG-22)
         let mut output = String::from("\x1b[?25l\x1b[2J\x1b[H"); // Hide cursor + Clear screen + Home cursor
-        for (i, line) in lines.iter().enumerate() {
-            let truncated = if line.chars().count() > Self::MAX_COLS {
-                line.chars().take(Self::MAX_COLS).collect::<String>()
-            } else {
-                line.clone()
-            };
-
+        for (i, line) in raw_lines.iter().enumerate() {
+            let truncated: String = line.chars().take(Self::MAX_COLS).collect();
             output.push_str(&truncated);
-            if i + 1 < lines.len() {
+            if i + 1 < raw_lines.len() {
                 output.push('\n');
             }
         }
 
         output
-    }
-
-    fn truncate_pad(s: &str) -> String {
-        if s.chars().count() > Self::MAX_COLS {
-            s.chars().take(Self::MAX_COLS).collect()
-        } else {
-            s.to_string()
-        }
     }
 
     /// Write arbitrary formatted screen string to /dev/tty1 or stdout in mock

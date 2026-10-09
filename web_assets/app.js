@@ -1,6 +1,6 @@
 /**
  * LEGO Mindstorms EV3 Web Dashboard Controller
- * Enforces strict single-responsibility boundaries, zero duplication, and ES2025+ standards.
+ * Enforces single-responsibility boundaries, zero duplication, and ES2025+.
  */
 
 // Restricts numeric magnitude between lower and upper bounds.
@@ -49,40 +49,14 @@ class EV3App {
         return !!document.getElementById("design-view");
     }
 
-    // Persists configuration in browser storage with backward-compatible migrations.
+    // Persists configuration in local memory with fallback defaults.
     initStorage() {
         try {
             const raw = localStorage.getItem("ev3_dashboard_widgets");
             if (raw) {
                 const parsed = JSON.parse(raw);
                 if (Array.isArray(parsed) && parsed.length > 0) {
-                    this.widgets = parsed.map(w => {
-                        // Migrate legacy separate button types into consolidated action button
-                        if (["momentary", "toggle", "step", "timed"].includes(w.type)) {
-                            return {
-                                id: w.id,
-                                type: "button",
-                                title: w.title,
-                                port: w.port ?? "A",
-                                speed: w.speed ?? 600,
-                                action: w.type === "timed" ? "momentary" : w.type,
-                                degrees: w.degrees ?? 90
-                            };
-                        }
-                        // Strip obsolete joystick modes and inversion flags
-                        if (w.type === "joystick") {
-                            return {
-                                id: w.id,
-                                type: "joystick",
-                                title: w.title,
-                                leftPort: w.leftPort ?? "B",
-                                rightPort: w.rightPort ?? "C",
-                                maxSpeed: w.maxSpeed ?? 800
-                            };
-                        }
-                        return w;
-                    });
-                    this.saveWidgets();
+                    this.widgets = parsed;
                     return;
                 }
             }
@@ -170,27 +144,33 @@ class EV3App {
         }
     }
 
-    // Dispatches hardware updates at 15 Hz to prevent network queue congestion.
+    // Enforces rate limits with guaranteed delivery of latest trailing action.
     throttle(key, intervalMs, fn) {
         const now = Date.now();
-        const entry = this.throttleMap.get(key) ?? { last: 0, timer: null };
+        const entry = this.throttleMap.get(key) ?? { last: 0, timer: null, nextFn: null };
+        entry.nextFn = fn;
 
         if (now - entry.last >= intervalMs) {
             entry.last = now;
+            if (entry.timer) {
+                clearTimeout(entry.timer);
+                entry.timer = null;
+            }
             this.throttleMap.set(key, entry);
             fn();
         } else if (!entry.timer) {
             entry.timer = setTimeout(() => {
                 entry.last = Date.now();
                 entry.timer = null;
-                this.throttleMap.set(key, entry);
-                fn();
+                const toRun = entry.nextFn;
+                entry.nextFn = null;
+                if (toRun) toRun();
             }, intervalMs - (now - entry.last));
             this.throttleMap.set(key, entry);
         }
     }
 
-    // Transmits commands to server with network timeout protection.
+    // Transmits commands to server and unwraps result data.
     async apiPost(endpoint, payload) {
         const res = await fetch(endpoint, {
             method: "POST",
@@ -199,16 +179,21 @@ class EV3App {
             signal: AbortSignal.timeout(3000)
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json().catch(() => ({}));
+        const json = await res.json().catch(() => ({}));
+        return json.data ?? json;
     }
 
     // Immediately brakes all moving hardware channels.
     async emergencyStop() {
         try {
-            await this.apiPost("/api/estop", {});
+            await this.apiPost("/api/emergency-stop", {});
             this.activeToggles.clear();
-            document.querySelectorAll(".btn-toggle").forEach(b => {
-                b.className = "btn btn-big-action btn-toggle btn-secondary";
+            this.widgets.filter(w => w.type === "button" && w.action === "toggle").forEach(w => {
+                const b = document.getElementById(`btn-action-${w.id}`);
+                if (b) {
+                    b.className = "btn btn-big-action btn-toggle btn-secondary";
+                    b.textContent = `Start Motor (${w.speed > 0 ? "+" : ""}${w.speed})`;
+                }
             });
             document.querySelectorAll(".run-range-slider").forEach(s => {
                 s.value = "0";
@@ -276,7 +261,7 @@ class EV3App {
         let html = "";
         for (const [_, item] of portMap) {
             if (item.connected) connectedCount++;
-            const badgeClass = item.connected ? (item.type === "sensor" ? "badge-mode" : "badge-connected") : "badge-disconnected";
+            const badgeClass = item.connected ? "badge-connected" : "badge-disconnected";
             const badgeLabel = item.connected ? (item.mode || "Connected") : "None";
             html += `
                 <div class="hw-item ${item.connected ? 'active' : ''}">
@@ -474,6 +459,9 @@ class EV3App {
     renderRunCard(w) {
         const sizeClass = w.type === "joystick" ? "run-card-2x2" : "run-card-2x1";
         const portBadge = w.type === "joystick" ? `Ports ${w.leftPort}+${w.rightPort}` : `Port ${w.port}`;
+        const portAttr = (w.type === "slider" || w.type === "button")
+            ? `data-motor-port="${w.port}"`
+            : (w.type === "sensor" ? `data-sensor-port="${w.port}"` : "");
         let body = "";
 
         if (w.type === "joystick") {
@@ -504,12 +492,13 @@ class EV3App {
         } else if (w.type === "button") {
             const isToggle = w.action === "toggle";
             const isStep = w.action === "step";
+            const btnClass = isToggle ? "btn-secondary btn-toggle" : "btn-primary";
             const label = isToggle
                 ? `Start Motor (${w.speed > 0 ? "+" : ""}${w.speed})`
                 : (isStep ? `Rotate ${w.degrees}° (${w.speed} ticks/s)` : `Hold to Run (${w.speed > 0 ? "+" : ""}${w.speed})`);
             body = `
                 <div class="run-button-box">
-                    <button class="btn btn-primary btn-big-action btn-action-card" id="btn-action-${w.id}" data-id="${w.id}">
+                    <button class="btn ${btnClass} btn-big-action btn-action-card" id="btn-action-${w.id}" data-id="${w.id}">
                         ${label}
                     </button>
                 </div>
@@ -517,14 +506,14 @@ class EV3App {
         } else if (w.type === "sensor") {
             body = `
                 <div class="run-sensor-box">
-                    <div class="sensor-display-val" id="sensor-val-${w.id}">--</div>
+                    <div class="sensor-display-val" data-sensor-port="${w.port}" id="sensor-val-${w.id}">--</div>
                     <div class="sensor-display-unit text-muted">${w.mode}</div>
                 </div>
             `;
         }
 
         return `
-            <div class="run-card ${sizeClass}" id="run-card-${w.id}">
+            <div class="run-card ${sizeClass}" id="run-card-${w.id}" ${portAttr}>
                 <div class="run-card-header">
                     <span class="run-card-title">${escapeHtml(w.title)}</span>
                     <span class="badge badge-info">${portBadge}</span>
@@ -634,22 +623,26 @@ class EV3App {
             const speed = parseInt(e.target.value, 10);
             if (readout) readout.textContent = speed;
             this.throttle(`slider_${w.id}`, 66, () => {
-                if (speed === 0) {
-                    this.apiPost(`/api/motor/${w.port}/stop`, { action: "brake" }).catch(() => {});
-                } else {
-                    this.apiPost(`/api/motor/${w.port}/run-forever`, { speed }).catch(() => {});
-                }
+                const payload = speed === 0
+                    ? { command: "stop", stop_action: "brake" }
+                    : { speed };
+                this.apiPost(`/api/port/${w.port}`, payload).catch(() => {});
             });
         });
 
         btnZero?.addEventListener("click", () => {
             slider.value = "0";
             if (readout) readout.textContent = "0";
-            this.apiPost(`/api/motor/${w.port}/stop`, { action: "brake" }).catch(() => {});
+            const entry = this.throttleMap.get(`slider_${w.id}`);
+            if (entry?.timer) {
+                clearTimeout(entry.timer);
+                entry.timer = null;
+            }
+            this.apiPost(`/api/port/${w.port}`, { command: "stop", stop_action: "brake" }).catch(() => {});
         });
     }
 
-    // Unifies press-and-hold, latching, and discrete rotation commands.
+    // Unifies hold-to-run, toggle, and discrete angle movements.
     initButton(w) {
         const btn = document.getElementById(`btn-action-${w.id}`);
         if (!btn) return;
@@ -661,14 +654,15 @@ class EV3App {
                 if (active) return;
                 active = true;
                 btn.classList.add("btn-danger");
-                this.apiPost(`/api/motor/${w.port}/run-forever`, { speed: w.speed }).catch(() => {});
+                try { btn.setPointerCapture(e.pointerId); } catch (_) {}
+                this.apiPost(`/api/port/${w.port}`, { speed: w.speed }).catch(() => {});
             };
             const stop = (e) => {
                 e.preventDefault();
                 if (!active) return;
                 active = false;
                 btn.classList.remove("btn-danger");
-                this.apiPost(`/api/motor/${w.port}/stop`, { action: "brake" }).catch(() => {});
+                this.apiPost(`/api/port/${w.port}`, { command: "stop", stop_action: "brake" }).catch(() => {});
             };
             btn.addEventListener("pointerdown", start);
             btn.addEventListener("pointerup", stop);
@@ -681,11 +675,11 @@ class EV3App {
                 if (isRunning) {
                     btn.className = "btn btn-big-action btn-toggle toggle-active";
                     btn.textContent = "Stop Motor";
-                    this.apiPost(`/api/motor/${w.port}/run-forever`, { speed: w.speed }).catch(() => {});
+                    this.apiPost(`/api/port/${w.port}`, { speed: w.speed }).catch(() => {});
                 } else {
                     btn.className = "btn btn-big-action btn-toggle btn-secondary";
                     btn.textContent = `Start Motor (${w.speed > 0 ? "+" : ""}${w.speed})`;
-                    this.apiPost(`/api/motor/${w.port}/stop`, { action: "brake" }).catch(() => {});
+                    this.apiPost(`/api/port/${w.port}`, { command: "stop", stop_action: "brake" }).catch(() => {});
                 }
             });
         } else if (w.action === "step") {
@@ -694,9 +688,9 @@ class EV3App {
                 const orig = btn.textContent;
                 btn.textContent = "Rotating...";
                 try {
-                    await this.apiPost(`/api/motor/${w.port}/run-to-rel-pos`, {
+                    await this.apiPost(`/api/port/${w.port}`, {
                         speed: w.speed,
-                        position_sp: w.degrees,
+                        degrees: w.degrees,
                         stop_action: "hold"
                     });
                 } finally {
@@ -709,7 +703,7 @@ class EV3App {
         }
     }
 
-    // Background heartbeat collecting battery, latency, and device telemetry.
+    // Background heartbeat collecting battery, latency, and peripheral telemetry.
     startPolling() {
         if (this.pollTimer) clearInterval(this.pollTimer);
         this.pollTimer = setInterval(async () => {
@@ -717,12 +711,13 @@ class EV3App {
             try {
                 const res = await fetch("/api/status", { signal: AbortSignal.timeout(2000) });
                 if (!res.ok) throw new Error();
-                const data = await res.json();
+                const json = await res.json();
+                const data = json.data ?? json;
                 const rtt = Math.round(performance.now() - t0);
 
                 this.setConnectionState(true, rtt);
-                if (this.dom.batteryVal && data.battery_voltage) {
-                    this.dom.batteryVal.textContent = data.battery_voltage.toFixed(1);
+                if (this.dom.batteryVal && data.battery) {
+                    this.dom.batteryVal.textContent = data.battery.voltage_v.toFixed(1);
                 }
 
                 if (this.isDesignView && this.dom.diagDetails?.open) {
@@ -731,6 +726,10 @@ class EV3App {
 
                 if (data.sensors) {
                     this.updateSensorReadouts(data.sensors);
+                }
+
+                if (data.motors) {
+                    this.updateRunCardTelemetry(data.motors);
                 }
             } catch (_) {
                 this.setConnectionState(false, 0);
@@ -769,9 +768,28 @@ class EV3App {
 
     updateSensorReadouts(sensors) {
         sensors.forEach(s => {
-            const readout = document.querySelector(`.sensor-display-val[id$="${s.port}"]`);
-            if (readout && s.value !== undefined) {
-                readout.textContent = s.value;
+            document.querySelectorAll(`.sensor-display-val[data-sensor-port="${s.port}"]`).forEach(el => {
+                el.textContent = s.connected ? s.value0 : "--";
+            });
+            document.querySelectorAll(`.run-card[data-sensor-port="${s.port}"] .run-card-footer`).forEach(el => {
+                el.textContent = s.connected ? (s.driver_name || "Connected") : "Disconnected";
+            });
+        });
+    }
+
+    updateRunCardTelemetry(motors) {
+        motors.forEach(m => {
+            document.querySelectorAll(`.run-card[data-motor-port="${m.port}"] .run-card-footer`).forEach(el => {
+                el.textContent = m.connected ? `${m.speed} ticks/s | ${m.position}°` : "Disconnected";
+            });
+        });
+
+        this.widgets.filter(w => w.type === "joystick").forEach(w => {
+            const left = motors.find(m => m.port === w.leftPort);
+            const right = motors.find(m => m.port === w.rightPort);
+            const footer = document.querySelector(`#run-card-${w.id} .run-card-footer`);
+            if (footer) {
+                footer.textContent = `L: ${left?.speed ?? 0} | R: ${right?.speed ?? 0} ticks/s`;
             }
         });
     }

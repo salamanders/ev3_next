@@ -102,3 +102,21 @@ The web dashboard updates automatically from the Git repository on boot without 
   - Dynamic radius scaling adapts to element dimensions.
   - Client-side 15 Hz throttle prevents network queue saturation.
 - **Footer Status Bar:** Passive telemetry (`Battery`, `Online`, `RTT`) and brick safety actions (`STOP ALL`, `Power Off`) live in the footer, keeping primary robot controls above the fold.
+
+---
+
+## 6. Code Organization & Separation of Concerns
+
+Use this guide to place new features in the correct layer:
+
+| Subsystem | File / Directory | What Goes Here | What Does NOT Go Here |
+| :--- | :--- | :--- | :--- |
+| **Hardware sysfs Drivers** | `src/sysfs/` (`motor.rs`, `sensor.rs`, `led.rs`, `display.rs`, `wifi.rs`, `mock.rs`) | Direct Linux `/sys` operations, device discovery, file descriptor caching, hardware mocks. | No HTTP handling, no web routing, no JSON payload parsing. |
+| **System State & Poller** | `src/controller.rs` | Background telemetry polling loop, in-memory status caching, safety watchdogs, emergency stop. | No raw HTTP socket operations, no HTML rendering. |
+| **HTTP Transport & Routing** | `src/web/router.rs` | URL route dispatch, HTTP methods, security headers (Origin/Host validation), static asset delivery. | No direct sysfs file reads, no motor physics math. |
+| **API Payloads & Schemas** | `src/web/handlers.rs` | Request/response structs, command normalization, parameter inference, JSON serialization. | No hardware communication, no thread management. |
+| **Configuration & CLI** | `src/config.rs` | CLI arguments, port configuration, mock detection flags. | No runtime motor control, no network serving. |
+| **Application Lifecycle** | `src/main.rs` | Program startup, worker thread pool initialization, LCD refresher thread, shutdown handling. | No low-level driver logic, no route definitions. |
+| **Frontend Templates** | `web_assets/index.html`, `design.html` | Semantic HTML structure for Run and Design views. | No business logic, no styling rules. |
+| **Frontend Styles** | `web_assets/style.css` | CSS variables, layout grid rules, mobile viewport media queries. | No application state, no dynamic DOM manipulation. |
+| **Frontend Logic** | `web_assets/app.js` | UI event listeners, pointer capture, client rate limiting (15 Hz), API communication. | No direct sysfs references, no HTML templates larger than single cards. |

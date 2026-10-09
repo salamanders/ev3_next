@@ -78,16 +78,28 @@ curl -X POST http://<ip>/api/port/3 \
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `GET` | `/api/status` | Returns telemetry for motors on ports A, B, C, and D. |
+| `GET` | `/api/status` | Returns system telemetry (motors, sensors, battery) from in-memory cache. |
 | `GET` | `/api/telemetry` | Alias for `/api/status`. |
-| `GET` | `/api/battery` | Returns voltage (`mV`) and current (`mA`). |
+| `GET` | `/api/battery` | Returns battery voltage (`V`) and current (`A`). |
+
+### Envelope Format
+
+All responses use this standard JSON structure:
+```json
+{
+  "success": true,
+  "data": { ... }
+}
+```
 
 ### Sample Response (`GET /api/battery`):
 ```json
 {
-  "voltage_mv": 7820,
-  "current_ma": 140,
-  "connected": true
+  "success": true,
+  "data": {
+    "voltage_v": 7.8,
+    "current_a": 0.12
+  }
 }
 ```
 

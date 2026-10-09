@@ -23,11 +23,21 @@ fn is_valid_gz(bytes: &[u8]) -> bool {
     bytes.len() >= 18 && bytes.starts_with(&[0x1f, 0x8b])
 }
 
+struct AssetEntry {
+    name: &'static str,
+    baseline: &'static [u8],
+}
+
+const ASSET_ENTRIES: [AssetEntry; 4] = [
+    AssetEntry { name: "index.html.gz", baseline: BASELINE_HTML_GZ },
+    AssetEntry { name: "design.html.gz", baseline: BASELINE_DESIGN_HTML_GZ },
+    AssetEntry { name: "style.css.gz", baseline: BASELINE_CSS_GZ },
+    AssetEntry { name: "app.js.gz", baseline: BASELINE_JS_GZ },
+];
+
 fn load_web_assets_from(assets_dir: &std::path::Path, is_mock: bool) -> (Arc<[u8]>, Arc<[u8]>, Arc<[u8]>, Arc<[u8]>) {
     let custom_dir = std::env::var("WEB_ASSETS_DIR").is_ok();
 
-    // If running in mock mode on host without a custom test directory, and target directory does not exist,
-    // immediately fall back to embedded baseline assets without attempting rootfs directory creation.
     if is_mock && !custom_dir && !assets_dir.exists() {
         println!("[ASSETS] Mock mode active: serving baseline embedded web assets from RAM (~18 KB)");
         return (
@@ -38,114 +48,61 @@ fn load_web_assets_from(assets_dir: &std::path::Path, is_mock: bool) -> (Arc<[u8
         );
     }
 
-    // Inspect directory for .gz files
-    let mut gz_count = 0;
-    if assets_dir.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(assets_dir) {
-            for entry in entries.flatten() {
-                if let Ok(ft) = entry.file_type() {
-                    if ft.is_file() {
-                        let fname = entry.file_name();
-                        if fname.to_string_lossy().ends_with(".gz") {
-                            gz_count += 1;
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let has_all_four = assets_dir.is_dir() && ASSET_ENTRIES.iter().all(|a| assets_dir.join(a.name).is_file());
 
-    let html_path = assets_dir.join("index.html.gz");
-    let design_path = assets_dir.join("design.html.gz");
-    let css_path = assets_dir.join("style.css.gz");
-    let js_path = assets_dir.join("app.js.gz");
-    let has_all_four = html_path.is_file()
-        && design_path.is_file()
-        && css_path.is_file()
-        && js_path.is_file();
-
-    // Self-healing check: if directory does not exist, contains fewer than 4 .gz files, or missing any required asset
-    if !assets_dir.exists() || gz_count < 4 || !has_all_four {
+    if !assets_dir.exists() || !has_all_four {
         println!(
-            "[ASSETS] Self-healing: directory {:?} missing or incomplete (found {} .gz files). Restoring baseline assets...",
-            assets_dir, gz_count
+            "[ASSETS] Self-healing: directory {:?} missing or incomplete. Restoring baseline assets...",
+            assets_dir
         );
-        if let Err(e) = std::fs::create_dir_all(assets_dir) {
-            eprintln!("[ASSETS WARN] Failed to create {:?}: {}", assets_dir, e);
-        } else {
-            let write_html = std::fs::write(&html_path, BASELINE_HTML_GZ);
-            let write_design = std::fs::write(&design_path, BASELINE_DESIGN_HTML_GZ);
-            let write_css = std::fs::write(&css_path, BASELINE_CSS_GZ);
-            let write_js = std::fs::write(&js_path, BASELINE_JS_GZ);
-            // Invalidate stale .version so the boot updater will re-download latest assets
-            if let Err(e) = std::fs::remove_file(assets_dir.join(".version")) {
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    eprintln!("[ASSETS WARN] Failed to remove .version: {}", e);
+        let _ = std::fs::create_dir_all(assets_dir);
+        let _ = std::fs::remove_file(assets_dir.join(".version"));
+        for entry in &ASSET_ENTRIES {
+            let p = assets_dir.join(entry.name);
+            if !p.is_file() {
+                if let Err(e) = std::fs::write(&p, entry.baseline) {
+                    eprintln!("[ASSETS WARN] Failed writing {}: {}", entry.name, e);
                 }
-            }
-
-            if let Err(e) = write_html {
-                eprintln!("[ASSETS WARN] Failed writing index.html.gz: {}", e);
-            }
-            if let Err(e) = write_design {
-                eprintln!("[ASSETS WARN] Failed writing design.html.gz: {}", e);
-            }
-            if let Err(e) = write_css {
-                eprintln!("[ASSETS WARN] Failed writing style.css.gz: {}", e);
-            }
-            if let Err(e) = write_js {
-                eprintln!("[ASSETS WARN] Failed writing app.js.gz: {}", e);
             }
         }
     }
 
-    // Load assets from disk into RAM, verifying gzip integrity and falling back to embedded bytes
-    let load_asset = |path: &std::path::Path, baseline: &'static [u8], name: &str| -> Arc<[u8]> {
-        match std::fs::read(path) {
-            Ok(bytes) if is_valid_gz(&bytes) => Arc::from(bytes.into_boxed_slice()),
+    let mut loaded: Vec<Arc<[u8]>> = Vec::with_capacity(4);
+    for entry in &ASSET_ENTRIES {
+        let path = assets_dir.join(entry.name);
+        let bytes = match std::fs::read(&path) {
+            Ok(b) if is_valid_gz(&b) => Arc::from(b.into_boxed_slice()),
             Ok(corrupted) => {
                 eprintln!(
                     "[ASSETS WARN] Corrupted {} in {:?} ({} B, magic header invalid). Restoring embedded baseline.",
-                    name, assets_dir, corrupted.len()
+                    entry.name, assets_dir, corrupted.len()
                 );
-                if let Err(e) = std::fs::write(path, baseline) {
-                    eprintln!("[ASSETS WARN] Failed to restore baseline {}: {}", name, e);
-                }
-                if let Err(e) = std::fs::remove_file(assets_dir.join(".version")) {
-                    if e.kind() != std::io::ErrorKind::NotFound {
-                        eprintln!("[ASSETS WARN] Failed to remove .version: {}", e);
-                    }
-                }
-                Arc::from(baseline)
+                let _ = std::fs::write(&path, entry.baseline);
+                let _ = std::fs::remove_file(assets_dir.join(".version"));
+                Arc::from(entry.baseline)
             }
             Err(e) => {
-                if is_mock {
-                    println!("[ASSETS] Mock fallback for {}: {}", name, e);
-                } else {
+                if !is_mock {
                     eprintln!(
                         "[ASSETS WARN] Could not read {} from {:?}: {}. Using embedded baseline.",
-                        name, assets_dir, e
+                        entry.name, assets_dir, e
                     );
                 }
-                Arc::from(baseline)
+                Arc::from(entry.baseline)
             }
-        }
-    };
-
-    let html_gz = load_asset(&html_path, BASELINE_HTML_GZ, "index.html.gz");
-    let design_html_gz = load_asset(&design_path, BASELINE_DESIGN_HTML_GZ, "design.html.gz");
-    let css_gz = load_asset(&css_path, BASELINE_CSS_GZ, "style.css.gz");
-    let js_gz = load_asset(&js_path, BASELINE_JS_GZ, "app.js.gz");
+        };
+        loaded.push(bytes);
+    }
 
     println!(
         "[ASSETS] Loaded pre-gzipped assets into RAM: index ({} B), design ({} B), CSS ({} B), JS ({} B).",
-        html_gz.len(),
-        design_html_gz.len(),
-        css_gz.len(),
-        js_gz.len(),
+        loaded[0].len(),
+        loaded[1].len(),
+        loaded[2].len(),
+        loaded[3].len(),
     );
 
-    (html_gz, design_html_gz, css_gz, js_gz)
+    (loaded[0].clone(), loaded[1].clone(), loaded[2].clone(), loaded[3].clone())
 }
 
 fn load_web_assets(is_mock: bool) -> (Arc<[u8]>, Arc<[u8]>, Arc<[u8]>, Arc<[u8]>) {
@@ -223,7 +180,7 @@ impl Router {
             }
 
             // Telemetry Endpoint (reads in <0.05ms from cache)
-            (Method::Get, "/api/status") => {
+            (Method::Get, "/api/status") | (Method::Get, "/api/telemetry") => {
                 let status = self.controller.get_system_status();
                 self.respond_json(request, StatusCode(200), &ApiResponse::ok(status));
             }
@@ -252,7 +209,7 @@ impl Router {
             }
 
             // Global Emergency Stop
-            (Method::Post, "/api/emergency-stop") => {
+            (Method::Post, "/api/emergency-stop") | (Method::Post, "/api/estop") => {
                 match self.controller.emergency_stop() {
                     Ok(_) => self.respond_json(request, StatusCode(200), &ApiResponse::ok("All motors stopped")),
                     Err(e) => self.respond_json(request, StatusCode(500), &ApiResponse::<()>::err(e)),
@@ -262,7 +219,7 @@ impl Router {
             // Rescan Hardware Devices Endpoint
             (Method::Post, "/api/rescan") => {
                 match self.controller.rescan() {
-                    Ok(motors) => self.respond_json(request, StatusCode(200), &ApiResponse::ok(motors)),
+                    Ok(ports) => self.respond_json(request, StatusCode(200), &ApiResponse::ok(ports)),
                     Err(e) => self.respond_json(request, StatusCode(500), &ApiResponse::<()>::err(e)),
                 }
             }
@@ -325,12 +282,11 @@ impl Router {
         }
     }
 
-    fn handle_port_post(&self, mut request: Request, path: &str) {
-        let raw_port = path.trim_start_matches("/api/port/");
-        let normalized = match normalize_port_name(raw_port) {
+    fn dispatch_port_command(&self, request: Request, port_str: &str, payload: PortCommandPayload) {
+        let normalized = match normalize_port_name(port_str) {
             Some(p) => p,
             None => {
-                self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(format!("Invalid port: '{}'", raw_port)));
+                self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(format!("Invalid port: '{}'", port_str)));
                 return;
             }
         };
@@ -344,16 +300,25 @@ impl Router {
             1050
         };
 
-        match self.read_json_body::<PortCommandPayload>(&mut request) {
-            Ok(payload) => match payload.resolve(max_speed) {
-                Ok(cmd) => match self.controller.execute_port_command(&normalized, &cmd) {
-                    Ok(msg) => self.respond_json(request, StatusCode(200), &ApiResponse::ok(msg)),
-                    Err(e) => self.respond_json(request, StatusCode(500), &ApiResponse::<()>::err(e)),
-                },
-                Err(e) => self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(e)),
+        match payload.resolve(max_speed) {
+            Ok(cmd) => match self.controller.execute_port_command(&normalized, &cmd) {
+                Ok(msg) => self.respond_json(request, StatusCode(200), &ApiResponse::ok(msg)),
+                Err(e) => self.respond_json(request, StatusCode(500), &ApiResponse::<()>::err(e)),
             },
             Err(e) => self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(e)),
         }
+    }
+
+    fn handle_port_post(&self, mut request: Request, path: &str) {
+        let raw_port = path.trim_start_matches("/api/port/");
+        let payload = match self.read_json_body::<PortCommandPayload>(&mut request) {
+            Ok(p) => p,
+            Err(e) => {
+                self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(e));
+                return;
+            }
+        };
+        self.dispatch_port_command(request, raw_port, payload);
     }
 
     fn handle_motor_post(&self, mut request: Request, path: &str) {
@@ -366,70 +331,10 @@ impl Router {
         let port = parts[0];
         let action = parts[1];
 
-        match action {
-            "run-forever" => {
-                match self.read_json_body::<RunForeverPayload>(&mut request) {
-                    Ok(payload) => match self.controller.run_forever(port, payload.speed) {
-                        Ok(_) => self.respond_json(request, StatusCode(200), &ApiResponse::ok("Motor running forever")),
-                        Err(e) => self.respond_json(request, StatusCode(500), &ApiResponse::<()>::err(e)),
-                    },
-                    Err(e) => self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(e)),
-                }
-            }
-            "run-timed" => {
-                match self.read_json_body::<RunTimedPayload>(&mut request) {
-                    Ok(payload) => match self.controller.run_timed(port, payload.speed, payload.time_ms, payload.stop_action) {
-                        Ok(_) => self.respond_json(request, StatusCode(200), &ApiResponse::ok("Motor running timed")),
-                        Err(e) => self.respond_json(request, StatusCode(500), &ApiResponse::<()>::err(e)),
-                    },
-                    Err(e) => self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(e)),
-                }
-            }
-            "run-to-rel-pos" => {
-                match self.read_json_body::<RunToRelPosPayload>(&mut request) {
-                    Ok(payload) => match self.controller.run_to_rel_pos(port, payload.speed, payload.position_sp, payload.stop_action) {
-                        Ok(_) => self.respond_json(request, StatusCode(200), &ApiResponse::ok("Motor running to relative position")),
-                        Err(e) => self.respond_json(request, StatusCode(500), &ApiResponse::<()>::err(e)),
-                    },
-                    Err(e) => self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(e)),
-                }
-            }
-            "run-direct" => {
-                match self.read_json_body::<RunDirectPayload>(&mut request) {
-                    Ok(payload) => match self.controller.run_direct(port, payload.duty_cycle) {
-                        Ok(_) => self.respond_json(request, StatusCode(200), &ApiResponse::ok("Motor running direct duty cycle")),
-                        Err(e) => self.respond_json(request, StatusCode(500), &ApiResponse::<()>::err(e)),
-                    },
-                    Err(e) => self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(e)),
-                }
-            }
-            "stop" => {
-                let payload_opt = self.read_json_body::<StopPayload>(&mut request).ok();
-                let stop_action = payload_opt.and_then(|p| p.action);
-                match self.controller.stop(port, stop_action) {
-                    Ok(_) => self.respond_json(request, StatusCode(200), &ApiResponse::ok("Motor stopped")),
-                    Err(e) => self.respond_json(request, StatusCode(500), &ApiResponse::<()>::err(e)),
-                }
-            }
-            "reset" => {
-                match self.controller.reset(port) {
-                    Ok(_) => self.respond_json(request, StatusCode(200), &ApiResponse::ok("Motor reset")),
-                    Err(e) => self.respond_json(request, StatusCode(500), &ApiResponse::<()>::err(e)),
-                }
-            }
-            "polarity" => {
-                match self.read_json_body::<PolarityPayload>(&mut request) {
-                    Ok(payload) => match self.controller.set_polarity(port, &payload.polarity) {
-                        Ok(_) => self.respond_json(request, StatusCode(200), &ApiResponse::ok("Motor polarity updated")),
-                        Err(e) => self.respond_json(request, StatusCode(500), &ApiResponse::<()>::err(e)),
-                    },
-                    Err(e) => self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(e)),
-                }
-            }
-            _ => {
-                self.respond_json(request, StatusCode(404), &ApiResponse::<()>::err(format!("Unknown motor action: {}", action)));
-            }
-        }
+        let mut payload = self.read_json_body::<PortCommandPayload>(&mut request).unwrap_or_default();
+        payload.command = Some(action.to_string());
+
+        self.dispatch_port_command(request, port, payload);
     }
 
     fn read_json_body<T: serde::de::DeserializeOwned>(&self, request: &mut Request) -> Result<T, String> {
@@ -655,7 +560,7 @@ mod tests {
         let router_clone = router.clone();
         let server_clone = server;
         let thread_handle = std::thread::spawn(move || {
-            for _ in 0..16 {
+            for _ in 0..20 {
                 if let Ok(req) = server_clone.recv() {
                     router_clone.handle_request(req);
                 }
@@ -877,6 +782,63 @@ mod tests {
 
             assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
             assert!(resp_str.contains("\"success\":true"));
+        }
+
+        // 15. Test GET /api/telemetry (alias for /api/status)
+        {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream.write_all(b"GET /api/telemetry HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
+            let mut resp = Vec::new();
+            stream.read_to_end(&mut resp).unwrap();
+            let resp_str = String::from_utf8_lossy(&resp);
+
+            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
+            assert!(resp_str.contains("\"success\":true"));
+            assert!(resp_str.contains("\"motors\":["));
+        }
+
+        // 16. Test POST /api/estop (alias for /api/emergency-stop)
+        {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream.write_all(b"POST /api/estop HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: 0\r\n\r\n").unwrap();
+            let mut resp = Vec::new();
+            stream.read_to_end(&mut resp).unwrap();
+            let resp_str = String::from_utf8_lossy(&resp);
+
+            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
+            assert!(resp_str.contains("\"success\":true"));
+            assert!(resp_str.contains("All motors stopped"));
+        }
+
+        // 17. Test legacy POST /api/motor/outA/run-forever (normalizes outA -> A)
+        {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let body = b"{\"speed\": 400}";
+            let req = format!(
+                "POST /api/motor/outA/run-forever HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                std::str::from_utf8(body).unwrap()
+            );
+            stream.write_all(req.as_bytes()).unwrap();
+            let mut resp = Vec::new();
+            stream.read_to_end(&mut resp).unwrap();
+            let resp_str = String::from_utf8_lossy(&resp);
+
+            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
+            assert!(resp_str.contains("\"success\":true"));
+        }
+
+        // 18. Test legacy POST /api/motor/B/stop
+        {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream.write_all(b"POST /api/motor/B/stop HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: 0\r\n\r\n").unwrap();
+            let mut resp = Vec::new();
+            stream.read_to_end(&mut resp).unwrap();
+            let resp_str = String::from_utf8_lossy(&resp);
+
+            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
+            assert!(resp_str.contains("\"success\":true"));
+            assert!(resp_str.contains("stopped"));
         }
 
         thread_handle.join().unwrap();

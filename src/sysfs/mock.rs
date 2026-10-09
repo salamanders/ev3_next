@@ -38,75 +38,36 @@ struct MockMotorState {
     last_tick: Instant,
 }
 
+impl MockMotorState {
+    fn new(port: &'static str, driver_name: &'static str, max_speed: i32, now: Instant) -> Self {
+        Self {
+            port,
+            driver_name,
+            max_speed,
+            count_per_rot: 360,
+            speed_sp: 0,
+            duty_cycle_sp: 0,
+            position: 0.0,
+            target_pos: None,
+            time_remaining_ms: None,
+            running: false,
+            holding: false,
+            stop_action: "brake".into(),
+            polarity: "normal".into(),
+            last_tick: now,
+        }
+    }
+}
+
 impl MockController {
     pub fn new() -> Self {
         let now = Instant::now();
         Self {
             motors: Arc::new(Mutex::new([
-                MockMotorState {
-                    port: "A",
-                    driver_name: "lego-ev3-l-motor (mock)",
-                    max_speed: 1050,
-                    count_per_rot: 360,
-                    speed_sp: 0,
-                    duty_cycle_sp: 0,
-                    position: 0.0,
-                    target_pos: None,
-                    time_remaining_ms: None,
-                    running: false,
-                    holding: false,
-                    stop_action: "brake".into(),
-                    polarity: "normal".into(),
-                    last_tick: now,
-                },
-                MockMotorState {
-                    port: "B",
-                    driver_name: "lego-ev3-l-motor (mock)",
-                    max_speed: 1050,
-                    count_per_rot: 360,
-                    speed_sp: 0,
-                    duty_cycle_sp: 0,
-                    position: 0.0,
-                    target_pos: None,
-                    time_remaining_ms: None,
-                    running: false,
-                    holding: false,
-                    stop_action: "brake".into(),
-                    polarity: "normal".into(),
-                    last_tick: now,
-                },
-                MockMotorState {
-                    port: "C",
-                    driver_name: "lego-ev3-m-motor (mock)",
-                    max_speed: 1560,
-                    count_per_rot: 360,
-                    speed_sp: 0,
-                    duty_cycle_sp: 0,
-                    position: 0.0,
-                    target_pos: None,
-                    time_remaining_ms: None,
-                    running: false,
-                    holding: false,
-                    stop_action: "brake".into(),
-                    polarity: "normal".into(),
-                    last_tick: now,
-                },
-                MockMotorState {
-                    port: "D",
-                    driver_name: "lego-ev3-m-motor (mock)",
-                    max_speed: 1560,
-                    count_per_rot: 360,
-                    speed_sp: 0,
-                    duty_cycle_sp: 0,
-                    position: 0.0,
-                    target_pos: None,
-                    time_remaining_ms: None,
-                    running: false,
-                    holding: false,
-                    stop_action: "brake".into(),
-                    polarity: "normal".into(),
-                    last_tick: now,
-                },
+                MockMotorState::new("A", "lego-ev3-l-motor (mock)", 1050, now),
+                MockMotorState::new("B", "lego-ev3-l-motor (mock)", 1050, now),
+                MockMotorState::new("C", "lego-ev3-m-motor (mock)", 1560, now),
+                MockMotorState::new("D", "lego-ev3-m-motor (mock)", 1560, now),
             ])),
             sensors: Arc::new(Mutex::new([
                 MockSensorState {
@@ -153,31 +114,6 @@ impl MockController {
         let mut m = self.motors.lock().unwrap();
         if let Some(motor) = m.iter_mut().find(|m| m.port.eq_ignore_ascii_case(port)) {
             motor.polarity = if polarity == "inversed" { "inversed".into() } else { "normal".into() };
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn set_speed_sp(&self, port: &str, speed: i32) {
-        let mut m = self.motors.lock().unwrap();
-        if let Some(motor) = m.iter_mut().find(|m| m.port.eq_ignore_ascii_case(port)) {
-            motor.speed_sp = speed.clamp(-motor.max_speed, motor.max_speed);
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn set_duty_cycle_sp(&self, port: &str, duty: i32) {
-        let mut m = self.motors.lock().unwrap();
-        if let Some(motor) = m.iter_mut().find(|m| m.port.eq_ignore_ascii_case(port)) {
-            motor.duty_cycle_sp = duty.clamp(-100, 100);
-            motor.speed_sp = (motor.max_speed * duty) / 100;
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn set_stop_action(&self, port: &str, action: &str) {
-        let mut m = self.motors.lock().unwrap();
-        if let Some(motor) = m.iter_mut().find(|m| m.port.eq_ignore_ascii_case(port)) {
-            motor.stop_action = action.to_string();
         }
     }
 

@@ -2,45 +2,11 @@ use serde::{Deserialize, Serialize};
 use crate::sysfs::MotorStatus;
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct RunForeverPayload {
-    pub speed: i32,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct RunTimedPayload {
-    pub speed: i32,
-    pub time_ms: u32,
-    pub stop_action: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct RunToRelPosPayload {
-    pub speed: i32,
-    pub position_sp: i32,
-    pub stop_action: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct RunDirectPayload {
-    pub duty_cycle: i32,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct StopPayload {
-    pub action: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
 pub struct TankDrivePayload {
     pub left_port: Option<String>,
     pub right_port: Option<String>,
     pub left_speed: i32,
     pub right_speed: i32,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct PolarityPayload {
-    pub polarity: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -57,6 +23,7 @@ pub struct PortCommandPayload {
     pub position_sp: Option<f64>,
     pub degrees: Option<f64>,
     pub stop_action: Option<String>,
+    pub action: Option<String>,
     pub polarity: Option<String>,
     pub mode: Option<String>,
 }
@@ -104,7 +71,7 @@ impl PortCommandPayload {
     }
 
     pub fn resolve(&self, max_speed: i32) -> Result<ResolvedPortCommand, String> {
-        let default_stop = self.stop_action.clone().unwrap_or_else(|| "brake".into());
+        let default_stop = self.stop_action.as_ref().or(self.action.as_ref()).cloned().unwrap_or_else(|| "brake".into());
         let speed_input = self.speed.as_ref().or(self.speed_sp.as_ref());
         let duty_input = self
             .duty
@@ -256,6 +223,21 @@ pub struct SensorStatus {
     pub modes: Vec<String>,
     pub value0: f32,
     pub units: String,
+}
+
+impl SensorStatus {
+    pub fn disconnected(port: &str) -> Self {
+        Self {
+            port: port.to_string(),
+            address: format!("in{}", port),
+            driver_name: "none".into(),
+            connected: false,
+            mode: "".into(),
+            modes: vec![],
+            value0: 0.0,
+            units: "".into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

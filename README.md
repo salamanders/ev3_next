@@ -32,7 +32,7 @@ Detailed guides are modularized in the [`docs/`](docs/) directory:
 
 - **[Appliance Setup Guide](docs/setup.md):** Detailed image baking (`tools/bake-image.sh`), drive verification, command-line flashing (`tools/flash-image.sh`), and first boot.
 - **[Development & Deployment Guide](docs/development.md):** Cross-compilation toolchain, host simulation, USB networking (Windows RNDIS / macOS CDC), and deployment scripts.
-- **[System Architecture Guide](docs/architecture.md):** Runtime memory model, non-blocking sysfs polling, two-tier safety watchdogs, and self-updating web assets.
+- **[System Architecture Guide](docs/architecture.md):** Runtime memory model, non-blocking sysfs polling, two-tier safety watchdogs, web asset pipeline, and code organization rules.
 - **[REST API Reference](docs/api.md):** Complete JSON REST API reference table, unified `/api/port` controller, payload schemas, and examples.
 
 ---
@@ -57,7 +57,7 @@ ev3_next/
 ├── docs/                    # Modular documentation guides and screenshots
 │   ├── setup.md             # Appliance image baking, flashing, and first boot
 │   ├── development.md       # Cross-compilation, USB networking, and deploy scripts
-│   ├── architecture.md      # Memory budget, in-memory polling, and asset pipeline
+│   ├── architecture.md      # Memory budget, polling loop, asset pipeline, and code organization
 │   ├── api.md               # REST API reference and payload schemas
 │   └── screenshots/         # Dashboard screenshots (desktop and mobile)
 ├── tools/                   # Appliance automation scripts (bake, flash, update)

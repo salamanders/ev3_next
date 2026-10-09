@@ -100,17 +100,21 @@ body {
 }
 .badge-connected .dot { background-color: #10b981; }
 
-.badge-connecting {
-    background-color: rgba(245, 158, 11, 0.2);
-    color: #fbbf24;
-}
-.badge-connecting .dot { background-color: #f59e0b; }
-
-.badge-error {
+.badge-disconnected {
     background-color: rgba(239, 68, 68, 0.2);
     color: #f87171;
 }
-.badge-error .dot { background-color: #ef4444; }
+.badge-disconnected .dot { background-color: #ef4444; }
+
+.badge-ready {
+    background-color: rgba(59, 130, 246, 0.2);
+    color: #60a5fa;
+}
+
+.badge-running {
+    background-color: rgba(16, 185, 129, 0.2);
+    color: #34d399;
+}
 
 .badge-info {
     background-color: #1e293b;
@@ -155,9 +159,6 @@ body {
 
 .btn-danger { background-color: var(--danger); color: white; }
 .btn-danger:hover { background-color: var(--danger-hover); }
-
-.btn-warning { background-color: var(--warning); color: #1e293b; }
-.btn-warning:hover { background-color: var(--warning-hover); }
 
 .btn-secondary { background-color: #334155; color: var(--text-main); }
 .btn-secondary:hover { background-color: #475569; }
@@ -240,28 +241,29 @@ body {
     border-radius: 8px;
     padding: 10px 12px;
     display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.hw-item.active {
+    border-color: rgba(16, 185, 129, 0.4);
+}
+
+.hw-item-header {
+    display: flex;
     justify-content: space-between;
     align-items: center;
 }
 
-.hw-port-badge {
+.hw-port-label {
     font-weight: 700;
     font-size: 13px;
     color: #f59e0b;
 }
 
-.hw-driver {
+.hw-driver-name {
     font-size: 12px;
     color: var(--text-muted);
-}
-
-.hw-connected {
-    border-color: rgba(16, 185, 129, 0.4);
-}
-
-.hw-disconnected {
-    border-color: rgba(148, 163, 184, 0.2);
-    opacity: 0.6;
 }
 
 /* Builder Toolbar Card */
@@ -441,7 +443,7 @@ body {
     font-weight: 700;
 }
 
-.run-card-status {
+.run-card-footer {
     font-size: 12px;
     color: var(--text-muted);
     font-variant-numeric: tabular-nums;

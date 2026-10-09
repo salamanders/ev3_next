@@ -23,6 +23,8 @@
 | **Phase 9** | Streamlined Appliance Mode & Pre-Baked Image | **HOST TOOLING COMPLETE, REBAKE PENDING**. The on-disk image (`ev3-web-motor-ready.img.xz`) is out of date and pending a clean rebake. |
 | **Phase 10** | Modular Dashboard Builder (Design & Run Modes) | **COMPLETE**. Card-based widget builder, Design & Run modes, 2D joystick (15 Hz rate-limited), and POST /api/rescan. |
 | **Phase 11** | Unified Low-Level Port Control API (`GET` & `POST /api/port/{port}`) | **COMPLETE**. Sysfs sensor driver, 4 mock sensors, hybrid JSON command resolver, cached non-blocking telemetry, and Sensor Display widget. |
+| **Phase 12** | Dedicated Route Pages & UI Simplification | **COMPLETE**. Dedicated `/design` and `/run` routes, compile-time gzip pipeline, 4-asset in-RAM cache, and uncluttered UI. |
+| **Phase 13** | Codebase Simplification & De-duplication | **COMPLETE**. Unified port command execution, table-driven asset loader, clean envelope handling, live card telemetry, and architecture boundary guide. |
 
 ---
 
@@ -41,6 +43,8 @@
 12. [Phase 9: Streamlined Appliance Mode & Pre-Baked Disk Image](#12-phase-9-streamlined-appliance-mode--pre-baked-disk-image)
 13. [Phase 10: Modular Dashboard Builder (Design Mode vs Run Mode)](#13-phase-10-modular-dashboard-builder-design-mode-vs-run-mode)
 14. [Phase 11: Unified Low-Level Port Control API (`GET` & `POST /api/port/{port}`)](#14-phase-11-unified-low-level-port-control-api-get--post-apiportport)
+15. [Phase 12: Dedicated Route Pages & UI Simplification](#15-phase-12-dedicated-route-pages--ui-simplification)
+16. [Phase 13: Codebase Simplification & De-duplication](#16-phase-13-codebase-simplification--de-duplication)
 
 ---
 
@@ -686,5 +690,54 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
   - Refactored `web_assets/app.js` (60% line reduction from 1,296 to 522 lines) adhering to `clean-javascript` and `ui-conciseness-audit`.
   - Updated pre-compression pipeline (`build.rs`), updater script, and router asset loader to manage 4 assets in RAM.
   - All 35 unit tests pass. Captured verified desktop and mobile screenshots.
+
+---
+
+## 16. Phase 13: Codebase Simplification & De-duplication
+
+### 16.1 Core Principles and Scope Limits
+- **Minimal Engineering:** Remove unused abstractions, redundant structs, and dead code across backend and frontend layers.
+- **Single Source of Truth:** Route all motor commands through `PortCommandPayload` and `/api/port/{port}`.
+- **Explicit Boundaries:** Document file responsibilities with clear rules answering "Where should I put a new thing?".
+- **UI Conciseness:** Eliminate the word "mode" from element IDs, remove dead CSS classes, and maintain reactive status telemetry.
+- **Simplified Technical English:** Write documentation with short sentences and direct language.
+
+### 16.2 Architectural Decisions and Status Labels
+
+| Decision / Component | Status Label | Technical Rationale |
+| :--- | :--- | :--- |
+| **Unified Command Dispatch** | `[ADOPTED]` | Routes motor actions through `/api/port/{port}` and `PortCommandPayload`, removing 6 redundant payload structs in [`src/web/handlers.rs`](src/web/handlers.rs). |
+| **Table-Driven Asset Loader** | `[ADOPTED]` | Replaces repeated asset loading code with a static `ASSET_ENTRIES` table in [`src/web/router.rs`](src/web/router.rs). |
+| **All-Ports Rescan Return** | `[ADOPTED]` | Updates `POST /api/rescan` in [`src/controller.rs`](src/controller.rs) to return `AllPortsStatus`, providing current sensor inventory to the client. |
+| **Telemetry & E-Stop Aliases** | `[ADOPTED]` | Adds `/api/telemetry` (pointing to `/api/status`) and `/api/estop` (pointing to `/api/emergency-stop`) in [`src/web/router.rs`](src/web/router.rs). |
+| **Code Organization Matrix** | `[ADOPTED]` | Defines explicit subsystem boundaries in [`docs/architecture.md`](docs/architecture.md) (Section 6) to prevent code sprawl. |
+| **Client Status Envelope Handling** | `[ADOPTED]` | Resolves `ApiResponse<T>` envelope in [`web_assets/app.js`](web_assets/app.js), restoring battery voltage and sensor readouts. |
+
+### 16.3 Implementation Checklist
+
+- [x] **Step 13.1: Sysfs Driver & Controller De-duplication (`src/sysfs/`, `src/controller.rs`)**
+  - Added `MotorStatus::disconnected(port)` constructor and removed dead `read_attr()` in [`src/sysfs/motor.rs`](src/sysfs/motor.rs).
+  - Added `MockMotorState::new` constructor and removed dead setter methods in [`src/sysfs/mock.rs`](src/sysfs/mock.rs).
+  - Added `SensorStatus::disconnected(port)` constructor in [`src/web/handlers.rs`](src/web/handlers.rs).
+  - Removed duplicate string truncation in [`src/sysfs/display.rs`](src/sysfs/display.rs).
+  - Replaced repetitive loops with functional iterator mappings in [`src/controller.rs`](src/controller.rs).
+  - Extracted shared helper `raw_run_forever` and updated `rescan()` to return `AllPortsStatus` via `self.get_all_ports_status()`.
+- [x] **Step 13.2: Router & Payload Schema Consolidation (`src/web/router.rs`, `src/web/handlers.rs`)**
+  - Reduced `load_web_assets_from` using `ASSET_ENTRIES` table.
+  - Unified `handle_port_post` and `handle_motor_post` through `dispatch_port_command` helper with port normalization.
+  - Added route aliases `/api/telemetry` and `/api/estop`, plus automated tests for legacy motor endpoints and aliases.
+  - Documented JSON response envelope and corrected battery telemetry units in [`docs/api.md`](docs/api.md).
+- [x] **Step 13.3: Frontend Cleanup & Telemetry Fixes (`web_assets/`)**
+  - Renamed `btn-mode-*` navigation IDs to `btn-nav-*` in HTML templates.
+  - Resolved class name mismatch by styling `.run-card-footer` in [`web_assets/style.css`](web_assets/style.css).
+  - Fixed trailing callback drop in `throttle()` to guarantee delivery of final zero or speed commands.
+  - Fixed toggle button label reset on emergency stop and added pointer capture to momentary buttons.
+  - Resolved `ApiResponse<T>` envelope unwrapping and added live telemetry to motor and sensor card footers.
+- [x] **Step 13.4: Architectural Documentation Guide (`docs/architecture.md`)**
+  - Added Section 6 ("Code Organization & Separation of Concerns") with explicit subsystem responsibilities.
+- [x] **Step 13.5: Test Verification**
+  - All 35 automated tests pass (`cargo test`).
+  - Static release compilation verified with `cargo check --release`.
+
 
 
