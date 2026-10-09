@@ -573,6 +573,12 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
   - Continuous slider, momentary button, toggle button, timed move, step move.
 - [x] **Step 10.6: Host Simulation & Automated Testing**
   - 31 unit tests pass (`cargo test`); mock simulation verified with curl endpoints.
+- [x] **Step 10.7: Streamlined Navigation, Footer Status, and Zero-Redundancy UI**
+  - Consolidated top navigation into a single compact tab bar (`Design` / `Run`).
+  - Relocated battery, connection, latency, emergency stop, and power off to the footer.
+  - Eliminated the word "Mode" from all visible user interface text (0 occurrences).
+  - Removed all redundant labels and duplicate text across cards and controls.
+  - Verified touch interaction and captured verified screenshots.
 
 ---
 
