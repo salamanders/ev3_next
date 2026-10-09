@@ -2,9 +2,9 @@
 
 A fast, lightweight web server in Rust for the LEGO Mindstorms EV3 hardware (Texas Instruments Sitara AM1808, ARMv5te @ 300MHz, 64MB DRAM).
 
-| Design View (`/design`) | Run View (`/run`) |
-| :---: | :---: |
-| ![Design View](docs/screenshots/screenshot_design.png) | ![Run View](docs/screenshots/screenshot_run.png) |
+| Design View (`/design`) | Run View Desktop (`/run`) | Run View Mobile (390×844) |
+| :---: | :---: | :---: |
+| ![Design View](docs/screenshots/screenshot_design.png) | ![Run View Desktop](docs/screenshots/screenshot_run.png) | ![Run View Mobile](docs/screenshots/screenshot_run_mobile.png) |
 
 ---
 

@@ -90,8 +90,15 @@ The web dashboard updates automatically from the Git repository on boot without 
 ## 5. Frontend Dashboard Architecture
 
 - **Single Top Tab Navigation:** Compact `Design` and `Run` tabs eliminate duplicate headers and maximize vertical screen space.
+- **Responsive 2-Unit Grid System:**
+  - Uses 2 columns on mobile devices and 4 columns on desktop displays (`grid-auto-flow: dense`).
+  - **2x2 Square Widget (`.run-card-2x2`):** 2 columns by 2 rows with 1:1 aspect ratio. Used for the 2D joystick widget.
+  - **2x1 Half-Height Widget (`.run-card-2x1`):** 2 columns by 1 row with 2:1 aspect ratio. Used for sliders, action buttons, and sensor displays.
+  - Sized so a 2x2 joystick with a 2x1 slider forms a 2x3 mobile layout (~560 px height) that fills mobile viewports without vertical scrolling.
+  - On desktop displays, two 2x1 cards stack next to the 2x2 joystick to match its total height.
 - **2D Virtual Joystick:**
   - Pointer capture API isolates touch and mouse input.
   - `touch-action: none` prevents touch dragging from scrolling the page on mobile devices.
+  - Dynamic radius scaling adapts to element dimensions.
   - Client-side 15 Hz throttle prevents network queue saturation.
 - **Footer Status Bar:** Passive telemetry (`Battery`, `Online`, `RTT`) and brick safety actions (`STOP ALL`, `Power Off`) live in the footer, keeping primary robot controls above the fold.
