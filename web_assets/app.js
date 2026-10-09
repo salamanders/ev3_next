@@ -942,6 +942,7 @@ class EV3App {
         };
 
         boundary.addEventListener("pointerdown", (e) => {
+            e.preventDefault();
             dragging = true;
             knob.classList.add("active");
             boundary.setPointerCapture(e.pointerId);
@@ -949,7 +950,10 @@ class EV3App {
         });
 
         boundary.addEventListener("pointermove", (e) => {
-            if (dragging) updatePosition(e.clientX, e.clientY);
+            if (dragging) {
+                e.preventDefault();
+                updatePosition(e.clientX, e.clientY);
+            }
         });
 
         boundary.addEventListener("pointerup", (e) => {
@@ -958,6 +962,7 @@ class EV3App {
         });
 
         boundary.addEventListener("pointercancel", () => stopJoystick());
+        boundary.addEventListener("contextmenu", (e) => e.preventDefault());
     }
 
     initSliderWidget(w) {
