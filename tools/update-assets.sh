@@ -34,7 +34,7 @@ if [ -z "${REMOTE_SHA}" ] || [ ${#REMOTE_SHA} -ne 40 ]; then
 fi
 
 # 2. Check if already up-to-date and all asset files exist
-if [ -f "${VERSION_FILE}" ] && [ -s "${ASSETS_DIR}/index.html.gz" ] && [ -s "${ASSETS_DIR}/design.html.gz" ] && [ -s "${ASSETS_DIR}/run.html.gz" ] && [ -s "${ASSETS_DIR}/style.css.gz" ] && [ -s "${ASSETS_DIR}/app.js.gz" ]; then
+if [ -f "${VERSION_FILE}" ] && [ -s "${ASSETS_DIR}/index.html.gz" ] && [ -s "${ASSETS_DIR}/design.html.gz" ] && [ -s "${ASSETS_DIR}/style.css.gz" ] && [ -s "${ASSETS_DIR}/app.js.gz" ]; then
     LOCAL_SHA=$(tr -d '[:space:]' < "${VERSION_FILE}" 2>/dev/null || true)
     if [ "${LOCAL_SHA}" = "${REMOTE_SHA}" ]; then
         exit 0
@@ -47,7 +47,7 @@ trap 'rm -rf "${TMP_DIR}" 2>/dev/null || true' INT TERM HUP
 rm -rf "${TMP_DIR}"
 mkdir -p "${TMP_DIR}"
 
-for file in index.html design.html run.html style.css app.js; do
+for file in index.html design.html style.css app.js; do
     if ! curl -k -s -m 5 -f "${RAW_BASE}/${REMOTE_SHA}/web_assets/${file}" -o "${TMP_DIR}/${file}" 2>/dev/null || [ ! -s "${TMP_DIR}/${file}" ]; then
         rm -rf "${TMP_DIR}"
         exit 0
@@ -62,8 +62,8 @@ done
 
 echo "${REMOTE_SHA}" > "${TMP_DIR}/.version"
 
-# 4. If all 5 .gz files exist: set permissions, clear target and atomically move
-if [ -f "${TMP_DIR}/index.html.gz" ] && [ -f "${TMP_DIR}/design.html.gz" ] && [ -f "${TMP_DIR}/run.html.gz" ] && [ -f "${TMP_DIR}/style.css.gz" ] && [ -f "${TMP_DIR}/app.js.gz" ]; then
+# 4. If all 4 .gz files exist: set permissions, clear target and atomically move
+if [ -f "${TMP_DIR}/index.html.gz" ] && [ -f "${TMP_DIR}/design.html.gz" ] && [ -f "${TMP_DIR}/style.css.gz" ] && [ -f "${TMP_DIR}/app.js.gz" ]; then
     chmod 0755 "${TMP_DIR}" 2>/dev/null || true
     chmod 0644 "${TMP_DIR}"/* "${TMP_DIR}/.version" 2>/dev/null || true
     chown -R 1000:1000 "${TMP_DIR}" 2>/dev/null || true

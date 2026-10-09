@@ -677,5 +677,14 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
   - Verified host simulation with mock server.
   - Captured `screenshot_design.png` and `screenshot_run.png`.
   - Documented screenshot previews in `README.md`.
+- [x] **Step 12.6: Anti-Over-Engineering Cleanup & Codebase Consolidation**
+  - Removed duplicate `web_assets/run.html` (serving `index.html` for both `/` and `/run`).
+  - Removed Diagnostics & Log drawer from Run view, reserving it exclusively for Design view.
+  - Stripped out speculative joystick features (steering mode dropdown, independent axes, invert checkboxes) down to simple Left Motor, Right Motor, and Max Speed.
+  - Consolidated 4 button widget types into a single parameterized Action Button widget.
+  - Defaulted starter layout to exactly 2 widgets (2x2 Joystick on top + 2x1 Slider below), cleanly filling mobile viewports.
+  - Refactored `web_assets/app.js` (60% line reduction from 1,296 to 522 lines) adhering to `clean-javascript` and `ui-conciseness-audit`.
+  - Updated pre-compression pipeline (`build.rs`), updater script, and router asset loader to manage 4 assets in RAM.
+  - All 35 unit tests pass. Captured verified desktop and mobile screenshots.
 
 

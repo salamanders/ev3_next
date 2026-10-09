@@ -7,7 +7,6 @@ use crate::web::handlers::*;
 // Embedded Single Page Application Web Assets (pre-gzipped at compile time)
 const BASELINE_HTML_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/index.html.gz"));
 const BASELINE_DESIGN_HTML_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/design.html.gz"));
-const BASELINE_RUN_HTML_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/run.html.gz"));
 const BASELINE_CSS_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/style.css.gz"));
 const BASELINE_JS_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/app.js.gz"));
 
@@ -15,7 +14,6 @@ pub struct Router {
     controller: Arc<MotorController>,
     html_gz: Arc<[u8]>,
     design_html_gz: Arc<[u8]>,
-    run_html_gz: Arc<[u8]>,
     css_gz: Arc<[u8]>,
     js_gz: Arc<[u8]>,
 }
@@ -25,7 +23,7 @@ fn is_valid_gz(bytes: &[u8]) -> bool {
     bytes.len() >= 18 && bytes.starts_with(&[0x1f, 0x8b])
 }
 
-fn load_web_assets_from(assets_dir: &std::path::Path, is_mock: bool) -> (Arc<[u8]>, Arc<[u8]>, Arc<[u8]>, Arc<[u8]>, Arc<[u8]>) {
+fn load_web_assets_from(assets_dir: &std::path::Path, is_mock: bool) -> (Arc<[u8]>, Arc<[u8]>, Arc<[u8]>, Arc<[u8]>) {
     let custom_dir = std::env::var("WEB_ASSETS_DIR").is_ok();
 
     // If running in mock mode on host without a custom test directory, and target directory does not exist,
@@ -35,7 +33,6 @@ fn load_web_assets_from(assets_dir: &std::path::Path, is_mock: bool) -> (Arc<[u8
         return (
             Arc::from(BASELINE_HTML_GZ),
             Arc::from(BASELINE_DESIGN_HTML_GZ),
-            Arc::from(BASELINE_RUN_HTML_GZ),
             Arc::from(BASELINE_CSS_GZ),
             Arc::from(BASELINE_JS_GZ),
         );
@@ -60,17 +57,15 @@ fn load_web_assets_from(assets_dir: &std::path::Path, is_mock: bool) -> (Arc<[u8
 
     let html_path = assets_dir.join("index.html.gz");
     let design_path = assets_dir.join("design.html.gz");
-    let run_path = assets_dir.join("run.html.gz");
     let css_path = assets_dir.join("style.css.gz");
     let js_path = assets_dir.join("app.js.gz");
-    let has_all_five = html_path.is_file()
+    let has_all_four = html_path.is_file()
         && design_path.is_file()
-        && run_path.is_file()
         && css_path.is_file()
         && js_path.is_file();
 
-    // Self-healing check: if directory does not exist, contains fewer than 5 .gz files, or missing any required asset
-    if !assets_dir.exists() || gz_count < 5 || !has_all_five {
+    // Self-healing check: if directory does not exist, contains fewer than 4 .gz files, or missing any required asset
+    if !assets_dir.exists() || gz_count < 4 || !has_all_four {
         println!(
             "[ASSETS] Self-healing: directory {:?} missing or incomplete (found {} .gz files). Restoring baseline assets...",
             assets_dir, gz_count
@@ -80,7 +75,6 @@ fn load_web_assets_from(assets_dir: &std::path::Path, is_mock: bool) -> (Arc<[u8
         } else {
             let write_html = std::fs::write(&html_path, BASELINE_HTML_GZ);
             let write_design = std::fs::write(&design_path, BASELINE_DESIGN_HTML_GZ);
-            let write_run = std::fs::write(&run_path, BASELINE_RUN_HTML_GZ);
             let write_css = std::fs::write(&css_path, BASELINE_CSS_GZ);
             let write_js = std::fs::write(&js_path, BASELINE_JS_GZ);
             // Invalidate stale .version so the boot updater will re-download latest assets
@@ -95,9 +89,6 @@ fn load_web_assets_from(assets_dir: &std::path::Path, is_mock: bool) -> (Arc<[u8
             }
             if let Err(e) = write_design {
                 eprintln!("[ASSETS WARN] Failed writing design.html.gz: {}", e);
-            }
-            if let Err(e) = write_run {
-                eprintln!("[ASSETS WARN] Failed writing run.html.gz: {}", e);
             }
             if let Err(e) = write_css {
                 eprintln!("[ASSETS WARN] Failed writing style.css.gz: {}", e);
@@ -143,23 +134,21 @@ fn load_web_assets_from(assets_dir: &std::path::Path, is_mock: bool) -> (Arc<[u8
 
     let html_gz = load_asset(&html_path, BASELINE_HTML_GZ, "index.html.gz");
     let design_html_gz = load_asset(&design_path, BASELINE_DESIGN_HTML_GZ, "design.html.gz");
-    let run_html_gz = load_asset(&run_path, BASELINE_RUN_HTML_GZ, "run.html.gz");
     let css_gz = load_asset(&css_path, BASELINE_CSS_GZ, "style.css.gz");
     let js_gz = load_asset(&js_path, BASELINE_JS_GZ, "app.js.gz");
 
     println!(
-        "[ASSETS] Loaded pre-gzipped assets into RAM: index ({} B), design ({} B), run ({} B), CSS ({} B), JS ({} B).",
+        "[ASSETS] Loaded pre-gzipped assets into RAM: index ({} B), design ({} B), CSS ({} B), JS ({} B).",
         html_gz.len(),
         design_html_gz.len(),
-        run_html_gz.len(),
         css_gz.len(),
         js_gz.len(),
     );
 
-    (html_gz, design_html_gz, run_html_gz, css_gz, js_gz)
+    (html_gz, design_html_gz, css_gz, js_gz)
 }
 
-fn load_web_assets(is_mock: bool) -> (Arc<[u8]>, Arc<[u8]>, Arc<[u8]>, Arc<[u8]>, Arc<[u8]>) {
+fn load_web_assets(is_mock: bool) -> (Arc<[u8]>, Arc<[u8]>, Arc<[u8]>, Arc<[u8]>) {
     use std::path::PathBuf;
 
     let assets_dir: PathBuf = std::env::var("WEB_ASSETS_DIR")
@@ -172,12 +161,11 @@ fn load_web_assets(is_mock: bool) -> (Arc<[u8]>, Arc<[u8]>, Arc<[u8]>, Arc<[u8]>
 impl Router {
     pub fn new(controller: Arc<MotorController>) -> Self {
         let is_mock = controller.is_mock();
-        let (html_gz, design_html_gz, run_html_gz, css_gz, js_gz) = load_web_assets(is_mock);
+        let (html_gz, design_html_gz, css_gz, js_gz) = load_web_assets(is_mock);
         Self {
             controller,
             html_gz,
             design_html_gz,
-            run_html_gz,
             css_gz,
             js_gz,
         }
@@ -216,14 +204,12 @@ impl Router {
 
         match (method, path) {
             // Static Web Assets (supporting GET and HEAD)
-            (Method::Get, "/") | (Method::Get, "/index.html") | (Method::Head, "/") | (Method::Head, "/index.html") => {
+            (Method::Get, "/") | (Method::Get, "/index.html") | (Method::Head, "/") | (Method::Head, "/index.html")
+            | (Method::Get, "/run") | (Method::Get, "/run.html") | (Method::Head, "/run") | (Method::Head, "/run.html") => {
                 self.respond_static_gz(request, Arc::clone(&self.html_gz), "text/html; charset=utf-8");
             }
             (Method::Get, "/design") | (Method::Get, "/design.html") | (Method::Head, "/design") | (Method::Head, "/design.html") => {
                 self.respond_static_gz(request, Arc::clone(&self.design_html_gz), "text/html; charset=utf-8");
-            }
-            (Method::Get, "/run") | (Method::Get, "/run.html") | (Method::Head, "/run") | (Method::Head, "/run.html") => {
-                self.respond_static_gz(request, Arc::clone(&self.run_html_gz), "text/html; charset=utf-8");
             }
             (Method::Get, "/style.css") | (Method::Head, "/style.css") => {
                 self.respond_static_gz(request, Arc::clone(&self.css_gz), "text/css; charset=utf-8");
@@ -542,19 +528,17 @@ mod tests {
         let temp_dir = std::env::temp_dir().join(format!("ev3_test_assets_missing_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         let _ = std::fs::remove_dir_all(&temp_dir);
 
-        let (html, _design, _run, css, js) = load_web_assets_from(&temp_dir, false);
+        let (html, _design, css, js) = load_web_assets_from(&temp_dir, false);
 
         // Verify directory was created and populated
         assert!(temp_dir.exists());
         assert!(temp_dir.join("index.html.gz").exists());
         assert!(temp_dir.join("design.html.gz").exists());
-        assert!(temp_dir.join("run.html.gz").exists());
         assert!(temp_dir.join("style.css.gz").exists());
         assert!(temp_dir.join("app.js.gz").exists());
 
         assert_eq!(html.as_ref(), BASELINE_HTML_GZ);
         assert_eq!(_design.as_ref(), BASELINE_DESIGN_HTML_GZ);
-        assert_eq!(_run.as_ref(), BASELINE_RUN_HTML_GZ);
         assert_eq!(css.as_ref(), BASELINE_CSS_GZ);
         assert_eq!(js.as_ref(), BASELINE_JS_GZ);
 
@@ -571,12 +555,11 @@ mod tests {
         std::fs::write(temp_dir.join("index.html.gz"), b"partial").unwrap();
         std::fs::write(temp_dir.join(".version"), b"stale_sha").unwrap();
 
-        let (html, _design, _run, css, js) = load_web_assets_from(&temp_dir, false);
+        let (html, _design, css, js) = load_web_assets_from(&temp_dir, false);
 
-        // Verify all 5 files are healed to baseline and .version is removed
+        // Verify all 4 files are healed to baseline and .version is removed
         assert_eq!(html.as_ref(), BASELINE_HTML_GZ);
         assert_eq!(_design.as_ref(), BASELINE_DESIGN_HTML_GZ);
-        assert_eq!(_run.as_ref(), BASELINE_RUN_HTML_GZ);
         assert_eq!(css.as_ref(), BASELINE_CSS_GZ);
         assert_eq!(js.as_ref(), BASELINE_JS_GZ);
         assert!(!temp_dir.join(".version").exists());
@@ -594,24 +577,21 @@ mod tests {
         std::fs::create_dir_all(&temp_dir).unwrap();
 
         let valid_design = compress_test(b"<h1>Design</h1>");
-        let valid_run = compress_test(b"<h1>Run</h1>");
         let valid_css = compress_test(b"body { color: blue; }");
         let valid_js = compress_test(b"console.log('test');");
 
-        // 5 files exist, but index.html.gz is 0 bytes (corrupted)
+        // 4 files exist, but index.html.gz is 0 bytes (corrupted)
         std::fs::write(temp_dir.join("index.html.gz"), b"").unwrap();
         std::fs::write(temp_dir.join("design.html.gz"), &valid_design).unwrap();
-        std::fs::write(temp_dir.join("run.html.gz"), &valid_run).unwrap();
         std::fs::write(temp_dir.join("style.css.gz"), &valid_css).unwrap();
         std::fs::write(temp_dir.join("app.js.gz"), &valid_js).unwrap();
         std::fs::write(temp_dir.join(".version"), b"stale_sha_12345").unwrap();
 
-        let (html, design, run, css, js) = load_web_assets_from(&temp_dir, false);
+        let (html, design, css, js) = load_web_assets_from(&temp_dir, false);
 
         // HTML should be restored to baseline, others kept as valid custom
         assert_eq!(html.as_ref(), BASELINE_HTML_GZ);
         assert_eq!(design.as_ref(), valid_design.as_slice());
-        assert_eq!(run.as_ref(), valid_run.as_slice());
         assert_eq!(css.as_ref(), valid_css.as_slice());
         assert_eq!(js.as_ref(), valid_js.as_slice());
         assert!(!temp_dir.join(".version").exists());
@@ -630,22 +610,19 @@ mod tests {
 
         let custom_html = compress_test(b"<h1>Custom App</h1>");
         let custom_design = compress_test(b"<h1>Custom Design</h1>");
-        let custom_run = compress_test(b"<h1>Custom Run</h1>");
         let custom_css = compress_test(b"h1 { color: red; }");
         let custom_js = compress_test(b"console.log('custom');");
 
         std::fs::write(temp_dir.join("index.html.gz"), &custom_html).unwrap();
         std::fs::write(temp_dir.join("design.html.gz"), &custom_design).unwrap();
-        std::fs::write(temp_dir.join("run.html.gz"), &custom_run).unwrap();
         std::fs::write(temp_dir.join("style.css.gz"), &custom_css).unwrap();
         std::fs::write(temp_dir.join("app.js.gz"), &custom_js).unwrap();
         std::fs::write(temp_dir.join(".version"), b"valid_sha_abcdef").unwrap();
 
-        let (html, design, run, css, js) = load_web_assets_from(&temp_dir, false);
+        let (html, design, css, js) = load_web_assets_from(&temp_dir, false);
 
         assert_eq!(html.as_ref(), custom_html.as_slice());
         assert_eq!(design.as_ref(), custom_design.as_slice());
-        assert_eq!(run.as_ref(), custom_run.as_slice());
         assert_eq!(css.as_ref(), custom_css.as_slice());
         assert_eq!(js.as_ref(), custom_js.as_slice());
         assert!(temp_dir.join(".version").exists());
@@ -656,10 +633,9 @@ mod tests {
     #[test]
     fn test_mock_fallback_when_directory_missing() {
         let non_existent = std::path::PathBuf::from("/non_existent_path_ev3_mock_test");
-        let (html, design, run, css, js) = load_web_assets_from(&non_existent, true);
+        let (html, design, css, js) = load_web_assets_from(&non_existent, true);
         assert_eq!(html.as_ref(), BASELINE_HTML_GZ);
         assert_eq!(design.as_ref(), BASELINE_DESIGN_HTML_GZ);
-        assert_eq!(run.as_ref(), BASELINE_RUN_HTML_GZ);
         assert_eq!(css.as_ref(), BASELINE_CSS_GZ);
         assert_eq!(js.as_ref(), BASELINE_JS_GZ);
     }
