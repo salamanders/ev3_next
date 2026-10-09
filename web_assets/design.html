@@ -7,54 +7,15 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <!-- Top Navigation Bar -->
-    <header class="navbar">
-        <div class="logo-group">
-            <div class="logo-text">
-                <span class="title">MINDSTORMS <strong>EV3</strong></span>
-                <span class="subtitle">Configuration (Design Mode)</span>
-            </div>
+    <!-- Top Tab Navigation -->
+    <nav class="top-nav">
+        <div class="tab-group">
+            <a href="/design" id="btn-mode-design" class="tab-btn active">Design Mode</a>
+            <a href="/run" id="btn-mode-run" class="tab-btn">Run Mode</a>
         </div>
-
-        <div class="status-group">
-            <div id="battery-badge" class="badge badge-info" title="EV3 Battery Voltage">
-                <span>Battery: <strong id="battery-val">7.8</strong> V</span>
-            </div>
-            <div id="conn-badge" class="badge badge-connected">
-                <span class="dot"></span>
-                <span id="conn-text">Online</span>
-            </div>
-            <div id="latency-badge" class="badge badge-info" title="Round Trip Time">
-                <span>RTT: <strong id="latency-val">12</strong> ms</span>
-            </div>
-            <button id="btn-estop-header" class="btn btn-danger btn-estop" title="Emergency Stop All Motors (Spacebar)">
-                STOP ALL
-            </button>
-            <button id="btn-shutdown-header" class="btn btn-secondary btn-shutdown" title="Safely Power Off EV3 Brick">
-                Power Off
-            </button>
-        </div>
-    </header>
-
-    <!-- Mode Switcher Bar -->
-    <nav class="mode-bar">
-        <div class="mode-controls">
-            <span class="mode-label">Mode:</span>
-            <div class="mode-toggle-group">
-                <a href="/design" id="btn-mode-design" class="btn btn-mode active" title="Configure widgets and assignments">
-                    Design Mode
-                </a>
-                <a href="/run" id="btn-mode-run" class="btn btn-mode" title="Switch to Run Mode">
-                    Run Mode
-                </a>
-            </div>
-        </div>
-
-        <div class="mode-actions">
-            <button id="btn-rescan" class="btn btn-secondary btn-sm" title="Scan for connected hardware on all ports">
-                Rescan Hardware
-            </button>
-        </div>
+        <button id="btn-rescan" class="btn btn-secondary btn-sm" title="Scan for connected hardware on all ports">
+            Rescan Hardware
+        </button>
     </nav>
 
     <!-- Main Container -->
@@ -149,7 +110,26 @@
     </main>
 
     <footer class="footer">
-        <p>LEGO Mindstorms EV3 Web Distribution &bull; Powered by Rust &bull; Zero external JS dependencies</p>
+        <div class="footer-status">
+            <div id="battery-badge" class="badge badge-info" title="EV3 Battery Voltage">
+                <span>Battery: <strong id="battery-val">7.8</strong> V</span>
+            </div>
+            <div id="conn-badge" class="badge badge-connected">
+                <span class="dot"></span>
+                <span id="conn-text">Online</span>
+            </div>
+            <div id="latency-badge" class="badge badge-info" title="Round Trip Time">
+                <span>RTT: <strong id="latency-val">12</strong> ms</span>
+            </div>
+        </div>
+        <div class="footer-actions">
+            <button id="btn-estop-header" class="btn btn-danger btn-estop" title="Emergency Stop All Motors (Spacebar)">
+                STOP ALL
+            </button>
+            <button id="btn-shutdown-header" class="btn btn-secondary btn-shutdown" title="Safely Power Off EV3 Brick">
+                Power Off
+            </button>
+        </div>
     </footer>
 
     <script src="app.js"></script>
