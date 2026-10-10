@@ -5,7 +5,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use crate::sysfs::{MockController, Motor, MotorStatus, Sensor};
-use crate::web::handlers::{AllPortsStatus, ResolvedPortCommand, SensorStatus};
+use crate::web::handlers::{
+    is_motor_port, is_sensor_port, AllPortsStatus, ResolvedPortCommand, SensorStatus, MOTOR_PORTS,
+    SENSOR_PORTS,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatteryStatus {
@@ -112,7 +115,7 @@ impl MotorController {
     }
 
     fn query_real_motors(motors: &[Motor]) -> Vec<MotorStatus> {
-        ["A", "B", "C", "D"]
+        MOTOR_PORTS
             .iter()
             .map(|&port| {
                 motors
@@ -125,7 +128,7 @@ impl MotorController {
     }
 
     fn query_real_sensors(sensors: &[Sensor]) -> Vec<SensorStatus> {
-        ["1", "2", "3", "4"]
+        SENSOR_PORTS
             .iter()
             .map(|&port| {
                 sensors
@@ -320,10 +323,10 @@ impl MotorController {
     }
 
     pub fn get_port_status(&self, port: &str) -> Result<serde_json::Value, String> {
-        if ["A", "B", "C", "D"].iter().any(|p| p.eq_ignore_ascii_case(port)) {
+        if is_motor_port(port) {
             let status = self.get_port_motor_status(port)?;
             serde_json::to_value(status).map_err(|e| e.to_string())
-        } else if ["1", "2", "3", "4"].iter().any(|p| p.eq_ignore_ascii_case(port)) {
+        } else if is_sensor_port(port) {
             self.touch_client_poll();
             let cache = self.cached_sensors.read().map_err(|e| e.to_string())?;
             let status = cache
@@ -369,7 +372,7 @@ impl MotorController {
         port: &str,
         cmd: &ResolvedPortCommand,
     ) -> Result<String, String> {
-        if ["1", "2", "3", "4"].iter().any(|p| p.eq_ignore_ascii_case(port)) {
+        if is_sensor_port(port) {
             match cmd {
                 ResolvedPortCommand::SetMode { mode } => {
                     self.set_sensor_mode(port, mode)?;
@@ -377,7 +380,7 @@ impl MotorController {
                 }
                 _ => Err(format!("Port {} is a sensor and only accepts mode commands", port)),
             }
-        } else if ["A", "B", "C", "D"].iter().any(|p| p.eq_ignore_ascii_case(port)) {
+        } else if is_motor_port(port) {
             match cmd {
                 ResolvedPortCommand::RunForever { speed } => {
                     self.run_forever(port, *speed)?;

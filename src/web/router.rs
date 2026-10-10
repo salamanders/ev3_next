@@ -286,7 +286,7 @@ impl Router {
             }
         };
 
-        let max_speed = if ["A", "B", "C", "D"].contains(&normalized.as_str()) {
+        let max_speed = if is_motor_port(&normalized) {
             self.controller
                 .get_port_motor_status(&normalized)
                 .map(|s| s.max_speed)

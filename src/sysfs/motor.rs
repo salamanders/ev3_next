@@ -102,17 +102,9 @@ impl Motor {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if let Ok(addr) = fs::read_to_string(path.join("address")) {
-                    let addr_clean = addr.trim().to_uppercase();
-                    let port = if addr_clean.contains("OUTA") || addr_clean.ends_with(":A") {
-                        "A"
-                    } else if addr_clean.contains("OUTB") || addr_clean.ends_with(":B") {
-                        "B"
-                    } else if addr_clean.contains("OUTC") || addr_clean.ends_with(":C") {
-                        "C"
-                    } else if addr_clean.contains("OUTD") || addr_clean.ends_with(":D") {
-                        "D"
-                    } else {
-                        continue;
+                    let port = match crate::web::handlers::parse_motor_address(&addr) {
+                        Some(p) => p,
+                        None => continue,
                     };
 
                     let address = addr.trim().to_string();

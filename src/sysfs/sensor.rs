@@ -39,17 +39,9 @@ impl Sensor {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if let Ok(addr) = fs::read_to_string(path.join("address")) {
-                    let addr_clean = addr.trim().to_uppercase();
-                    let port = if addr_clean.contains("IN1") || addr_clean.ends_with(":1") || addr_clean.ends_with(":IN1") {
-                        "1"
-                    } else if addr_clean.contains("IN2") || addr_clean.ends_with(":2") || addr_clean.ends_with(":IN2") {
-                        "2"
-                    } else if addr_clean.contains("IN3") || addr_clean.ends_with(":3") || addr_clean.ends_with(":IN3") {
-                        "3"
-                    } else if addr_clean.contains("IN4") || addr_clean.ends_with(":4") || addr_clean.ends_with(":IN4") {
-                        "4"
-                    } else {
-                        continue;
+                    let port = match crate::web::handlers::parse_sensor_address(&addr) {
+                        Some(p) => p,
+                        None => continue,
                     };
 
                     let address = addr.trim().to_string();

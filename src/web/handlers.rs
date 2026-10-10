@@ -121,6 +121,47 @@ impl PortCommandPayload {
     }
 }
 
+pub const MOTOR_PORTS: [&str; 4] = ["A", "B", "C", "D"];
+pub const SENSOR_PORTS: [&str; 4] = ["1", "2", "3", "4"];
+
+pub fn is_motor_port(port: &str) -> bool {
+    MOTOR_PORTS.iter().any(|p| p.eq_ignore_ascii_case(port))
+}
+
+pub fn is_sensor_port(port: &str) -> bool {
+    SENSOR_PORTS.iter().any(|p| p.eq_ignore_ascii_case(port))
+}
+
+pub fn parse_motor_address(address: &str) -> Option<&'static str> {
+    let clean = address.trim().to_ascii_uppercase();
+    if clean.contains("OUTA") || clean.ends_with(":A") {
+        Some("A")
+    } else if clean.contains("OUTB") || clean.ends_with(":B") {
+        Some("B")
+    } else if clean.contains("OUTC") || clean.ends_with(":C") {
+        Some("C")
+    } else if clean.contains("OUTD") || clean.ends_with(":D") {
+        Some("D")
+    } else {
+        None
+    }
+}
+
+pub fn parse_sensor_address(address: &str) -> Option<&'static str> {
+    let clean = address.trim().to_ascii_uppercase();
+    if clean.contains("IN1") || clean.ends_with(":1") || clean.ends_with(":IN1") {
+        Some("1")
+    } else if clean.contains("IN2") || clean.ends_with(":2") || clean.ends_with(":IN2") {
+        Some("2")
+    } else if clean.contains("IN3") || clean.ends_with(":3") || clean.ends_with(":IN3") {
+        Some("3")
+    } else if clean.contains("IN4") || clean.ends_with(":4") || clean.ends_with(":IN4") {
+        Some("4")
+    } else {
+        None
+    }
+}
+
 pub fn normalize_port_name(port: &str) -> Option<String> {
     let clean = port.trim().to_ascii_uppercase();
     match clean.as_str() {
