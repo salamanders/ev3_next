@@ -16,11 +16,7 @@ cargo run -- --mock --port 8080
 http://localhost:8080/
 ```
 
-### Keyboard Shortcuts in Simulation:
-- <kbd>W</kbd> / <kbd>▲</kbd>: Drive Forward
-- <kbd>S</kbd> / <kbd>▼</kbd>: Drive Reverse
-- <kbd>A</kbd> / <kbd>◄</kbd>: Turn Left
-- <kbd>D</kbd> / <kbd>►</kbd>: Turn Right
+### Keyboard Shortcuts:
 - <kbd>Spacebar</kbd>: **Emergency Stop (Stops all motors immediately)**
 
 ---

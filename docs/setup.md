@@ -4,19 +4,9 @@ This guide describes how to bake, flash, and boot the standalone EV3 Web Motor C
 
 ---
 
-## 1. Quick One-Line Setup
+## 1. Step 1: Bake the Appliance Image
 
-Run this command on a Linux host computer to bake the image and flash your MicroSD card:
-
-```bash
-sudo ./tools/bake-image.sh --ssid "<SSID>" --password "<PASSWORD>" && sudo ./tools/flash-image.sh /dev/sdX
-```
-
----
-
-## 2. Step 1: Bake the Appliance Image
-
-The bake script creates a custom bootable disk image from the base `ev3dev-stretch` release. It pre-installs the cross-compiled Rust binary, installs systemd service units, and configures Wi-Fi credentials.
+The bake script creates a custom bootable disk image from the base `ev3dev-stretch` release. It pre-installs the cross-compiled Rust binary, installs systemd service units, and configures Wi-Fi credentials:
 
 ```bash
 sudo ./tools/bake-image.sh --ssid "<SSID>" --password "<PASSWORD>"
@@ -33,7 +23,7 @@ sudo ./tools/bake-image.sh --ssid "<SSID>" --password "<PASSWORD>"
 
 ---
 
-## 3. Step 2: Verify Your Target MicroSD Card
+## 2. Step 2: Verify Your Target MicroSD Card
 
 > [!CAUTION]
 > Always verify the drive device name before writing. Writing to an incorrect disk will cause permanent data loss.
@@ -50,7 +40,7 @@ lsblk -f /dev/sdX
 
 ---
 
-## 4. Step 3: Flash and Verify the Image
+## 3. Step 3: Flash and Verify the Image
 
 Flash the compressed image to your MicroSD card using the verified device name (for example, `/dev/sdb`):
 
@@ -69,7 +59,7 @@ sudo ./tools/flash-image.sh --verify-only /dev/sdX
 
 ---
 
-## 5. Step 4: First Boot and Wi-Fi Connection
+## 4. Step 4: First Boot and Wi-Fi Connection
 
 1. Insert the MicroSD card into the EV3 MicroSD slot.
 2. Insert a Linux 4.14 compatible USB Wi-Fi dongle into the EV3 side host port.
@@ -82,7 +72,7 @@ sudo ./tools/flash-image.sh --verify-only /dev/sdX
 
 ---
 
-## 6. Alternative: Manual `wifi.txt` Provisioning
+## 5. Alternative: Manual `wifi.txt` Provisioning
 
 If you flashed an image without pre-configured Wi-Fi:
 1. Mount the FAT boot partition or root partition on your computer.
