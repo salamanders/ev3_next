@@ -52,3 +52,9 @@ Instructions for AGENT development.
     - Never select random, arbitrary, or incremented port numbers.
     - Always use port `80` on the physical EV3 brick (`http://ev3dev.local/`).
 
+14. **No One-Off Inline Script Rule:**
+    - Never execute inline scripts (`python3 -c`, `node -e`, or temporary scripts) to inspect logs, transcripts, or data.
+    - Inline scripts require manual user approval and block autonomous execution.
+    - Always use standard tools (`grep`, `sed`, `awk`, `jq`, `view_file`) or existing project commands instead.
+
+
