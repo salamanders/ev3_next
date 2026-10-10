@@ -29,13 +29,13 @@ Reading Linux sysfs files (`/sys/class/tacho-motor/` and `/sys/class/lego-sensor
          ▼
 [ In-Memory Controller State (RAM) ]
          ▲
-         │  (HTTP request thread: < 0.05 ms read)
+         │  (HTTP request thread: non-blocking RAM read)
          │
 [ HTTP Router /api/ports ] ───► [ Web Client Browser ]
 ```
 
 - **Background Polling Thread:** Queries motor attributes and sensor values every 50 ms, caching results in atomic in-memory structs.
-- **HTTP Request Thread:** Reads directly from memory and serializes JSON in less than 0.05 ms.
+- **HTTP Request Thread:** Reads cached state directly from RAM and serializes JSON without sysfs I/O.
 - **Motor Writes:** Only active movement commands write directly to sysfs on the request thread.
 
 ---

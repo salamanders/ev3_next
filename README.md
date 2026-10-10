@@ -37,14 +37,13 @@ Detailed guides are modularized in the [`docs/`](docs/) directory:
 
 ---
 
-## Key Features
+## Architectural Design & Features
 
-- **Low Latency & High Efficiency:** Background polling thread caches kernel sysfs telemetry every 50 ms. HTTP requests read from memory in < 0.05 ms.
-- **Low Memory Footprint:** Statically linked native Rust executable consuming < 3 MB RAM RSS, preventing Out-Of-Memory termination on 64 MB hardware.
-- **Self-Updating Web Assets:** Web dashboard assets download and compress (`gzip -9`) at boot from GitHub, loading into RAM (~12 KB) with zero SD card wear.
-- **Compile-Time Fallback:** Baseline gzip assets are embedded directly into the binary (`include_bytes!`), restoring damaged or offline files automatically.
+- **Non-Blocking Telemetry:** Background polling thread caches kernel sysfs telemetry every 50 ms. HTTP request threads read directly from RAM without blocking on sysfs file I/O.
+- **Embedded Web Assets:** Static web dashboard assets are pre-compressed with gzip at compile time and served directly from memory, with automatic baseline restore.
 - **Two-Tier Safety Watchdogs:** 400 ms differential drive heartbeat timeout with brake action, plus a 1,000 ms browser disconnect watchdog.
 - **On-Brick LCD Status Display:** Native 7-row console status renderer on `/dev/tty1` displaying live IP, battery voltage, and motor telemetry.
+- **Resource Targets:** Designed for ARM9 @ 300 MHz and 64 MB RAM, targeting < 3 MB RAM RSS with a statically linked musl binary.
 
 ---
 
