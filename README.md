@@ -54,12 +54,7 @@ Detailed guides are modularized in the [`docs/`](docs/) directory:
 ev3_next/
 ├── Cargo.toml               # Cargo package configuration
 ├── ev3-web.service          # Systemd unit file for auto-start on boot
-├── docs/                    # Modular documentation guides and screenshots
-│   ├── setup.md             # Appliance image baking, flashing, and first boot
-│   ├── development.md       # Cross-compilation, USB networking, and deploy scripts
-│   ├── architecture.md      # Memory budget, polling loop, asset pipeline, and code organization
-│   ├── api.md               # REST API reference and payload schemas
-│   └── screenshots/         # Dashboard screenshots (desktop and mobile)
+├── docs/*                   # Documentation guides and screenshots
 ├── tools/                   # Appliance automation scripts (bake, flash, update)
 ├── src/                     # Rust application source (sysfs, controller, router)
 ├── web_assets/              # Web dashboard source (HTML, CSS, JavaScript)

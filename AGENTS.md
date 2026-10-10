@@ -7,7 +7,8 @@ Instructions for AGENT development.
 3. Things will not go right the first time. This is very old hardware being asked to do modern things. Expect exceptions that need logging and incompatibilities that need investigation. **Never** swallow exceptions, and **always** check that new features and libraries are compatible.
 
 4. **Host-First Simulation Rule:**
-   Always test user interface, API, and state logic on the host machine first with `cargo run -- --mock`.
+   Always test user interface, API, and state logic on the host machine first with `cargo run -- --mock` on default port `8080` (`http://localhost:8080/`).
+   Never specify alternative or random port numbers.
    Do not deploy code to the physical EV3 brick until host simulation tests pass.
 
 5. **Zero SD-Card Swapping Rule:**
@@ -45,3 +46,9 @@ Instructions for AGENT development.
     - Never include personal identifiers, author names, account usernames, or personal username variations.
     - Never include Wi-Fi network names (SSIDs), passwords, home network information, or private IP addresses in committed files.
     - Always use generic placeholders (for example, `<SSID>`, `<PASSWORD>`, `<USERNAME>`) in all committed code, plan files, and documentation.
+
+13. **Fixed Port Rule:**
+    - Always use standard default port `8080` for host simulation (`http://localhost:8080/`).
+    - Never select random, arbitrary, or incremented port numbers.
+    - Always use port `80` on the physical EV3 brick (`http://ev3dev.local/`).
+

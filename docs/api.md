@@ -105,15 +105,8 @@ All responses use this standard JSON structure:
 
 ---
 
-## 4. Drive & Legacy Endpoints
+## 4. Drive Endpoints
 
 | Method | Endpoint | Payload | Description |
 | :--- | :--- | :--- | :--- |
 | `POST` | `/api/tank-drive` | `{"left_port":"B", "right_port":"C", "left_speed":500, "right_speed":500}` | Synchronized differential steering. Armed by a 400 ms heartbeat watchdog. |
-| `POST` | `/api/motor/{port}/run-forever` | `{"speed": 500}` | Runs motor continuously. |
-| `POST` | `/api/motor/{port}/run-timed` | `{"speed": 500, "time_ms": 1000, "stop_action": "brake"}` | Runs motor for duration in ms. |
-| `POST` | `/api/motor/{port}/run-to-rel-pos`| `{"speed": 400, "position_sp": 360, "stop_action": "hold"}` | Rotates motor by relative degrees. |
-| `POST` | `/api/motor/{port}/run-direct` | `{"duty_cycle": 75}` | Sets direct PWM duty cycle. |
-| `POST` | `/api/motor/{port}/stop` | `{"action": "brake"}` | Stops motor (`coast`, `brake`, `hold`). |
-| `POST` | `/api/motor/{port}/reset` | None | Resets encoder position count to 0. |
-| `POST` | `/api/motor/{port}/polarity` | `{"polarity": "normal" \| "inversed"}` | Inverts motor rotation direction. |

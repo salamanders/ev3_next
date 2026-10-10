@@ -12,18 +12,11 @@ pub struct TankDrivePayload {
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PortCommandPayload {
     pub command: Option<String>,
-    pub speed: Option<serde_json::Value>,
-    pub speed_sp: Option<serde_json::Value>,
-    pub duty: Option<serde_json::Value>,
-    pub duty_cycle: Option<serde_json::Value>,
-    pub duty_cycle_sp: Option<serde_json::Value>,
-    pub time_ms: Option<f64>,
-    pub time_sp: Option<f64>,
-    pub duration_s: Option<f64>,
-    pub position_sp: Option<f64>,
-    pub degrees: Option<f64>,
+    pub speed: Option<i32>,
+    pub degrees: Option<i32>,
+    pub time_ms: Option<u32>,
+    pub duty_cycle: Option<i32>,
     pub stop_action: Option<String>,
-    pub action: Option<String>,
     pub polarity: Option<String>,
     pub mode: Option<String>,
 }
@@ -41,101 +34,39 @@ pub enum ResolvedPortCommand {
 }
 
 impl PortCommandPayload {
-    fn parse_speed(val: &serde_json::Value, max_speed: i32) -> Result<i32, String> {
-        if let Some(i) = val.as_i64() {
-            return Ok(i.clamp(-max_speed as i64, max_speed as i64) as i32);
-        }
-        if let Some(f) = val.as_f64() {
-            // If float is in [-1.0, 1.0] and not 0.0, treat as normalized fraction of max_speed
-            if f.abs() <= 1.0 && f != 0.0 {
-                let scaled = (f * max_speed as f64).round() as i32;
-                return Ok(scaled.clamp(-max_speed, max_speed));
-            }
-            return Ok((f.round() as i32).clamp(-max_speed, max_speed));
-        }
-        Err("Invalid numeric format for speed".into())
-    }
-
-    fn parse_duty(val: &serde_json::Value) -> Result<i32, String> {
-        if let Some(i) = val.as_i64() {
-            return Ok(i.clamp(-100, 100) as i32);
-        }
-        if let Some(f) = val.as_f64() {
-            if f.abs() <= 1.0 && f != 0.0 {
-                let scaled = (f * 100.0).round() as i32;
-                return Ok(scaled.clamp(-100, 100));
-            }
-            return Ok((f.round() as i32).clamp(-100, 100));
-        }
-        Err("Invalid numeric format for duty cycle".into())
-    }
-
     pub fn resolve(&self, max_speed: i32) -> Result<ResolvedPortCommand, String> {
-        let default_stop = self.stop_action.as_ref().or(self.action.as_ref()).cloned().unwrap_or_else(|| "brake".into());
-        let speed_input = self.speed.as_ref().or(self.speed_sp.as_ref());
-        let duty_input = self
-            .duty
-            .as_ref()
-            .or(self.duty_cycle.as_ref())
-            .or(self.duty_cycle_sp.as_ref());
-        let time_ms_input = if let Some(s) = self.duration_s {
-            Some((s * 1000.0).max(1.0) as u32)
-        } else if let Some(m) = self.time_ms.or(self.time_sp) {
-            Some(m.max(1.0) as u32)
-        } else {
-            None
-        };
-        let pos_sp_input = if let Some(d) = self.degrees {
-            Some(d.round() as i32)
-        } else if let Some(p) = self.position_sp {
-            Some(p.round() as i32)
-        } else {
-            None
-        };
+        let stop_act = self.stop_action.clone().unwrap_or_else(|| "brake".into());
 
-        // 1. Explicit command specified
         if let Some(ref cmd) = self.command {
             match cmd.to_ascii_lowercase().as_str() {
+                "stop" => return Ok(ResolvedPortCommand::Stop { stop_action: stop_act }),
+                "reset" => return Ok(ResolvedPortCommand::Reset),
                 "run-forever" => {
-                    let sp = match speed_input {
-                        Some(v) => Self::parse_speed(v, max_speed)?,
-                        None => max_speed / 2,
-                    };
+                    let sp = self.speed.unwrap_or(max_speed / 2).clamp(-max_speed, max_speed);
                     return Ok(ResolvedPortCommand::RunForever { speed: sp });
                 }
-                "run-timed" => {
-                    let sp = match speed_input {
-                        Some(v) => Self::parse_speed(v, max_speed)?,
-                        None => max_speed / 2,
-                    };
-                    let ms = time_ms_input.unwrap_or(1000);
-                    return Ok(ResolvedPortCommand::RunTimed {
-                        speed: sp,
-                        time_ms: ms,
-                        stop_action: default_stop,
-                    });
-                }
                 "run-to-rel-pos" | "step" => {
-                    let sp = match speed_input {
-                        Some(v) => Self::parse_speed(v, max_speed)?,
-                        None => max_speed / 2,
-                    };
-                    let deg = pos_sp_input.unwrap_or(90);
+                    let sp = self.speed.unwrap_or(max_speed / 2).clamp(-max_speed, max_speed);
+                    let deg = self.degrees.unwrap_or(90);
                     return Ok(ResolvedPortCommand::RunToRelPos {
                         speed: sp,
                         position_sp: deg,
-                        stop_action: default_stop,
+                        stop_action: stop_act,
+                    });
+                }
+                "run-timed" => {
+                    let sp = self.speed.unwrap_or(max_speed / 2).clamp(-max_speed, max_speed);
+                    let ms = self.time_ms.unwrap_or(1000);
+                    return Ok(ResolvedPortCommand::RunTimed {
+                        speed: sp,
+                        time_ms: ms,
+                        stop_action: stop_act,
                     });
                 }
                 "run-direct" => {
-                    let duty = match duty_input {
-                        Some(v) => Self::parse_duty(v)?,
-                        None => 50,
-                    };
+                    let duty = self.duty_cycle.unwrap_or(50).clamp(-100, 100);
                     return Ok(ResolvedPortCommand::RunDirect { duty_cycle: duty });
                 }
-                "stop" => return Ok(ResolvedPortCommand::Stop { stop_action: default_stop }),
-                "reset" => return Ok(ResolvedPortCommand::Reset),
                 "polarity" => {
                     let pol = self.polarity.clone().unwrap_or_else(|| "normal".into());
                     return Ok(ResolvedPortCommand::SetPolarity { polarity: pol });
@@ -150,51 +81,43 @@ impl PortCommandPayload {
             }
         }
 
-        // 2. Inferred command when 'command' is omitted
+        // Inferred commands when 'command' is omitted
         if let Some(ref pol) = self.polarity {
             return Ok(ResolvedPortCommand::SetPolarity { polarity: pol.clone() });
         }
         if let Some(ref m) = self.mode {
             return Ok(ResolvedPortCommand::SetMode { mode: m.clone() });
         }
-        if let Some(ms) = time_ms_input {
-            let sp = match speed_input {
-                Some(v) => Self::parse_speed(v, max_speed)?,
-                None => max_speed / 2,
-            };
-            return Ok(ResolvedPortCommand::RunTimed {
-                speed: sp,
-                time_ms: ms,
-                stop_action: default_stop,
-            });
-        }
-        if let Some(deg) = pos_sp_input {
-            let sp = match speed_input {
-                Some(v) => Self::parse_speed(v, max_speed)?,
-                None => max_speed / 2,
-            };
+        if let Some(deg) = self.degrees {
+            let sp = self.speed.unwrap_or(max_speed / 2).clamp(-max_speed, max_speed);
             return Ok(ResolvedPortCommand::RunToRelPos {
                 speed: sp,
                 position_sp: deg,
-                stop_action: default_stop,
+                stop_action: stop_act,
             });
         }
-        if let Some(duty_val) = duty_input {
-            let duty = Self::parse_duty(duty_val)?;
-            return Ok(ResolvedPortCommand::RunDirect { duty_cycle: duty });
+        if let Some(ms) = self.time_ms {
+            let sp = self.speed.unwrap_or(max_speed / 2).clamp(-max_speed, max_speed);
+            return Ok(ResolvedPortCommand::RunTimed {
+                speed: sp,
+                time_ms: ms,
+                stop_action: stop_act,
+            });
         }
-        if let Some(v) = speed_input {
-            let sp = Self::parse_speed(v, max_speed)?;
+        if let Some(duty) = self.duty_cycle {
+            return Ok(ResolvedPortCommand::RunDirect { duty_cycle: duty.clamp(-100, 100) });
+        }
+        if let Some(sp) = self.speed {
             if sp == 0 {
-                return Ok(ResolvedPortCommand::Stop { stop_action: default_stop });
+                return Ok(ResolvedPortCommand::Stop { stop_action: stop_act });
             }
-            return Ok(ResolvedPortCommand::RunForever { speed: sp });
+            return Ok(ResolvedPortCommand::RunForever { speed: sp.clamp(-max_speed, max_speed) });
         }
         if self.stop_action.is_some() {
-            return Ok(ResolvedPortCommand::Stop { stop_action: default_stop });
+            return Ok(ResolvedPortCommand::Stop { stop_action: stop_act });
         }
 
-        Err("Could not infer command from payload (specify 'command', 'speed', 'duty', 'duration_s', or 'degrees')".into())
+        Err("Could not infer command from payload (specify 'command', 'speed', or 'degrees')".into())
     }
 }
 
@@ -293,15 +216,11 @@ mod tests {
 
     #[test]
     fn test_resolve_inferred_commands() {
-        // 1. Inferred RunTimed from duration_s
-        let payload1: PortCommandPayload = serde_json::from_str(r#"{"speed": 500, "duration_s": 2.5}"#).unwrap();
+        // 1. Inferred RunForever from integer speed
+        let payload1: PortCommandPayload = serde_json::from_str(r#"{"speed": 500}"#).unwrap();
         assert_eq!(
             payload1.resolve(1050).unwrap(),
-            ResolvedPortCommand::RunTimed {
-                speed: 500,
-                time_ms: 2500,
-                stop_action: "brake".into()
-            }
+            ResolvedPortCommand::RunForever { speed: 500 }
         );
 
         // 2. Inferred RunToRelPos from degrees
@@ -315,36 +234,36 @@ mod tests {
             }
         );
 
-        // 3. Inferred RunDirect from float duty
-        let payload3: PortCommandPayload = serde_json::from_str(r#"{"duty": 0.75}"#).unwrap();
+        // 3. Inferred RunDirect from duty_cycle
+        let payload3: PortCommandPayload = serde_json::from_str(r#"{"duty_cycle": 75}"#).unwrap();
         assert_eq!(
             payload3.resolve(1050).unwrap(),
             ResolvedPortCommand::RunDirect { duty_cycle: 75 }
         );
 
-        // 4. Inferred RunForever from float speed (normalized fraction)
-        let payload4: PortCommandPayload = serde_json::from_str(r#"{"speed": 0.5}"#).unwrap();
+        // 4. Inferred Stop from speed 0
+        let payload4: PortCommandPayload = serde_json::from_str(r#"{"speed": 0}"#).unwrap();
         assert_eq!(
-            payload4.resolve(1000).unwrap(),
-            ResolvedPortCommand::RunForever { speed: 500 }
-        );
-
-        // 5. Inferred Stop from speed 0
-        let payload5: PortCommandPayload = serde_json::from_str(r#"{"speed": 0}"#).unwrap();
-        assert_eq!(
-            payload5.resolve(1050).unwrap(),
+            payload4.resolve(1050).unwrap(),
             ResolvedPortCommand::Stop { stop_action: "brake".into() }
         );
 
-        // 6. Raw sysfs keys: speed_sp and time_sp
-        let payload6: PortCommandPayload = serde_json::from_str(r#"{"command": "run-timed", "speed_sp": 400, "time_sp": 1500}"#).unwrap();
+        // 5. Explicit run-timed command
+        let payload5: PortCommandPayload = serde_json::from_str(r#"{"command": "run-timed", "speed": 400, "time_ms": 1500}"#).unwrap();
         assert_eq!(
-            payload6.resolve(1050).unwrap(),
+            payload5.resolve(1050).unwrap(),
             ResolvedPortCommand::RunTimed {
                 speed: 400,
                 time_ms: 1500,
                 stop_action: "brake".into()
             }
+        );
+
+        // 6. Inferred SetMode for sensors
+        let payload6: PortCommandPayload = serde_json::from_str(r#"{"mode": "COL-COLOR"}"#).unwrap();
+        assert_eq!(
+            payload6.resolve(1050).unwrap(),
+            ResolvedPortCommand::SetMode { mode: "COL-COLOR".into() }
         );
     }
 }

@@ -255,11 +255,6 @@ impl Router {
                 self.handle_port_post(request, p);
             }
 
-            // Motor-specific Endpoints: /api/motor/{port}/{command}
-            (Method::Post, p) if p.starts_with("/api/motor/") => {
-                self.handle_motor_post(request, p);
-            }
-
             _ => {
                 self.respond_json(request, StatusCode(404), &ApiResponse::<()>::err("Endpoint not found"));
             }
@@ -319,22 +314,6 @@ impl Router {
             }
         };
         self.dispatch_port_command(request, raw_port, payload);
-    }
-
-    fn handle_motor_post(&self, mut request: Request, path: &str) {
-        let parts: Vec<&str> = path.trim_start_matches("/api/motor/").split('/').collect();
-        if parts.len() < 2 {
-            self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err("Invalid motor endpoint format"));
-            return;
-        }
-
-        let port = parts[0];
-        let action = parts[1];
-
-        let mut payload = self.read_json_body::<PortCommandPayload>(&mut request).unwrap_or_default();
-        payload.command = Some(action.to_string());
-
-        self.dispatch_port_command(request, port, payload);
     }
 
     fn read_json_body<T: serde::de::DeserializeOwned>(&self, request: &mut Request) -> Result<T, String> {
@@ -560,7 +539,7 @@ mod tests {
         let router_clone = router.clone();
         let server_clone = server;
         let thread_handle = std::thread::spawn(move || {
-            for _ in 0..20 {
+            for _ in 0..18 {
                 if let Ok(req) = server_clone.recv() {
                     router_clone.handle_request(req);
                 }
@@ -723,10 +702,10 @@ mod tests {
             assert!(resp_str.contains("\"address\":\"outA\""));
         }
 
-        // 11. Test POST /api/port/outA with inferred timed run and float speed
+        // 11. Test POST /api/port/outA with inferred timed run
         {
             let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            let body = b"{\"speed\": 0.5, \"duration_s\": 1.0}";
+            let body = b"{\"speed\": 500, \"time_ms\": 1000}";
             let req = format!(
                 "POST /api/port/outA HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                 body.len(),
@@ -808,37 +787,6 @@ mod tests {
             assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
             assert!(resp_str.contains("\"success\":true"));
             assert!(resp_str.contains("All motors stopped"));
-        }
-
-        // 17. Test legacy POST /api/motor/outA/run-forever (normalizes outA -> A)
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            let body = b"{\"speed\": 400}";
-            let req = format!(
-                "POST /api/motor/outA/run-forever HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                body.len(),
-                std::str::from_utf8(body).unwrap()
-            );
-            stream.write_all(req.as_bytes()).unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
-            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-            assert!(resp_str.contains("\"success\":true"));
-        }
-
-        // 18. Test legacy POST /api/motor/B/stop
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"POST /api/motor/B/stop HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: 0\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
-            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-            assert!(resp_str.contains("\"success\":true"));
-            assert!(resp_str.contains("stopped"));
         }
 
         thread_handle.join().unwrap();

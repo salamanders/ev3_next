@@ -738,6 +738,13 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
 - [x] **Step 13.5: Test Verification**
   - All 35 automated tests pass (`cargo test`).
   - Static release compilation verified with `cargo check --release`.
+- [x] **Step 13.6: Minimalist UI De-cluttering & Simplification (`web_assets/`)**
+  - Removed "Custom Titles" from widget builder; used fixed clean card titles (`Joystick`, `Slider`, `Button`, `Sensor`).
+  - Removed "Max Speed" inputs from widgets; hardcoded standard EV3 range (`-1000..1000` ticks/s for slider, `1000` vector clamp for joystick, `600` default for buttons).
+  - Removed redundant "Reset Defaults" button from design toolbar.
+  - Retained "Zero (Stop)" button beside slider and diagnostics drawer.
+  - Re-captured and updated all desktop and mobile screenshots.
+
 
 
 
