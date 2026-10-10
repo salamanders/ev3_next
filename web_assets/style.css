@@ -455,6 +455,10 @@ body {
     font-size: 14px;
 }
 
+.empty-notice .btn {
+    margin-top: 12px;
+}
+
 /* 2D Virtual Joystick Widget */
 .joystick-container {
     display: flex;
