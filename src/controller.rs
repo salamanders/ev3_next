@@ -546,22 +546,31 @@ impl MotorController {
         }
     }
 
-    pub fn tank_drive(&self, left_port: &str, right_port: &str, left_speed: i32, right_speed: i32) -> Result<(), String> {
+    pub fn joystick_drive(&self, x_port: &str, y_port: &str, x_speed: i32, y_speed: i32, stop_action: Option<&str>) -> Result<(), String> {
+        let stop_act = stop_action.unwrap_or("brake");
         if let Ok(mut wd) = self.watchdog.lock() {
             wd.last_tank_drive = Some(Instant::now());
-            wd.tank_drive_ports = (left_port.to_string(), right_port.to_string());
-            wd.tank_drive_active = left_speed != 0 || right_speed != 0;
+            wd.tank_drive_ports = (x_port.to_string(), y_port.to_string());
+            wd.tank_drive_active = x_speed != 0 || y_speed != 0;
         }
 
-        if left_speed == 0 && right_speed == 0 {
-            self.stop(left_port, Some("brake".into()))?;
-            self.stop(right_port, Some("brake".into()))?;
-            return Ok(());
+        if x_speed == 0 {
+            self.stop(x_port, Some(stop_act.into()))?;
+        } else {
+            self.raw_run_forever(x_port, x_speed)?;
         }
 
-        self.raw_run_forever(left_port, left_speed)?;
-        self.raw_run_forever(right_port, right_speed)?;
+        if y_speed == 0 {
+            self.stop(y_port, Some(stop_act.into()))?;
+        } else {
+            self.raw_run_forever(y_port, y_speed)?;
+        }
+
         Ok(())
+    }
+
+    pub fn tank_drive(&self, left_port: &str, right_port: &str, left_speed: i32, right_speed: i32) -> Result<(), String> {
+        self.joystick_drive(left_port, right_port, left_speed, right_speed, Some("brake"))
     }
 
     pub fn emergency_stop(&self) -> Result<(), String> {
@@ -697,5 +706,39 @@ mod tests {
         assert_eq!(rescan.sensors.len(), 4);
         assert!(rescan.motors.iter().any(|m| m.port == "A"));
         assert!(rescan.motors.iter().any(|m| m.port == "B"));
+    }
+
+    #[test]
+    fn test_controller_joystick_independent_axes() {
+        let controller = MotorController::new(true, 15);
+        // Move only X axis
+        controller.joystick_drive("B", "C", 600, 0, Some("coast")).unwrap();
+        thread::sleep(Duration::from_millis(40));
+
+        let status = controller.get_system_status();
+        let b = status.motors.iter().find(|m| m.port == "B").unwrap();
+        let c = status.motors.iter().find(|m| m.port == "C").unwrap();
+        assert_eq!(b.speed, 600);
+        assert_eq!(c.speed, 0);
+
+        // Move only Y axis
+        controller.joystick_drive("B", "C", 0, -400, Some("brake")).unwrap();
+        thread::sleep(Duration::from_millis(40));
+
+        let status2 = controller.get_system_status();
+        let b2 = status2.motors.iter().find(|m| m.port == "B").unwrap();
+        let c2 = status2.motors.iter().find(|m| m.port == "C").unwrap();
+        assert_eq!(b2.speed, 0);
+        assert_eq!(c2.speed, -400);
+
+        // Center joystick (stop both)
+        controller.joystick_drive("B", "C", 0, 0, Some("coast")).unwrap();
+        thread::sleep(Duration::from_millis(40));
+
+        let status3 = controller.get_system_status();
+        let b3 = status3.motors.iter().find(|m| m.port == "B").unwrap();
+        let c3 = status3.motors.iter().find(|m| m.port == "C").unwrap();
+        assert_eq!(b3.speed, 0);
+        assert_eq!(c3.speed, 0);
     }
 }

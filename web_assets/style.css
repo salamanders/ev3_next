@@ -466,13 +466,17 @@ body {
     align-items: center;
     justify-content: center;
     flex: 1;
-    padding: 4px 0;
+    min-height: 0;
+    padding: 2px 0;
     touch-action: none;
 }
 
 .joystick-boundary {
-    width: clamp(150px, 42vw, 200px);
-    height: clamp(150px, 42vw, 200px);
+    width: clamp(220px, 70vw, 300px);
+    height: clamp(220px, 70vw, 300px);
+    max-width: 90%;
+    max-height: 90%;
+    aspect-ratio: 1 / 1;
     border-radius: 50%;
     background: radial-gradient(circle, #1e293b 0%, #0f172a 100%);
     border: 2px solid #475569;
@@ -503,14 +507,14 @@ body {
 }
 
 .joystick-knob {
-    width: 56px;
-    height: 56px;
+    width: 60px;
+    height: 60px;
     border-radius: 50%;
     background: radial-gradient(circle at 35% 35%, #60a5fa 0%, #2563eb 80%);
     border: 2px solid #93c5fd;
     position: absolute;
-    top: calc(50% - 28px);
-    left: calc(50% - 28px);
+    top: calc(50% - 30px);
+    left: calc(50% - 30px);
     cursor: grab;
     touch-action: none;
     box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4);

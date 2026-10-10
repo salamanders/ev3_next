@@ -224,14 +224,15 @@ impl Router {
                 }
             }
 
-            // Tank Drive Endpoint
-            (Method::Post, "/api/tank-drive") => {
-                match self.read_json_body::<TankDrivePayload>(&mut request) {
+            // 2D Joystick Endpoint (and legacy /api/tank-drive alias)
+            (Method::Post, "/api/joystick") | (Method::Post, "/api/tank-drive") => {
+                match self.read_json_body::<JoystickPayload>(&mut request) {
                     Ok(payload) => {
-                        let left_port = payload.left_port.as_deref().unwrap_or("B");
-                        let right_port = payload.right_port.as_deref().unwrap_or("C");
-                        match self.controller.tank_drive(left_port, right_port, payload.left_speed, payload.right_speed) {
-                            Ok(_) => self.respond_json(request, StatusCode(200), &ApiResponse::ok("Tank drive command dispatched")),
+                        let (x_port, y_port) = payload.resolve_ports();
+                        let (x_speed, y_speed) = payload.resolve_speeds();
+                        let stop_action = payload.resolve_stop_action();
+                        match self.controller.joystick_drive(&x_port, &y_port, x_speed, y_speed, Some(stop_action)) {
+                            Ok(_) => self.respond_json(request, StatusCode(200), &ApiResponse::ok("Joystick command dispatched")),
                             Err(e) => self.respond_json(request, StatusCode(500), &ApiResponse::<()>::err(e)),
                         }
                     }

@@ -1,13 +1,41 @@
 use serde::{Deserialize, Serialize};
 use crate::sysfs::MotorStatus;
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct TankDrivePayload {
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct JoystickPayload {
+    pub x_port: Option<String>,
+    pub y_port: Option<String>,
+    pub x_speed: Option<i32>,
+    pub y_speed: Option<i32>,
+    pub stop_action: Option<String>,
     pub left_port: Option<String>,
     pub right_port: Option<String>,
-    pub left_speed: i32,
-    pub right_speed: i32,
+    pub left_speed: Option<i32>,
+    pub right_speed: Option<i32>,
 }
+
+impl JoystickPayload {
+    pub fn resolve_ports(&self) -> (String, String) {
+        let x = self.x_port.as_ref().or(self.left_port.as_ref()).and_then(|s| normalize_port_name(s)).unwrap_or_else(|| "B".to_string());
+        let y = self.y_port.as_ref().or(self.right_port.as_ref()).and_then(|s| normalize_port_name(s)).unwrap_or_else(|| "C".to_string());
+        (x, y)
+    }
+
+    pub fn resolve_speeds(&self) -> (i32, i32) {
+        let sx = self.x_speed.or(self.left_speed).unwrap_or(0);
+        let sy = self.y_speed.or(self.right_speed).unwrap_or(0);
+        (sx, sy)
+    }
+
+    pub fn resolve_stop_action(&self) -> &str {
+        match self.stop_action.as_deref() {
+            Some("coast") => "coast",
+            Some("hold") => "hold",
+            _ => "brake",
+        }
+    }
+}
+
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PortCommandPayload {

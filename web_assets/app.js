@@ -43,7 +43,12 @@ class EV3App {
                     this.widgets = parsed.map(w => {
                         const base = { id: w.id, type: w.type };
                         if (w.type === "joystick") {
-                            return { ...base, leftPort: w.leftPort ?? "B", rightPort: w.rightPort ?? "C" };
+                            return {
+                                ...base,
+                                xPort: w.xPort ?? w.leftPort ?? "B",
+                                yPort: w.yPort ?? w.rightPort ?? "C",
+                                stopAction: w.stopAction ?? "brake"
+                            };
                         }
                         if (w.type === "slider") {
                             return { ...base, port: w.port ?? "A" };
@@ -66,7 +71,7 @@ class EV3App {
 
     loadDefaultWidgets() {
         this.widgets = [
-            { id: "joy", type: "joystick", leftPort: "B", rightPort: "C" },
+            { id: "joy", type: "joystick", xPort: "B", yPort: "C", stopAction: "brake" },
             { id: "slider", type: "slider", port: "A" }
         ];
         this.saveWidgets();
@@ -267,7 +272,7 @@ class EV3App {
     addWidget(type) {
         const id = `w_${Date.now()}`;
         const templates = {
-            joystick: { id, type: "joystick", leftPort: "B", rightPort: "C" },
+            joystick: { id, type: "joystick", xPort: "B", yPort: "C", stopAction: "brake" },
             slider: { id, type: "slider", port: "A" },
             button: { id, type: "button", port: "A", action: "momentary", degrees: 90 },
             sensor: { id, type: "sensor", port: "1", mode: "TOUCH" }
@@ -307,12 +312,19 @@ class EV3App {
         if (w.type === "joystick") {
             fields = `
                 <div class="widget-config-field">
-                    <label>Left Motor</label>
-                    <select class="field-left-port" data-id="${w.id}">${this.portOptions(w.leftPort)}</select>
+                    <label>X Axis Motor</label>
+                    <select class="field-x-port" data-id="${w.id}">${this.portOptions(w.xPort)}</select>
                 </div>
                 <div class="widget-config-field">
-                    <label>Right Motor</label>
-                    <select class="field-right-port" data-id="${w.id}">${this.portOptions(w.rightPort)}</select>
+                    <label>Y Axis Motor</label>
+                    <select class="field-y-port" data-id="${w.id}">${this.portOptions(w.yPort)}</select>
+                </div>
+                <div class="widget-config-field full-width">
+                    <label>Release Action</label>
+                    <select class="field-stop-action" data-id="${w.id}">
+                        <option value="brake" ${w.stopAction === "brake" ? "selected" : ""}>Brake (Hold Position)</option>
+                        <option value="coast" ${w.stopAction === "coast" ? "selected" : ""}>Coast (Free Spin)</option>
+                    </select>
                 </div>
             `;
         } else if (w.type === "slider") {
@@ -390,8 +402,9 @@ class EV3App {
             });
         };
 
-        bindField(".field-left-port", "leftPort");
-        bindField(".field-right-port", "rightPort");
+        bindField(".field-x-port", "xPort");
+        bindField(".field-y-port", "yPort");
+        bindField(".field-stop-action", "stopAction");
         bindField(".field-port", "port");
         bindField(".field-action", "action");
         bindField(".field-degrees", "degrees", Number);
@@ -414,7 +427,7 @@ class EV3App {
 
     renderRunCard(w) {
         const sizeClass = w.type === "joystick" ? "run-card-2x2" : "run-card-2x1";
-        const portBadge = w.type === "joystick" ? `Ports ${w.leftPort}+${w.rightPort}` : `Port ${w.port}`;
+        const portBadge = w.type === "joystick" ? `X: Port ${w.xPort} | Y: Port ${w.yPort}` : `Port ${w.port}`;
         const typeLabels = { joystick: "Joystick", slider: "Slider", button: "Button", sensor: "Sensor" };
         const cardTitle = typeLabels[w.type] ?? w.type;
         const portAttr = (w.type === "slider" || w.type === "button")
@@ -489,7 +502,7 @@ class EV3App {
         });
     }
 
-    // Maps touch displacement into differential steering velocities.
+    // Maps 2D touch displacement directly to X and Y motor velocities.
     initJoystick(w) {
         const boundary = document.getElementById(`joy-boundary-${w.id}`);
         const knob = document.getElementById(`joy-knob-${w.id}`);
@@ -520,13 +533,14 @@ class EV3App {
 
             this.throttle(`joy_${w.id}`, 66, () => {
                 const maxSpeed = 1000;
-                const leftSpeed = clamp(Math.round((normY + normX) * maxSpeed), -maxSpeed, maxSpeed);
-                const rightSpeed = clamp(Math.round((normY - normX) * maxSpeed), -maxSpeed, maxSpeed);
-                this.apiPost("/api/tank-drive", {
-                    left_port: w.leftPort,
-                    right_port: w.rightPort,
-                    left_speed: leftSpeed,
-                    right_speed: rightSpeed
+                const xSpeed = clamp(Math.round(normX * maxSpeed), -maxSpeed, maxSpeed);
+                const ySpeed = clamp(Math.round(normY * maxSpeed), -maxSpeed, maxSpeed);
+                this.apiPost("/api/joystick", {
+                    x_port: w.xPort,
+                    y_port: w.yPort,
+                    x_speed: xSpeed,
+                    y_speed: ySpeed,
+                    stop_action: w.stopAction || "brake"
                 }).catch(() => {});
             });
         };
@@ -544,11 +558,12 @@ class EV3App {
                 entry.timer = null;
             }
 
-            this.apiPost("/api/tank-drive", {
-                left_port: w.leftPort,
-                right_port: w.rightPort,
-                left_speed: 0,
-                right_speed: 0
+            this.apiPost("/api/joystick", {
+                x_port: w.xPort,
+                y_port: w.yPort,
+                x_speed: 0,
+                y_speed: 0,
+                stop_action: w.stopAction || "brake"
             }).catch(() => {});
         };
 
