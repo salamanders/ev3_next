@@ -743,7 +743,14 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
   - Removed "Max Speed" inputs from widgets; hardcoded standard EV3 range (`-1000..1000` ticks/s for slider, `1000` vector clamp for joystick, `600` default for buttons).
   - Removed redundant "Reset Defaults" button from design toolbar.
   - Retained "Zero (Stop)" button beside slider and diagnostics drawer.
-  - Re-captured and updated all desktop and mobile screenshots.
+- [x] **Step 13.7: Systematic Codebase Deduplication & Metric Verification**
+  - Removed redundant button CSS classes (`.btn-estop`, `.btn-shutdown`) across HTML and CSS.
+  - Extracted shared port name arrays and address parsers into single source of truth in `src/web/handlers.rs`.
+  - Removed phantom keyboard drive controls and deduplicated setup quickstart in documentation.
+  - Harmonized template styling and eliminated inline CSS in `web_assets/index.html`.
+  - Replaced unverified performance claims with factual architectural design in `README.md` and `docs/architecture.md`.
+  - Re-captured and updated all desktop and mobile screenshots after deduplication.
+
 
 
 
