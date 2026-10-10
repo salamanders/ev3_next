@@ -168,20 +168,9 @@ body {
     font-size: 12px;
 }
 
-.btn-estop {
-    background: #dc2626;
-    color: white;
-    font-size: 13px;
-    box-shadow: 0 0 10px rgba(220, 38, 38, 0.4);
+#btn-estop-header {
+    box-shadow: 0 0 10px rgba(239, 68, 68, 0.4);
 }
-.btn-estop:hover { background: #b91c1c; }
-
-.btn-shutdown {
-    background: #27272a;
-    color: #e4e4e7;
-    border: 1px solid #3f3f46;
-}
-.btn-shutdown:hover { background: #3f3f46; }
 
 
 
