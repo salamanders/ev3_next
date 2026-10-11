@@ -200,6 +200,13 @@ impl MockController {
         }
     }
 
+    /// Returns deceleration mode on the designated simulated channel.
+    #[cfg(test)]
+    pub fn get_stop_action(&self, port: &str) -> Option<String> {
+        let m = self.motors.lock().unwrap();
+        m.iter().find(|m| m.port.eq_ignore_ascii_case(port)).map(|m| m.stop_action.clone())
+    }
+
     /// Clears simulated encoder readings and zeros active velocity targets.
     pub fn reset(&self, port: &str) {
         let mut m = self.motors.lock().unwrap();
@@ -225,6 +232,20 @@ impl MockController {
             motor.time_remaining_ms = None;
             motor.holding = true;
             motor.stop_action = "hold".into();
+        }
+    }
+
+    /// Halts all simulated actuators using the coast stop action.
+    pub fn coast_all(&self) {
+        let mut m = self.motors.lock().unwrap();
+        for motor in m.iter_mut() {
+            motor.running = false;
+            motor.speed_sp = 0;
+            motor.duty_cycle_sp = 0;
+            motor.target_pos = None;
+            motor.time_remaining_ms = None;
+            motor.holding = false;
+            motor.stop_action = "coast".into();
         }
     }
 

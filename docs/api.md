@@ -103,7 +103,7 @@ Each object in the `commands` array specifies a target port and the motor or sen
 
 When `heartbeat_ms` is set:
 1. The server arms an in-memory safety timer for all moving motor ports in the batch.
-2. If the client stops sending requests (for example, network drop, closed tab, or client freeze) and the timer expires, the background supervisor thread automatically halts all batch motors using `brake` action.
+2. If the client stops sending requests (for example, network drop, closed tab, or client freeze) and the timer expires, the background supervisor thread automatically halts all motors across all ports using `coast` action to reduce mechanical stress.
 3. Sending a new batch request with `heartbeat_ms` resets the watchdog timer.
 4. Sending zero speed stops the motors and disarms the heartbeat watchdog.
 
@@ -114,7 +114,7 @@ When `heartbeat_ms` is set:
 curl -X POST http://<ip>/api/batch \
   -H "Content-Type: application/json" \
   -d '{
-    "heartbeat_ms": 400,
+    "heartbeat_ms": 2000,
     "commands": [
       { "port": "B", "speed": 600, "stop_action": "coast" },
       { "port": "C", "speed": 400, "stop_action": "brake" }

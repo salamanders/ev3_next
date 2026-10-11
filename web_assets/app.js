@@ -260,8 +260,8 @@ class EV3App {
         return json?.data !== undefined ? json.data : json;
     }
 
-    // Dispatches a multi-port command batch with heartbeat safety watchdog.
-    async apiBatch(commands, heartbeatMs = 400) {
+    // Transmits coordinated motor targets with link loss timeout protection.
+    async apiBatch(commands, heartbeatMs = 2000) {
         return this.apiPost("/api/batch", {
             heartbeat_ms: heartbeatMs,
             commands
@@ -871,7 +871,7 @@ class EV3App {
                     { port: w.leftPort, speed: leftSpeed, stop_action: stopAction },
                     { port: w.rightPort, speed: rightSpeed, stop_action: stopAction }
                 ];
-                this.apiBatch(commands, 400).catch(() => {});
+                this.apiBatch(commands).catch(() => {});
             });
         };
 
@@ -888,7 +888,7 @@ class EV3App {
             this.apiBatch([
                 { port: w.leftPort, speed: 0, stop_action: stopAction },
                 { port: w.rightPort, speed: 0, stop_action: stopAction }
-            ], 400).catch(() => {});
+            ]).catch(() => {});
         });
     }
 
@@ -924,7 +924,7 @@ class EV3App {
             this.throttle(`joy_${w.id}`, 66, () => {
                 const commands = calculateJoystickCommands(w, normX, normY);
                 if (commands.length > 0) {
-                    this.apiBatch(commands, 400).catch(() => {});
+                    this.apiBatch(commands).catch(() => {});
                 }
             });
         };
@@ -940,7 +940,7 @@ class EV3App {
 
             const commands = getJoystickStopCommands(w);
             if (commands.length > 0) {
-                this.apiBatch(commands, 400).catch(() => {});
+                this.apiBatch(commands).catch(() => {});
             }
         };
 

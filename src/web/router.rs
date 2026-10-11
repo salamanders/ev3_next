@@ -818,7 +818,7 @@ mod tests {
         // 17. Test POST /api/batch
         {
             let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            let body = b"{\"heartbeat_ms\": 400, \"commands\": [{\"port\": \"A\", \"speed\": 200}]}";
+            let body = b"{\"heartbeat_ms\": 2000, \"commands\": [{\"port\": \"A\", \"speed\": 200}]}";
             let req = format!(
                 "POST /api/batch HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                 body.len(),

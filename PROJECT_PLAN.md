@@ -29,6 +29,7 @@
 | **Phase 15** | Multi-Motor 2D Joystick Control | **COMPLETE**. Frontend multi-motor configuration matrix for X/Y axes, per-motor inversion, pure velocity calculation helpers, and multi-motor batch dispatch without backend API changes. |
 | **Phase 16** | Codebase Sweep, Chassis-Agnostic Backend & Frontend Tank Controls | **COMPLETE**. Combined single-caller functions, removed all tank references from Rust backend, and added frontend-only dual-track Tank Controls widget communicating via generic batch API. |
 | **Phase 17** | Codebase Simplification, Safety Hardening & State Consolidation | **COMPLETE**. Unified buffered sysfs descriptor reuse, consolidated sensor and motor state mutexes, resolved watchdog disconnect conflict on batch heartbeat commands, hardened emergency stop throttle disarming, pruned dead legacy payload fields, and updated docs. |
+| **Phase 18** | Heartbeat Watchdog Relaxation & Coast Stop Action Optimization | **COMPLETE**. Extended heartbeat timeout cutoff to 2000 ms to accommodate high-latency wireless networks, replaced watchdog timeout stop action with "coast" across all active motors to eliminate mechanical gear shock, and updated tests and documentation. |
 
 ---
 
@@ -53,6 +54,7 @@
 18. [Phase 15: Multi-Motor 2D Joystick Control](#18-phase-15-multi-motor-2d-joystick-control)
 19. [Phase 16: Codebase Sweep, Chassis-Agnostic Backend & Frontend Tank Controls](#19-phase-16-codebase-sweep-chassis-agnostic-backend--frontend-tank-controls)
 20. [Phase 17: Codebase Simplification, Safety Hardening & State Consolidation](#20-phase-17-codebase-simplification-safety-hardening--state-consolidation)
+21. [Phase 18: Heartbeat Watchdog Relaxation & Coast Stop Action Optimization](#21-phase-18-heartbeat-watchdog-relaxation--coast-stop-action-optimization)
 
 ---
 
@@ -933,6 +935,43 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
 - [x] **Step 17.4: Verification & Host Simulation (`cargo test`, `cargo run -- --mock`)**
   - Verified all 46 unit tests pass in `cargo test` with zero warnings.
   - Verified host simulation on port 8080 (`/api/status`, `/api/batch`, `/api/joystick`, `/api/estop`).
+
+---
+
+## 21. Phase 18: Heartbeat Watchdog Relaxation & Coast Stop Action Optimization
+
+### 21.1 Context & Objectives
+- **Problem:** The previous 400 ms heartbeat cutoff caused frequent unintended halts on iffy or high-jitter Wi-Fi networks. Additionally, stopping abruptly with `brake` or `hold` on missed heartbeats caused high mechanical shock and gear stress on EV3 motors. Furthermore, stopping only the most recent batch's ports left other active channels running without watchdog protection.
+- **Solution:**
+  1. Extend default heartbeat cutoff timeout to 2,000 ms across `src/controller.rs` and `web_assets/app.js`.
+  2. Implement comprehensive `coast_all_motors` in `src/controller.rs` and `coast_all` in `src/sysfs/mock.rs` to stop and coast all actuators across all ports upon heartbeat expiration.
+  3. Keep the 1,000 ms client disconnect watchdog (`/api/status` polling) intact for browser dropouts.
+
+### 21.2 Architectural Decision Matrix
+
+| Option / Proposed Change | Status | Technical Rationale & File Links |
+| :--- | :--- | :--- |
+| **Heartbeat Watchdog Cutoff (2000 ms)** | `[IMPLEMENTED]` | Increased default heartbeat cutoff from 400 ms to 2,000 ms in [`src/controller.rs`](src/controller.rs) and [`web_assets/app.js`](web_assets/app.js) to tolerate real-world wireless network jitter. |
+| **Timeout Stop Action Coast Across All Motors** | `[IMPLEMENTED]` | Implemented `coast_all_motors` in [`src/controller.rs`](src/controller.rs) and `coast_all` in [`src/sysfs/mock.rs`](src/sysfs/mock.rs) to halt all output channels with `coast` action, eliminating mechanical shock and multi-batch leaks. |
+| **Frontend Batch Dispatch Consolidation** | `[IMPLEMENTED]` | Updated `apiBatch` default `heartbeatMs` to 2,000 ms in [`web_assets/app.js`](web_assets/app.js) and removed redundant hardcoded timeouts across slider and joystick dispatchers. |
+
+### 21.3 Implementation Checklist
+
+- [x] **Step 18.1: Backend Heartbeat Timeout & Coast Stop Action (`src/controller.rs`, `src/sysfs/mock.rs`)**
+  - Updated `WatchdogState` default `heartbeat_timeout` to `Duration::from_millis(2000)`.
+  - Updated `joystick_drive` default `heartbeat_ms` to `2000`.
+  - Implemented `coast_all_motors` in `MotorController` and `coast_all` in `MockController` to safely coast all actuators on heartbeat expiration.
+  - Added query helper `get_stop_action` in `MockController` and `get_mock_stop_action` in `MotorController`.
+- [x] **Step 18.2: Frontend Heartbeat Default & Clean Dispatch (`web_assets/app.js`)**
+  - Changed `apiBatch(commands, heartbeatMs = 2000)` default parameter.
+  - Removed duplicate hardcoded 400 ms arguments from `initTank` and `initJoystick` callers.
+  - Verified non-echoing comments under 80 characters.
+- [x] **Step 18.3: Unit Test Suite & Documentation Updates (`README.md`, `docs/api.md`, `docs/architecture.md`, `PROJECT_PLAN.md`)**
+  - Added unit test `test_heartbeat_timeout_coasts_all_motors_across_channels` verifying all channels coast on expiration across sequential batches.
+  - Updated `test_joystick_watchdog_timeout` to verify 2,000 ms timeout and assert `coast` stop action.
+  - Updated `test_controller_execute_batch` to assert `coast` stop action on timeout.
+  - Updated `README.md`, `docs/api.md`, and `docs/architecture.md`.
+  - Verified host simulation on port 8080.
 
 
 

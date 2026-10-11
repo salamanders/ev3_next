@@ -97,7 +97,7 @@ impl MotorController {
             poll_interval_ms,
             watchdog: Mutex::new(WatchdogState {
                 last_heartbeat: None,
-                heartbeat_timeout: Duration::from_millis(400),
+                heartbeat_timeout: Duration::from_millis(2000),
                 heartbeat_ports: Vec::new(),
                 heartbeat_active: false,
                 last_status_poll: now,
@@ -251,7 +251,7 @@ impl MotorController {
 
     // Enforces expiration bounds on heartbeats and active client connections.
     fn check_watchdogs(&self) {
-        let (stop_hb, hb_ports, stop_cr) = {
+        let (stop_hb, stop_cr) = {
             let mut wd = match self.watchdog.lock() {
                 Ok(guard) => guard,
                 Err(e) => {
@@ -261,13 +261,11 @@ impl MotorController {
             };
 
             let mut stop_hb = false;
-            let mut hb_ports = Vec::new();
             if wd.heartbeat_active {
                 if let Some(t) = wd.last_heartbeat {
                     if t.elapsed() > wd.heartbeat_timeout {
                         wd.heartbeat_active = false;
                         stop_hb = true;
-                        hb_ports = wd.heartbeat_ports.clone();
                     }
                 }
             }
@@ -278,15 +276,13 @@ impl MotorController {
                 stop_cr = true;
             }
 
-            (stop_hb, hb_ports, stop_cr)
+            (stop_hb, stop_cr)
         };
 
         if stop_hb {
-            println!("[WATCHDOG] Heartbeat timed out. Halting active motors {:?}.", hb_ports);
-            for p in &hb_ports {
-                if let Err(e) = self.stop(p, Some("brake".into())) {
-                    eprintln!("[WATCHDOG ERROR] Failed stopping port {}: {}", p, e);
-                }
+            println!("[WATCHDOG] Heartbeat timed out. Coasting all motors.");
+            if let Err(e) = self.coast_all_motors() {
+                eprintln!("[WATCHDOG ERROR] Failed coasting motors: {}", e);
             }
         }
 
@@ -617,7 +613,7 @@ impl MotorController {
     pub fn joystick_drive(&self, x_port: &str, y_port: &str, x_speed: i32, y_speed: i32, stop_action: Option<&str>) -> Result<(), String> {
         let stop_act = stop_action.unwrap_or("brake");
         let batch = BatchCommandPayload {
-            heartbeat_ms: Some(400),
+            heartbeat_ms: Some(2000),
             commands: vec![
                 BatchItemPayload {
                     port: x_port.to_string(),
@@ -683,6 +679,38 @@ impl MotorController {
         Ok(results)
     }
 
+    /// Halts all motor channels with coast action to minimize gear stress.
+    pub fn coast_all_motors(&self) -> Result<(), String> {
+        if let Ok(mut wd) = self.watchdog.lock() {
+            wd.heartbeat_active = false;
+            wd.continuous_active = false;
+        }
+
+        match &self.backend {
+            HardwareBackend::Mock(mock) => {
+                mock.coast_all();
+                Ok(())
+            }
+            HardwareBackend::Real => {
+                let mut errors = Vec::new();
+                let motors = self.motors.read().map_err(|e| e.to_string())?;
+                for motor in motors.iter() {
+                    if let Err(e) = motor.set_stop_action("coast") {
+                        errors.push(format!("Port {} stop_action error: {}", motor.port, e));
+                    }
+                    if let Err(e) = motor.send_command("stop") {
+                        errors.push(format!("Port {} stop command error: {}", motor.port, e));
+                    }
+                }
+                if !errors.is_empty() {
+                    Err(errors.join("; "))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+
     /// Immediately brakes all output channels and clears active motions.
     pub fn emergency_stop(&self) -> Result<(), String> {
         if let Ok(mut wd) = self.watchdog.lock() {
@@ -743,6 +771,15 @@ impl MotorController {
             }
         }
     }
+
+    /// Inspects terminal deceleration state on simulated backend channel.
+    #[cfg(test)]
+    pub fn get_mock_stop_action(&self, port: &str) -> Option<String> {
+        match &self.backend {
+            HardwareBackend::Mock(mock) => mock.get_stop_action(port),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -764,15 +801,17 @@ mod tests {
         assert_eq!(b1.speed, 500);
         assert_eq!(c1.speed, 500);
 
-        // Sleep 500ms without heartbeat (timeout is 400ms)
-        thread::sleep(Duration::from_millis(500));
+        // Sleep >2000ms without heartbeat (timeout is 2000ms)
+        thread::sleep(Duration::from_millis(2100));
 
-        // After timeout, watchdog should halt motors B and C
+        // After timeout, watchdog should halt motors B and C with coast
         let st2 = controller.get_system_status();
         let b2 = st2.motors.iter().find(|m| m.port == "B").unwrap();
         let c2 = st2.motors.iter().find(|m| m.port == "C").unwrap();
         assert_eq!(b2.speed, 0);
         assert_eq!(c2.speed, 0);
+        assert_eq!(controller.get_mock_stop_action("B"), Some("coast".into()));
+        assert_eq!(controller.get_mock_stop_action("C"), Some("coast".into()));
     }
 
     // Validates orientation transitions with power telemetry parsing.
@@ -930,6 +969,75 @@ mod tests {
         let d2 = status2.motors.iter().find(|m| m.port == "D").unwrap();
         assert_eq!(a2.speed, 0);
         assert_eq!(d2.speed, 0);
+        assert_eq!(controller.get_mock_stop_action("A"), Some("coast".into()));
+        assert_eq!(controller.get_mock_stop_action("B"), Some("coast".into()));
+        assert_eq!(controller.get_mock_stop_action("C"), Some("coast".into()));
+        assert_eq!(controller.get_mock_stop_action("D"), Some("coast".into()));
+    }
+
+    // Confirms missed heartbeats coast all motors across all output channels.
+    #[test]
+    fn test_heartbeat_timeout_coasts_all_motors_across_channels() {
+        use crate::web::handlers::{BatchItemPayload, PortCommandPayload};
+        let controller = MotorController::new(true, 15);
+
+        // Batch 1: run motor A with heartbeat
+        let batch1 = BatchCommandPayload {
+            heartbeat_ms: Some(200),
+            commands: vec![
+                BatchItemPayload {
+                    port: "A".into(),
+                    payload: PortCommandPayload {
+                        speed: Some(300),
+                        stop_action: Some("brake".into()),
+                        ..Default::default()
+                    },
+                },
+            ],
+        };
+        controller.execute_batch(&batch1).unwrap();
+
+        // Batch 2: run motors B and C with heartbeat
+        let batch2 = BatchCommandPayload {
+            heartbeat_ms: Some(200),
+            commands: vec![
+                BatchItemPayload {
+                    port: "B".into(),
+                    payload: PortCommandPayload {
+                        speed: Some(400),
+                        stop_action: Some("brake".into()),
+                        ..Default::default()
+                    },
+                },
+                BatchItemPayload {
+                    port: "C".into(),
+                    payload: PortCommandPayload {
+                        speed: Some(-400),
+                        stop_action: Some("brake".into()),
+                        ..Default::default()
+                    },
+                },
+            ],
+        };
+        controller.execute_batch(&batch2).unwrap();
+        thread::sleep(Duration::from_millis(40));
+
+        // Confirm all commanded motors are running
+        let s1 = controller.get_system_status();
+        assert_eq!(s1.motors.iter().find(|m| m.port == "A").unwrap().speed, 300);
+        assert_eq!(s1.motors.iter().find(|m| m.port == "B").unwrap().speed, 400);
+        assert_eq!(s1.motors.iter().find(|m| m.port == "C").unwrap().speed, -400);
+
+        // Wait for heartbeat watchdog timeout (200ms timeout + buffer)
+        thread::sleep(Duration::from_millis(250));
+
+        // Watchdog must coast ALL motors across the system, not just batch 2
+        let s2 = controller.get_system_status();
+        for port in &["A", "B", "C", "D"] {
+            let m = s2.motors.iter().find(|m| m.port == *port).unwrap();
+            assert_eq!(m.speed, 0);
+            assert_eq!(controller.get_mock_stop_action(port), Some("coast".into()));
+        }
     }
 
     // Ensures velocity ceilings respect specific peripheral driver limits.

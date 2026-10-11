@@ -44,9 +44,9 @@ Reading Linux sysfs files (`/sys/class/tacho-motor/` and `/sys/class/lego-sensor
 
 To prevent runaway robots when network connections drop:
 
-1. **Heartbeat Watchdog (Configurable 100–5000 ms, default 400 ms):**
+1. **Heartbeat Watchdog (Configurable 100–5000 ms, default 2000 ms):**
    - Active during continuous motor operations (`POST /api/batch`, `POST /api/ports`, and legacy `/api/joystick`).
-   - If the client fails to send a renewal packet within the specified heartbeat window, the supervisor thread automatically stops all commanded batch motors with brake action.
+   - If the client fails to send a renewal packet within the specified heartbeat window, the supervisor thread automatically stops all motors across all channels with coast action to reduce mechanical stress.
 2. **Client Disconnect Watchdog (1,000 ms):**
    - Monitors active browser polling.
    - If the browser tab closes, drops Wi-Fi, or crashes while continuous motor commands are running, the server halts all ports.
