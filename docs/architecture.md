@@ -116,5 +116,6 @@ Use this guide to place new features in the correct layer:
 | **Configuration & CLI** | `src/config.rs` | CLI arguments, port configuration, mock detection flags. | No runtime motor control, no network serving. |
 | **Application Lifecycle** | `src/main.rs` | Program startup, worker thread pool initialization, LCD refresher thread, shutdown handling. | No low-level driver logic, no route definitions. |
 | **Frontend Templates** | `web_assets/index.html`, `design.html` | Semantic HTML structure for Run and Design views. | No business logic, no styling rules. |
-| **Frontend Styles** | `web_assets/style.css` | CSS variables, layout grid rules, mobile viewport media queries. | No application state, no dynamic DOM manipulation. |
-| **Frontend Logic** | `web_assets/app.js` | UI event listeners, pointer capture, client rate limiting (15 Hz), API communication. | No direct sysfs references, no HTML templates larger than single cards. |
+| **Frontend Logic** | `web_assets/app.js` | UI event listeners, pointer capture, client rate limiting (15 Hz), API communication, `WidgetRegistry`. | No direct sysfs references, no individual widget math or DOM layouts. |
+| **Modular Widgets** | `web_assets/widgets/` (`joystick`, `tank`, `slider`, `button`, `sensor`) | Standalone native ES widget modules and baseline `manifest.json`. | No global app orchestration, no server polling loops. |
+| **Catalog Updater** | `src/updater.rs` | Background thread for widget updates via curl, manifest comparisons, atomic on-disk swaps. | No UI event binding, no sysfs driver actuation. |

@@ -1,0 +1,30 @@
+{
+  "timestamp": 1728670000,
+  "widgets": {
+    "joystick": {
+      "version": "1.0.0",
+      "timestamp": 1728670000,
+      "files": ["widget.js"]
+    },
+    "tank": {
+      "version": "1.0.0",
+      "timestamp": 1728670000,
+      "files": ["widget.js"]
+    },
+    "slider": {
+      "version": "1.0.0",
+      "timestamp": 1728670000,
+      "files": ["widget.js"]
+    },
+    "button": {
+      "version": "1.0.0",
+      "timestamp": 1728670000,
+      "files": ["widget.js"]
+    },
+    "sensor": {
+      "version": "1.0.0",
+      "timestamp": 1728670000,
+      "files": ["widget.js"]
+    }
+  }
+}

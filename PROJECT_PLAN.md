@@ -31,6 +31,7 @@
 | **Phase 17** | Codebase Simplification, Safety Hardening & State Consolidation | **COMPLETE**. Unified buffered sysfs descriptor reuse, consolidated sensor and motor state mutexes, resolved watchdog disconnect conflict on batch heartbeat commands, hardened emergency stop throttle disarming, pruned dead legacy payload fields, and updated docs. |
 | **Phase 18** | Heartbeat Watchdog Relaxation & Coast Stop Action Optimization | **COMPLETE**. Extended heartbeat timeout cutoff to 2000 ms to accommodate high-latency wireless networks, replaced watchdog timeout stop action with "coast" across all active motors to eliminate mechanical gear shock, and updated tests and documentation. |
 | **Phase 19** | Unified Safety Watchdog Architecture | **COMPLETE**. Unified 2.0-second safety watchdog across all driving controls (joystick, tank, slider, port commands, batch), coasting all motors on timeout, simplified `WatchdogState`, and updated tests. |
+| **Phase 20** | Safe Dynamic Widget Updates & Modular Architecture | **COMPLETE**. Modular ES widget modules in `web_assets/widgets/`, unified `WidgetRegistry` in `app.js`, background curl updater with 3-second timeout and active IP detection, manifest rate-limit evasion, transparent `/widgets/*` static delivery (gzip and uncompressed), and end-to-end tests. |
 
 ---
 
@@ -57,6 +58,7 @@
 20. [Phase 17: Codebase Simplification, Safety Hardening & State Consolidation](#20-phase-17-codebase-simplification-safety-hardening--state-consolidation)
 21. [Phase 18: Heartbeat Watchdog Relaxation & Coast Stop Action Optimization](#21-phase-18-heartbeat-watchdog-relaxation--coast-stop-action-optimization)
 22. [Phase 19: Unified Safety Watchdog Architecture](#22-phase-19-unified-safety-watchdog-architecture)
+23. [Phase 20: Safe Dynamic Widget Updates & Modular Architecture](#23-phase-20-safe-dynamic-widget-updates--modular-architecture)
 
 ---
 
@@ -1025,3 +1027,68 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
   - Updated `docs/api.md` safety watchdog behavior section.
   - Updated `README.md` features and architecture links.
   - Verified host simulation on port 8080.
+
+---
+
+## 23. Phase 20: Safe Dynamic Widget Updates & Modular Architecture
+
+### 23.1 Context & Objectives
+- **Problem:** Widgets were statically baked into a monolithic frontend file (`app.js`), preventing incremental widget delivery or independent updates from the web without whole-system recompilation or image reflashing. Furthermore, brick boot and server responsiveness must never block on external network latency or fail when offline.
+- **Solution:**
+  1. Modularize dashboard components into standalone native ES modules in `web_assets/widgets/<name>/widget.js` (`joystick`, `tank`, `slider`, `button`, `sensor`).
+  2. Implement unified `WidgetRegistry` in `web_assets/app.js` with dynamic `import()` loading and automatic version cache invalidation (`?v=<timestamp>`).
+  3. Implement background update discovery using system `curl` in `src/updater.rs`, triggered after active IP detection with a strict 3-second timeout and silent fallback.
+  4. Compare lightweight `manifest.json` timestamps avoiding GitHub API rate limits, downloading only modified files.
+  5. Deliver transparent `/widgets/*` static routes in `src/web/router.rs` serving `.gz` when present, or plain uncompressed files without requiring an on-brick gzip tool.
+  6. Preserve existing `localStorage` user widget configuration without schema mutation.
+  7. Add end-to-end automated tests verifying remote updates and HTTP static delivery.
+
+### 23.2 Architectural Decision Matrix
+
+| Option / Proposed Change | Status | Technical Rationale & File Links |
+| :--- | :--- | :--- |
+| **Modular ES Widgets** | `[IMPLEMENTED]` | Separated joystick, tank, slider, button, and sensor into isolated modules in [`web_assets/widgets/`](web_assets/widgets/). |
+| **Unified WidgetRegistry** | `[IMPLEMENTED]` | Dynamic import pipeline in [`web_assets/app.js`](web_assets/app.js) with manifest version query parameter cache busting and optional `widget.css` support. |
+| **Background curl Updater** | `[IMPLEMENTED]` | Silent background thread in [`src/updater.rs`](src/updater.rs) with strict 3-second timeout and active network detection. |
+| **Atomic Multi-File Staging** | `[IMPLEMENTED]` | Staged multi-file downloads in [`src/updater.rs`](src/updater.rs) ensuring partial failures cleanly roll back without corrupting on-disk widgets or bumping catalog timestamps. |
+| **Manifest Timestamp Discovery** | `[IMPLEMENTED]` | Lightweight [`manifest.json`](web_assets/widgets/manifest.json) comparison avoiding GitHub REST API rate limits. |
+| **Transparent Route Delivery** | `[IMPLEMENTED]` | Static route `/widgets/*` in [`src/web/router.rs`](src/web/router.rs) serving `.gz` when present or plain files with `Cache-Control: no-cache` and stale gzip invalidation. |
+| **Config Backwards Compatibility** | `[IMPLEMENTED]` | Preserved existing `ev3_dashboard_widgets` storage parsing in [`web_assets/app.js`](web_assets/app.js). |
+
+### 23.3 Implementation Checklist
+
+- [x] **Step 20.1: Modular Native ES Widget Definitions (`web_assets/widgets/`)**
+  - Created modular widget modules: `joystick`, `tank`, `slider`, `button`, `sensor`.
+  - Created baseline `web_assets/widgets/manifest.json`.
+  - Enforced single-responsibility boundaries, non-echoing comments (<= 79 chars), and Simplified Technical English.
+- [x] **Step 20.2: Client WidgetRegistry & Dynamic Imports (`web_assets/app.js`, HTML files)**
+  - Implemented `WidgetRegistry` in `web_assets/app.js` with dynamic `import()`, fallback manifest, optional `widget.css` loader, and `?v=<timestamp>` cache busting.
+  - Updated `<script type="module" src="app.js"></script>` in `index.html` and `design.html`.
+  - Preserved existing `localStorage` settings and fallback defaults.
+- [x] **Step 20.3: Rust Background Updater & Manifest Check (`src/updater.rs`, `src/main.rs`)**
+  - Implemented `src/updater.rs` with `fetch_remote_manifest`, `load_local_manifest`, `download_file`, and `check_and_update_widgets`.
+  - Added atomic multi-file staging: failed downloads roll back without touching live files or prematurely advancing catalog timestamps.
+  - Added strict identifier and filename validation preventing directory traversal exploits.
+  - Purges obsolete `.gz` companion files when newer plain files are downloaded.
+  - Bound updater to 3-second timeout with silent local fallback.
+  - Spawns background thread in `src/main.rs` after server bind and active IP probe.
+- [x] **Step 20.4: Transparent Static Route Delivery (`src/web/router.rs`)**
+  - Implemented `/widgets/*` routes in `src/web/router.rs` supporting GET and HEAD.
+  - Serves `.gz` if present, plain uncompressed files if not, comparing mtimes to prevent serving stale `.gz` files when plain files are updated.
+  - Guards against path traversal (`..`, `%2e`, null bytes, leading slashes).
+  - Emits `Cache-Control: no-cache` on all widget responses.
+  - Implemented individual baseline widget file restoration for self-healing.
+- [x] **Step 20.5: Automated Verification Suite (`cargo test`, `cargo run -- --mock`)**
+  - Added unit test `test_manifest_serialization_round_trip`.
+  - Added unit test `test_load_local_manifest_missing_file`.
+  - Added unit test `test_updater_offline_unreachable_returns_error_gracefully`.
+  - Added unit test `test_updater_ignores_same_or_older_timestamp`.
+  - Added unit test `test_transparent_route_serves_gzip_when_present_and_plain_when_not`.
+  - Added unit test `test_widget_static_routes_headers_and_security`.
+  - Added unit test `test_partial_download_failure_rolls_back_and_preserves_existing_files`.
+  - Added unit test `test_updater_rejects_unsafe_path_traversal_in_manifest`.
+  - Added unit test `test_updating_plain_file_purges_stale_gzip_companion_and_serves_new_content`.
+  - Added unit test `test_restore_baseline_widgets_restores_individual_missing_files_when_manifest_exists`.
+  - Added end-to-end unit test `test_e2e_updater_fetches_newer_widgets_and_server_serves_them`.
+  - Verified 63/63 tests pass in `cargo test`.
+  - Verified host simulation on default port 8080 (`http://localhost:8080/`).

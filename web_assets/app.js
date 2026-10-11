@@ -1,52 +1,82 @@
 /**
  * LEGO Mindstorms EV3 Web Dashboard Controller
- * Enforces strict single-responsibility boundaries, zero duplication, and ES2025+ standards.
+ * Enforces strict single-responsibility boundaries and ES2025+ standards.
  */
 
-// Translates component category keys to presentation title strings.
-const TYPE_LABELS = {
-    joystick: "Joystick",
-    tank: "Tank Controls",
-    slider: "Slider",
-    button: "Button",
-    sensor: "Sensor"
-};
-
-// Restricts numeric magnitude between lower and upper bounds.
-const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
-
-// Extracts unique active actuator sockets assigned to directional axes.
-function getJoystickPorts(w) {
-    return !w.multiMotor
-        ? [w.xPort, w.yPort]
-        : [...new Set([...(w.xMotors ?? []).map(m => m.port), ...(w.yMotors ?? []).map(m => m.port)])];
-}
-
-// Maps planar displacement vectors to multi-channel velocity setpoints.
-function calculateJoystickCommands(w, normX, normY, maxSpeed = 1000) {
-    const stopAction = w.stopAction || "brake";
-    const xSpeed = clamp(Math.round(normX * maxSpeed), -maxSpeed, maxSpeed);
-    const ySpeed = clamp(Math.round(normY * maxSpeed), -maxSpeed, maxSpeed);
-
-    if (!w.multiMotor) {
-        return [
-            { port: w.xPort, speed: xSpeed, stop_action: stopAction },
-            { port: w.yPort, speed: ySpeed, stop_action: stopAction }
-        ];
+class WidgetRegistry {
+    // Manages dynamic module resolution and runtime widget factories.
+    constructor() {
+        this.modules = new Map();
+        this.manifest = null;
+        this.knownTypes = ["joystick", "tank", "slider", "button", "sensor"];
     }
 
-    const mapMotors = (motors, speed) => (motors ?? []).map(m => ({
-        port: m.port,
-        speed: m.invert ? -speed : speed,
-        stop_action: stopAction
-    }));
-    return [...mapMotors(w.xMotors, xSpeed), ...mapMotors(w.yMotors, ySpeed)];
-}
+    // Probes local or remote catalog metadata with silent fallback.
+    async init() {
+        try {
+            const res = await fetch(`/widgets/manifest.json?v=${Date.now()}`, {
+                signal: AbortSignal.timeout(1500)
+            });
+            if (res.ok) {
+                this.manifest = await res.json();
+            }
+        } catch (_) {}
+    }
 
-// Generates zero-velocity brake targets across all configured channels.
-function getJoystickStopCommands(w) {
-    const stopAction = w.stopAction || "brake";
-    return getJoystickPorts(w).map(port => ({ port, speed: 0, stop_action: stopAction }));
+    // Resolves cache busting revision token for targeted element type.
+    getVersion(type) {
+        return this.manifest?.widgets?.[type]?.timestamp
+            ?? this.manifest?.timestamp
+            ?? 1728670000;
+    }
+
+    // Resolves and caches component code and optional styles asynchronously.
+    async load(type) {
+        if (this.modules.has(type)) {
+            return this.modules.get(type);
+        }
+        const v = this.getVersion(type);
+        try {
+            const mod = await import(`/widgets/${type}/widget.js?v=${v}`);
+            const def = mod.default ?? mod;
+            this.modules.set(type, def);
+
+            const files = this.manifest?.widgets?.[type]?.files ?? [];
+            if (files.some(f => f.endsWith(".css")) || def.hasCss) {
+                const cssId = `widget-css-${type}`;
+                if (!document.getElementById(cssId)) {
+                    const link = document.createElement("link");
+                    link.id = cssId;
+                    link.rel = "stylesheet";
+                    link.href = `/widgets/${type}/widget.css?v=${v}`;
+                    document.head.appendChild(link);
+                }
+            }
+
+            return def;
+        } catch (err) {
+            console.error(`Failed loading widget module for '${type}':`, err);
+            return null;
+        }
+    }
+
+    // Concurrently preloads active layout dependencies before render pass.
+    async loadActive(types) {
+        const unique = [...new Set(types)];
+        await Promise.all(unique.map(t => this.load(t)));
+    }
+
+    // Preloads catalog components to guarantee rapid interface responses.
+    async loadAll() {
+        const catalogTypes = Object.keys(this.manifest?.widgets ?? {});
+        const allTypes = [...new Set([...this.knownTypes, ...catalogTypes])];
+        await Promise.all(allTypes.map(t => this.load(t)));
+    }
+
+    // Retrieves cached module definition for synchronous rendering passes.
+    get(type) {
+        return this.modules.get(type);
+    }
 }
 
 class EV3App {
@@ -58,24 +88,33 @@ class EV3App {
         this.throttleMap = new Map();
         this.isOnline = false;
         this.pollTimer = null;
+        this.registry = new WidgetRegistry();
 
         this.initStorage();
         this.initDOMElements();
         this.attachGlobalListeners();
         this.startPolling();
+        this.boot();
+    }
+
+    // Distinguishes configuration editing mode from runtime operations.
+    get isDesignView() {
+        return !!document.getElementById("design-view");
+    }
+
+    // Asynchronously loads required widget modules before initial rendering.
+    async boot() {
+        await this.registry.init();
+        await this.registry.loadActive(this.widgets.map(w => w.type));
 
         if (this.isDesignView) {
+            await this.registry.loadAll();
             this.renderHardwarePanel();
             this.rescanHardware(false);
             this.renderDesignWidgets();
         } else {
             this.renderRunWidgets();
         }
-    }
-
-    // Distinguishes configuration editing mode from runtime operations.
-    get isDesignView() {
-        return !!document.getElementById("design-view");
     }
 
     // Persists configuration in local memory with fallback defaults.
@@ -86,7 +125,10 @@ class EV3App {
                 const parsed = JSON.parse(raw);
                 if (Array.isArray(parsed) && parsed.length > 0) {
                     const parseMotors = (motors, fallbackPort) => Array.isArray(motors)
-                        ? motors.map(m => ({ port: String(m.port).trim().toUpperCase(), invert: !!m.invert }))
+                        ? motors.map(m => ({
+                            port: String(m.port).trim().toUpperCase(),
+                            invert: !!m.invert
+                        }))
                         : [{ port: fallbackPort, invert: false }];
 
                     this.widgets = parsed.map(w => {
@@ -113,8 +155,17 @@ class EV3App {
                             };
                         }
                         if (w.type === "slider") return { ...base, port: w.port ?? "A" };
-                        if (w.type === "button") return { ...base, port: w.port ?? "A", action: w.action ?? "momentary", degrees: w.degrees ?? 90 };
-                        if (w.type === "sensor") return { ...base, port: w.port ?? "1", mode: w.mode ?? "TOUCH" };
+                        if (w.type === "button") return {
+                            ...base,
+                            port: w.port ?? "A",
+                            action: w.action ?? "momentary",
+                            degrees: w.degrees ?? 90
+                        };
+                        if (w.type === "sensor") return {
+                            ...base,
+                            port: w.port ?? "1",
+                            mode: w.mode ?? "TOUCH"
+                        };
                         return base;
                     });
                     this.saveWidgets();
@@ -187,9 +238,9 @@ class EV3App {
         });
 
         if (this.isDesignView) {
-            this.dom.btnAdd?.addEventListener("click", () => {
+            this.dom.btnAdd?.addEventListener("click", async () => {
                 const type = this.dom.widgetSelect?.value ?? "joystick";
-                this.addWidget(type);
+                await this.addWidget(type);
             });
             this.dom.btnRescan?.addEventListener("click", () => this.rescanHardware(true));
             this.dom.btnClearLog?.addEventListener("click", () => {
@@ -268,11 +319,20 @@ class EV3App {
         });
     }
 
-    // Immediately halts all active channels.
+    // Immediately halts all active channels and invokes component resets.
     async emergencyStop() {
         try {
             await this.apiPost("/api/estop", {});
             this.clearAllThrottles();
+
+            this.widgets.forEach(w => {
+                const def = this.registry.get(w.type);
+                const el = document.getElementById(`run-card-${w.id}`);
+                if (def?.onEmergencyStop && el) {
+                    def.onEmergencyStop(w, el);
+                }
+            });
+
             document.querySelectorAll(".btn-toggle").forEach(b => {
                 b.className = "btn btn-big-action btn-toggle btn-secondary";
                 b.textContent = "Start Motor";
@@ -385,31 +445,13 @@ class EV3App {
     }
 
     // Appends a new item schema and triggers canvas refresh.
-    addWidget(type) {
+    async addWidget(type) {
+        await this.registry.load(type);
+        const def = this.registry.get(type);
         const id = `w_${Date.now()}`;
-        const templates = {
-            joystick: {
-                id,
-                type: "joystick",
-                xPort: "B",
-                yPort: "C",
-                stopAction: "brake",
-                multiMotor: false,
-                xMotors: [{ port: "B", invert: false }],
-                yMotors: [{ port: "C", invert: false }]
-            },
-            tank: {
-                id,
-                type: "tank",
-                leftPort: "B",
-                rightPort: "C",
-                stopAction: "brake"
-            },
-            slider: { id, type: "slider", port: "A" },
-            button: { id, type: "button", port: "A", action: "momentary", degrees: 90 },
-            sensor: { id, type: "sensor", port: "1", mode: "TOUCH" }
-        };
-        this.widgets.push(templates[type] ?? templates.slider);
+        const item = def?.createDefault ? def.createDefault(id) : { id, type, port: "A" };
+
+        this.widgets.push(item);
         this.saveWidgets();
         this.renderDesignWidgets();
     }
@@ -442,137 +484,15 @@ class EV3App {
 
     // Formats editable inputs and settings markup for an item.
     renderDesignCard(w) {
-        let fields = "";
-
-        if (w.type === "joystick") {
-            const motorCols = ["A", "B", "C", "D"];
-            const axes = [
-                { axis: "x", label: "X Axis (Left / Right)", motors: w.xMotors },
-                { axis: "y", label: "Y Axis (Up / Down)", motors: w.yMotors }
-            ];
-            const multiMotorContent = `
-                <div class="multi-motor-container">
-                    ${axes.map(({ axis, label, motors }) => `
-                        <div class="multi-motor-column">
-                            <span class="multi-motor-heading">${label}</span>
-                            <div class="multi-motor-grid">
-                                ${motorCols.map(p => {
-                                    const assigned = motors?.find(m => m.port === p);
-                                    const isChecked = !!assigned;
-                                    const isInverted = !!assigned?.invert;
-                                    return `
-                                        <div class="multi-motor-row">
-                                            <label class="multi-motor-label">
-                                                <input type="checkbox" class="field-mm-active" data-id="${w.id}" data-axis="${axis}" data-port="${p}" ${isChecked ? "checked" : ""}>
-                                                <span>Port ${p}</span>
-                                            </label>
-                                            <label class="multi-motor-invert-label ${isChecked ? "" : "disabled"}">
-                                                <input type="checkbox" class="field-mm-invert" data-id="${w.id}" data-axis="${axis}" data-port="${p}" ${isInverted ? "checked" : ""} ${isChecked ? "" : "disabled"}>
-                                                <span>Invert</span>
-                                            </label>
-                                        </div>
-                                    `;
-                                }).join("")}
-                            </div>
-                        </div>
-                    `).join("")}
-                </div>
-            `;
-
-            const standardContent = `
-                <div class="widget-config-field">
-                    <label>X Axis</label>
-                    <select class="field-x-port" data-id="${w.id}">${this.portOptions(w.xPort)}</select>
-                </div>
-                <div class="widget-config-field">
-                    <label>Y Axis</label>
-                    <select class="field-y-port" data-id="${w.id}">${this.portOptions(w.yPort)}</select>
-                </div>
-            `;
-
-            fields = `
-                <div class="widget-config-field full-width">
-                    <label class="multi-motor-toggle">
-                        <input type="checkbox" class="field-multi-motor" data-id="${w.id}" ${w.multiMotor ? "checked" : ""}>
-                        <span>Multi-Motor Control</span>
-                    </label>
-                </div>
-                ${w.multiMotor ? multiMotorContent : standardContent}
-                <div class="widget-config-field full-width">
-                    <label>Release Action</label>
-                    <select class="field-stop-action" data-id="${w.id}">
-                        <option value="brake" ${w.stopAction === "brake" ? "selected" : ""}>Brake (Hold Position)</option>
-                        <option value="coast" ${w.stopAction === "coast" ? "selected" : ""}>Coast (Free Spin)</option>
-                    </select>
-                </div>
-            `;
-        } else if (w.type === "tank") {
-            fields = `
-                <div class="widget-config-field">
-                    <label>Left Track</label>
-                    <select class="field-left-port" data-id="${w.id}">${this.portOptions(w.leftPort)}</select>
-                </div>
-                <div class="widget-config-field">
-                    <label>Right Track</label>
-                    <select class="field-right-port" data-id="${w.id}">${this.portOptions(w.rightPort)}</select>
-                </div>
-                <div class="widget-config-field full-width">
-                    <label>Release Action</label>
-                    <select class="field-stop-action" data-id="${w.id}">
-                        <option value="brake" ${w.stopAction === "brake" ? "selected" : ""}>Brake (Hold Position)</option>
-                        <option value="coast" ${w.stopAction === "coast" ? "selected" : ""}>Coast (Free Spin)</option>
-                    </select>
-                </div>
-            `;
-        } else if (w.type === "slider") {
-            fields = `
-                <div class="widget-config-field full-width">
-                    <label>Motor</label>
-                    <select class="field-port" data-id="${w.id}">${this.portOptions(w.port)}</select>
-                </div>
-            `;
-        } else if (w.type === "button") {
-            fields = `
-                <div class="widget-config-field">
-                    <label>Motor</label>
-                    <select class="field-port" data-id="${w.id}">${this.portOptions(w.port)}</select>
-                </div>
-                <div class="widget-config-field">
-                    <label>Behavior</label>
-                    <select class="field-action" data-id="${w.id}">
-                        <option value="momentary" ${w.action === "momentary" ? "selected" : ""}>Hold to Run</option>
-                        <option value="toggle" ${w.action === "toggle" ? "selected" : ""}>Toggle (Run / Stop)</option>
-                        <option value="step" ${w.action === "step" ? "selected" : ""}>Step Angle</option>
-                    </select>
-                </div>
-                ${w.action === "step" ? `
-                    <div class="widget-config-field full-width">
-                        <label>Angle (deg)</label>
-                        <input type="number" class="field-degrees" data-id="${w.id}" min="-1080" max="1080" step="15" value="${w.degrees}">
-                    </div>
-                ` : ""}
-            `;
-        } else if (w.type === "sensor") {
-            const sensor = this.hardwareSensors.find(s => s.port === w.port);
-            const modes = sensor?.modes?.length ? sensor.modes : ["TOUCH", "COL-COLOR", "US-DIST-CM", "GYRO-ANG"];
-            const modeOpts = modes.map(m => `<option value="${m}" ${w.mode === m ? "selected" : ""}>${m}</option>`).join("");
-            fields = `
-                <div class="widget-config-field">
-                    <label>Port</label>
-                    <select class="field-sensor-port" data-id="${w.id}">${this.portOptions(w.port, true)}</select>
-                </div>
-                <div class="widget-config-field">
-                    <label>Reading</label>
-                    <select class="field-sensor-mode" data-id="${w.id}">${modeOpts}</select>
-                </div>
-            `;
-        }
+        const def = this.registry.get(w.type);
+        const title = def?.label ?? w.type;
+        const fields = def?.renderDesign ? def.renderDesign(w, this) : "";
 
         return `
             <div class="design-card" id="card-${w.id}">
                 <div class="design-card-header">
                     <div class="design-card-title">
-                        <span>${TYPE_LABELS[w.type] ?? w.type}</span>
+                        <span>${title}</span>
                     </div>
                     <button class="btn btn-sm btn-danger btn-remove" data-id="${w.id}">Remove</button>
                 </div>
@@ -589,128 +509,12 @@ class EV3App {
             b.addEventListener("click", () => this.removeWidget(b.dataset.id));
         });
 
-        const bindField = (selector, key, parse = v => v) => {
-            this.dom.designList?.querySelectorAll(selector).forEach(el => {
-                el.addEventListener("change", (e) => {
-                    this.updateWidget(e.target.dataset.id, { [key]: parse(e.target.value) });
-                    if (selector === ".field-action" || selector === ".field-sensor-port") {
-                        this.renderDesignWidgets();
-                    }
-                });
-            });
-        };
-
-        bindField(".field-stop-action", "stopAction");
-        bindField(".field-port", "port");
-        bindField(".field-left-port", "leftPort");
-        bindField(".field-right-port", "rightPort");
-        bindField(".field-action", "action");
-        bindField(".field-degrees", "degrees", Number);
-        bindField(".field-sensor-port", "port");
-
-        this.dom.designList?.querySelectorAll(".field-sensor-mode").forEach(el => {
-            el.addEventListener("change", (e) => {
-                const { id } = e.target.dataset;
-                const mode = e.target.value;
-                this.updateWidget(id, { mode });
-                const w = this.widgets.find(x => x.id === id);
-                if (w?.port) {
-                    this.apiPost(`/api/port/${w.port}`, { mode }).catch(err => {
-                        this.log(`Failed to set sensor mode: ${err.message}`, "error");
-                    });
-                }
-            });
-        });
-
-        [".field-x-port", ".field-y-port"].forEach(selector => {
-            const axis = selector.includes("x") ? "x" : "y";
-            this.dom.designList?.querySelectorAll(selector).forEach(el => {
-                el.addEventListener("change", (e) => {
-                    const { id } = e.target.dataset;
-                    const port = e.target.value;
-                    const w = this.widgets.find(x => x.id === id);
-                    const patch = { [`${axis}Port`]: port };
-                    if (w && !w.multiMotor) {
-                        patch[`${axis}Motors`] = [{ port, invert: false }];
-                    }
-                    this.updateWidget(id, patch);
-                });
-            });
-        });
-
-        this.dom.designList?.querySelectorAll(".field-multi-motor").forEach(el => {
-            el.addEventListener("change", (e) => {
-                const id = e.target.dataset.id;
-                const enabled = e.target.checked;
-                const w = this.widgets.find(x => x.id === id);
-                if (w) {
-                    const patch = { multiMotor: enabled };
-                    if (enabled) {
-                        patch.xMotors = w.xMotors?.length ? w.xMotors : [{ port: w.xPort ?? "B", invert: false }];
-                        patch.yMotors = w.yMotors?.length ? w.yMotors : [{ port: w.yPort ?? "C", invert: false }];
-                    }
-                    this.updateWidget(id, patch);
-                    this.renderDesignWidgets();
-                }
-            });
-        });
-
-        this.dom.designList?.querySelectorAll(".field-mm-active").forEach(el => {
-            el.addEventListener("change", (e) => {
-                const { id, axis, port } = e.target.dataset;
-                const w = this.widgets.find(x => x.id === id);
-                if (!w) return;
-                const key = axis === "x" ? "xMotors" : "yMotors";
-                const list = [...(w[key] ?? [])];
-                const idx = list.findIndex(m => m.port === port);
-                const isActive = e.target.checked;
-                const patch = {};
-                if (isActive) {
-                    if (idx === -1) list.push({ port, invert: false });
-                    // Enforces single-axis assignment per actuator.
-                    const oppKey = axis === "x" ? "yMotors" : "xMotors";
-                    const oppList = (w[oppKey] ?? []).filter(m => m.port !== port);
-                    patch[oppKey] = oppList;
-
-                    const oppCheckbox = el.closest(".multi-motor-container")?.querySelector(`.field-mm-active[data-axis="${axis === "x" ? "y" : "x"}"][data-port="${port}"]`);
-                    if (oppCheckbox && oppCheckbox.checked) {
-                        oppCheckbox.checked = false;
-                        const oppRow = oppCheckbox.closest(".multi-motor-row");
-                        const oppInvert = oppRow?.querySelector(".field-mm-invert");
-                        const oppInvertLabel = oppRow?.querySelector(".multi-motor-invert-label");
-                        if (oppInvert) { oppInvert.checked = false; oppInvert.disabled = true; }
-                        if (oppInvertLabel) oppInvertLabel.classList.add("disabled");
-                    }
-                } else {
-                    if (idx !== -1) list.splice(idx, 1);
-                }
-                patch[key] = list;
-                if (list.length > 0) {
-                    if (axis === "x") patch.xPort = list[0].port;
-                    else patch.yPort = list[0].port;
-                }
-                this.updateWidget(id, patch);
-
-                const row = el.closest(".multi-motor-row");
-                const invertInput = row?.querySelector(".field-mm-invert");
-                const invertLabel = row?.querySelector(".multi-motor-invert-label");
-                if (invertInput && invertLabel) {
-                    invertInput.disabled = !isActive;
-                    if (!isActive) invertInput.checked = false;
-                    invertLabel.classList.toggle("disabled", !isActive);
-                }
-            });
-        });
-
-        this.dom.designList?.querySelectorAll(".field-mm-invert").forEach(el => {
-            el.addEventListener("change", (e) => {
-                const { id, axis, port } = e.target.dataset;
-                const w = this.widgets.find(x => x.id === id);
-                if (!w) return;
-                const key = axis === "x" ? "xMotors" : "yMotors";
-                const list = (w[key] ?? []).map(m => m.port === port ? { ...m, invert: e.target.checked } : m);
-                this.updateWidget(id, { [key]: list });
-            });
+        this.widgets.forEach(w => {
+            const def = this.registry.get(w.type);
+            const cardElement = document.getElementById(`card-${w.id}`);
+            if (def?.attachDesign && cardElement) {
+                def.attachDesign(w, cardElement, this);
+            }
         });
     }
 
@@ -728,103 +532,16 @@ class EV3App {
         this.attachRunCardListeners();
     }
 
-    // Formats active channels into header summary text.
-    joystickPortBadge(w) {
-        if (!w.multiMotor) {
-            return `X: ${w.xPort} | Y: ${w.yPort}`;
-        }
-        const formatAxis = (motors) => {
-            if (!motors || motors.length === 0) return "None";
-            return motors.map(m => m.invert ? `-${m.port}` : m.port).join(", ");
-        };
-        return `X: ${formatAxis(w.xMotors)} | Y: ${formatAxis(w.yMotors)}`;
-    }
-
     // Constructs operational interface markup for an active item.
     renderRunCard(w) {
-        const sizeClass = (w.type === "joystick" || w.type === "tank") ? "run-card-2x2" : "run-card-2x1";
-        const portBadge = w.type === "joystick"
-            ? this.joystickPortBadge(w)
-            : (w.type === "tank" ? `L: ${w.leftPort} | R: ${w.rightPort}` : `Port ${w.port}`);
-        const cardTitle = TYPE_LABELS[w.type] ?? w.type;
+        const def = this.registry.get(w.type);
+        const sizeClass = def?.sizeClass ?? "run-card-2x1";
+        const portBadge = def?.getPortBadge ? def.getPortBadge(w) : (w.port ? `Port ${w.port}` : "");
+        const cardTitle = def?.label ?? w.type;
         const portAttr = (w.type === "slider" || w.type === "button")
             ? `data-motor-port="${w.port}"`
             : (w.type === "sensor" ? `data-sensor-port="${w.port}"` : "");
-        let body = "";
-
-        if (w.type === "joystick") {
-            body = `
-                <div class="joystick-container">
-                    <div class="joystick-boundary" id="joy-boundary-${w.id}">
-                        <div class="joystick-crosshair-x"></div>
-                        <div class="joystick-crosshair-y"></div>
-                        <div class="joystick-knob" id="joy-knob-${w.id}"></div>
-                    </div>
-                    <div class="joystick-readout" id="joy-readout-${w.id}">X: 0% | Y: 0%</div>
-                </div>
-            `;
-        } else if (w.type === "tank") {
-            body = `
-                <div class="tank-controls-container">
-                    <div class="tank-track-col">
-                        <span class="tank-track-title">Left (${w.leftPort})</span>
-                        <div class="tank-slider-wrapper">
-                            <input type="range" class="run-tank-slider" id="tank-left-${w.id}"
-                                   min="-1000" max="1000" value="0" step="25" data-id="${w.id}" data-side="left"
-                                   orient="vertical">
-                        </div>
-                        <span class="tank-speed-readout" id="tank-left-val-${w.id}">0</span>
-                    </div>
-                    <div class="tank-track-divider"></div>
-                    <div class="tank-track-col">
-                        <span class="tank-track-title">Right (${w.rightPort})</span>
-                        <div class="tank-slider-wrapper">
-                            <input type="range" class="run-tank-slider" id="tank-right-${w.id}"
-                                   min="-1000" max="1000" value="0" step="25" data-id="${w.id}" data-side="right"
-                                   orient="vertical">
-                        </div>
-                        <span class="tank-speed-readout" id="tank-right-val-${w.id}">0</span>
-                    </div>
-                </div>
-                <div class="tank-actions">
-                    <button class="btn btn-sm btn-secondary btn-tank-zero" data-id="${w.id}">Stop Both</button>
-                </div>
-            `;
-        } else if (w.type === "slider") {
-            body = `
-                <div class="run-slider-box">
-                    <div class="slider-val-row">
-                        <span>Speed: <strong class="slider-val-readout" id="slider-val-${w.id}">0</strong> ticks/s</span>
-                    </div>
-                    <input type="range" class="run-range-slider" id="slider-input-${w.id}"
-                           min="-1000" max="1000" value="0" step="25" data-id="${w.id}">
-                    <div class="slider-actions">
-                        <button class="btn btn-sm btn-secondary btn-slider-zero" data-id="${w.id}">Zero (Stop)</button>
-                    </div>
-                </div>
-            `;
-        } else if (w.type === "button") {
-            const isToggle = w.action === "toggle";
-            const isStep = w.action === "step";
-            const btnClass = isToggle ? "btn-secondary btn-toggle" : "btn-primary";
-            const label = isToggle
-                ? "Start Motor"
-                : (isStep ? `Rotate ${w.degrees}°` : "Hold to Run");
-            body = `
-                <div class="run-button-box">
-                    <button class="btn ${btnClass} btn-big-action btn-action-card" id="btn-action-${w.id}" data-id="${w.id}">
-                        ${label}
-                    </button>
-                </div>
-            `;
-        } else if (w.type === "sensor") {
-            body = `
-                <div class="run-sensor-box">
-                    <div class="sensor-display-val" data-sensor-port="${w.port}" id="sensor-val-${w.id}">--</div>
-                    <div class="sensor-display-unit text-muted">${w.mode}</div>
-                </div>
-            `;
-        }
+        const body = def?.renderRun ? def.renderRun(w, this) : "";
 
         return `
             <div class="run-card ${sizeClass}" id="run-card-${w.id}" ${portAttr}>
@@ -841,208 +558,12 @@ class EV3App {
     // Wires up interactive behaviors across operational control panels.
     attachRunCardListeners() {
         this.widgets.forEach(w => {
-            if (w.type === "joystick") this.initJoystick(w);
-            else if (w.type === "tank") this.initTank(w);
-            else if (w.type === "slider") this.initSlider(w);
-            else if (w.type === "button") this.initButton(w);
-        });
-    }
-
-    // Dispatches dual-track velocity targets via generic batch commands.
-    // This is only a custom front-end,
-    // don't make any API support for this widget!
-    initTank(w) {
-        const leftSlider = document.getElementById(`tank-left-${w.id}`);
-        const rightSlider = document.getElementById(`tank-right-${w.id}`);
-        const leftVal = document.getElementById(`tank-left-val-${w.id}`);
-        const rightVal = document.getElementById(`tank-right-val-${w.id}`);
-        const btnZero = document.querySelector(`.btn-tank-zero[data-id="${w.id}"]`);
-        if (!leftSlider || !rightSlider) return;
-
-        const updateSpeeds = () => {
-            const leftSpeed = parseInt(leftSlider.value, 10);
-            const rightSpeed = parseInt(rightSlider.value, 10);
-            if (leftVal) leftVal.textContent = leftSpeed;
-            if (rightVal) rightVal.textContent = rightSpeed;
-
-            this.throttle(`tank_${w.id}`, 66, () => {
-                const stopAction = w.stopAction || "brake";
-                const commands = [
-                    { port: w.leftPort, speed: leftSpeed, stop_action: stopAction },
-                    { port: w.rightPort, speed: rightSpeed, stop_action: stopAction }
-                ];
-                this.apiBatch(commands).catch(() => {});
-            });
-        };
-
-        leftSlider.addEventListener("input", updateSpeeds);
-        rightSlider.addEventListener("input", updateSpeeds);
-
-        btnZero?.addEventListener("click", () => {
-            leftSlider.value = "0";
-            rightSlider.value = "0";
-            if (leftVal) leftVal.textContent = "0";
-            if (rightVal) rightVal.textContent = "0";
-            this.clearThrottle(`tank_${w.id}`);
-            const stopAction = w.stopAction || "brake";
-            this.apiBatch([
-                { port: w.leftPort, speed: 0, stop_action: stopAction },
-                { port: w.rightPort, speed: 0, stop_action: stopAction }
-            ]).catch(() => {});
-        });
-    }
-
-    // Maps 2D touch displacement directly to X and Y motor velocities.
-    initJoystick(w) {
-        const boundary = document.getElementById(`joy-boundary-${w.id}`);
-        const knob = document.getElementById(`joy-knob-${w.id}`);
-        const readout = document.getElementById(`joy-readout-${w.id}`);
-        if (!boundary || !knob) return;
-
-        let dragging = false;
-        const maxRadius = Math.max(30, (boundary.clientWidth - knob.clientWidth) / 2 || 70);
-
-        const onPointerMove = (clientX, clientY) => {
-            const rect = boundary.getBoundingClientRect();
-            const rawX = clientX - (rect.left + rect.width / 2);
-            const rawY = clientY - (rect.top + rect.height / 2);
-            const dist = Math.hypot(rawX, rawY);
-            const angle = Math.atan2(rawY, rawX);
-            const clampedDist = Math.min(dist, maxRadius);
-            const dx = clampedDist * Math.cos(angle);
-            const dy = clampedDist * Math.sin(angle);
-
-            knob.style.transform = `translate(${dx}px, ${dy}px)`;
-
-            const normX = dx / maxRadius;
-            const normY = -dy / maxRadius; // Upward is positive velocity
-
-            if (readout) {
-                readout.textContent = `X: ${Math.round(normX * 100)}% | Y: ${Math.round(normY * 100)}%`;
-            }
-
-            this.throttle(`joy_${w.id}`, 66, () => {
-                const commands = calculateJoystickCommands(w, normX, normY);
-                if (commands.length > 0) {
-                    this.apiBatch(commands).catch(() => {});
-                }
-            });
-        };
-
-        const stopMotion = () => {
-            if (!dragging) return;
-            dragging = false;
-            knob.classList.remove("active");
-            knob.style.transform = "translate(0px, 0px)";
-            if (readout) readout.textContent = "X: 0% | Y: 0%";
-
-            this.clearThrottle(`joy_${w.id}`);
-
-            const commands = getJoystickStopCommands(w);
-            if (commands.length > 0) {
-                this.apiBatch(commands).catch(() => {});
-            }
-        };
-
-        boundary.addEventListener("pointerdown", (e) => {
-            e.preventDefault();
-            dragging = true;
-            knob.classList.add("active");
-            boundary.setPointerCapture(e.pointerId);
-            onPointerMove(e.clientX, e.clientY);
-        });
-
-        boundary.addEventListener("pointermove", (e) => {
-            if (dragging) {
-                e.preventDefault();
-                onPointerMove(e.clientX, e.clientY);
+            const def = this.registry.get(w.type);
+            const card = document.getElementById(`run-card-${w.id}`);
+            if (def?.initRun && card) {
+                def.initRun(w, card, this);
             }
         });
-
-        boundary.addEventListener("pointerup", stopMotion);
-        boundary.addEventListener("pointercancel", stopMotion);
-    }
-
-    // Connects range bar input events to throttled velocity updates.
-    initSlider(w) {
-        const slider = document.getElementById(`slider-input-${w.id}`);
-        const readout = document.getElementById(`slider-val-${w.id}`);
-        const btnZero = document.querySelector(`.btn-slider-zero[data-id="${w.id}"]`);
-        if (!slider) return;
-
-        slider.addEventListener("input", (e) => {
-            const speed = parseInt(e.target.value, 10);
-            if (readout) readout.textContent = speed;
-            this.throttle(`slider_${w.id}`, 66, () => {
-                const payload = speed === 0
-                    ? { command: "stop", stop_action: "brake" }
-                    : { speed };
-                this.apiPost(`/api/port/${w.port}`, payload).catch(() => {});
-            });
-        });
-
-        btnZero?.addEventListener("click", () => {
-            slider.value = "0";
-            if (readout) readout.textContent = "0";
-            this.clearThrottle(`slider_${w.id}`);
-            this.apiPost(`/api/port/${w.port}`, { command: "stop", stop_action: "brake" }).catch(() => {});
-        });
-    }
-
-    // Unifies hold-to-run, toggle, and discrete angle movements.
-    initButton(w) {
-        const btn = document.getElementById(`btn-action-${w.id}`);
-        if (!btn) return;
-        const defaultSpeed = 600;
-        const sendCmd = (payload) => this.apiPost(`/api/port/${w.port}`, payload).catch(() => {});
-
-        if (w.action === "momentary") {
-            let active = false;
-            const start = (e) => {
-                e.preventDefault();
-                if (active) return;
-                active = true;
-                btn.classList.add("btn-danger");
-                try { btn.setPointerCapture(e.pointerId); } catch (_) {}
-                sendCmd({ speed: defaultSpeed });
-            };
-            const stop = (e) => {
-                e.preventDefault();
-                if (!active) return;
-                active = false;
-                btn.classList.remove("btn-danger");
-                sendCmd({ command: "stop", stop_action: "brake" });
-            };
-            btn.addEventListener("pointerdown", start);
-            btn.addEventListener("pointerup", stop);
-            btn.addEventListener("pointercancel", stop);
-            btn.addEventListener("pointerleave", (e) => { if (e.buttons > 0) stop(e); });
-        } else if (w.action === "toggle") {
-            btn.addEventListener("click", () => {
-                const isRunning = btn.classList.toggle("toggle-active");
-                btn.classList.toggle("btn-secondary", !isRunning);
-                btn.textContent = isRunning ? "Stop Motor" : "Start Motor";
-                sendCmd(isRunning ? { speed: defaultSpeed } : { command: "stop", stop_action: "brake" });
-            });
-        } else if (w.action === "step") {
-            btn.addEventListener("click", async () => {
-                btn.disabled = true;
-                const orig = btn.textContent;
-                btn.textContent = "Rotating...";
-                try {
-                    await this.apiPost(`/api/port/${w.port}`, {
-                        speed: defaultSpeed,
-                        degrees: w.degrees,
-                        stop_action: "hold"
-                    });
-                } finally {
-                    setTimeout(() => {
-                        btn.disabled = false;
-                        btn.textContent = orig;
-                    }, 800);
-                }
-            });
-        }
     }
 
     // Collects periodic system status and updates active elements.
@@ -1097,7 +618,9 @@ class EV3App {
         if (!this.dom.telemetryBody) return;
         this.dom.telemetryBody.innerHTML = ["A", "B", "C", "D"].map(port => {
             const m = motors.find(x => x.port === port);
-            if (!m || !m.connected) return `<tr><td><strong>${port}</strong></td><td colspan="5" class="text-muted">Disconnected</td></tr>`;
+            if (!m || !m.connected) {
+                return `<tr><td><strong>${port}</strong></td><td colspan="5" class="text-muted">Disconnected</td></tr>`;
+            }
             return `
                 <tr>
                     <td><strong>${port}</strong></td>
@@ -1113,16 +636,15 @@ class EV3App {
 
     // Displays numeric metric values and driver metadata on cards.
     updateSensorReadouts(sensors) {
-        document.querySelectorAll(".run-card[data-sensor-port]").forEach(card => {
-            const port = card.getAttribute("data-sensor-port");
-            const s = sensors.find(x => x.port === port);
-            const connected = s?.connected;
-            const readout = card.querySelector(".sensor-display-val");
-            if (readout) readout.textContent = connected ? (s.value0 ?? s.value ?? "--") : "--";
-            const unit = card.querySelector(".sensor-display-unit");
-            if (unit) unit.textContent = connected ? (s.units || s.mode) : "";
-            const footer = card.querySelector(".run-card-footer");
-            if (footer) footer.textContent = connected ? `${s.driver_name} (${s.mode})` : "Disconnected";
+        this.widgets.forEach(w => {
+            if (w.type === "sensor") {
+                const s = sensors.find(x => x.port === w.port);
+                const card = document.getElementById(`run-card-${w.id}`);
+                const def = this.registry.get(w.type);
+                if (card && def?.onTelemetry) {
+                    def.onTelemetry(w, card, s);
+                }
+            }
         });
     }
 
@@ -1132,7 +654,9 @@ class EV3App {
             const port = card.getAttribute("data-motor-port");
             const m = motors.find(x => x.port === port);
             const footer = card.querySelector(".run-card-footer");
-            if (footer) footer.textContent = (!m || !m.connected) ? "Disconnected" : (m.state?.length ? m.state.join(", ") : "Ready");
+            if (footer) {
+                footer.textContent = (!m || !m.connected) ? "Disconnected" : (m.state?.length ? m.state.join(", ") : "Ready");
+            }
         });
     }
 

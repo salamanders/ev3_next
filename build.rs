@@ -42,5 +42,6 @@ fn main() {
         compress_file(&src, &dst_out);
     }
 
+    println!("cargo:rerun-if-changed=web_assets/widgets");
     println!("cargo:rerun-if-changed=build.rs");
 }

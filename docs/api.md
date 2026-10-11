@@ -211,3 +211,17 @@ All responses use this standard JSON structure:
   }
 }
 ```
+
+---
+
+## 5. Modular Widget Endpoints (`/widgets/*`)
+
+The HTTP server delivers dynamic widget components directly from local storage with transparent compression and cache busting:
+
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` / `HEAD` | `/widgets/manifest.json` | Catalog of available widgets, version strings, and timestamps. |
+| `GET` / `HEAD` | `/widgets/{widget}/widget.js` | Modular native ES component implementation. |
+
+- **Compression:** Serves `.gz` if present on disk; otherwise serves uncompressed files directly.
+- **Cache Policy:** Emits `Cache-Control: no-cache` headers on all `/widgets/*` responses.
