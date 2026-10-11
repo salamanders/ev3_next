@@ -13,52 +13,43 @@ function calculateJoystickCommands(w, normX, normY, maxSpeed = 1000) {
     const ySpeed = clamp(Math.round(normY * maxSpeed), -maxSpeed, maxSpeed);
 
     if (!w.multiMotor) {
-        if (w.xPort === w.yPort) {
-            return [{
-                port: w.xPort,
-                speed: clamp(xSpeed + ySpeed, -maxSpeed, maxSpeed),
-                stop_action: stopAction
-            }];
-        }
         return [
             { port: w.xPort, speed: xSpeed, stop_action: stopAction },
             { port: w.yPort, speed: ySpeed, stop_action: stopAction }
         ];
     }
 
-    const ports = [...new Set([
-        ...(w.xMotors ?? []).map(m => m.port),
-        ...(w.yMotors ?? []).map(m => m.port)
-    ])].sort();
-
-    return ports.map(port => {
-        const xEntry = w.xMotors?.find(m => m.port === port);
-        const yEntry = w.yMotors?.find(m => m.port === port);
-        const xVal = xEntry ? (xEntry.invert ? -xSpeed : xSpeed) : 0;
-        const yVal = yEntry ? (yEntry.invert ? -ySpeed : ySpeed) : 0;
-        return {
-            port,
-            speed: clamp(xVal + yVal, -maxSpeed, maxSpeed),
+    const commands = [];
+    for (const m of w.xMotors ?? []) {
+        commands.push({
+            port: m.port,
+            speed: m.invert ? -xSpeed : xSpeed,
             stop_action: stopAction
-        };
-    });
+        });
+    }
+    for (const m of w.yMotors ?? []) {
+        commands.push({
+            port: m.port,
+            speed: m.invert ? -ySpeed : ySpeed,
+            stop_action: stopAction
+        });
+    }
+    return commands;
 }
 
 // Generates zero-velocity brake targets across all configured channels.
 function getJoystickStopCommands(w) {
     const stopAction = w.stopAction || "brake";
     if (!w.multiMotor) {
-        const ports = w.xPort === w.yPort ? [w.xPort] : [w.xPort, w.yPort];
-        return ports.map(port => ({
-            port,
-            speed: 0,
-            stop_action: stopAction
-        }));
+        return [
+            { port: w.xPort, speed: 0, stop_action: stopAction },
+            { port: w.yPort, speed: 0, stop_action: stopAction }
+        ];
     }
     const ports = [...new Set([
         ...(w.xMotors ?? []).map(m => m.port),
         ...(w.yMotors ?? []).map(m => m.port)
-    ])].sort();
+    ])];
     return ports.map(port => ({
         port,
         speed: 0,
@@ -616,12 +607,27 @@ class EV3App {
                 const list = [...(w[key] ?? [])];
                 const idx = list.findIndex(m => m.port === port);
                 const isActive = e.target.checked;
+                const patch = {};
                 if (isActive) {
                     if (idx === -1) list.push({ port, invert: false });
+                    // Remove from opposite axis so one motor is assigned to only one axis
+                    const oppKey = axis === "x" ? "yMotors" : "xMotors";
+                    const oppList = (w[oppKey] ?? []).filter(m => m.port !== port);
+                    patch[oppKey] = oppList;
+
+                    const oppCheckbox = el.closest(".multi-motor-container")?.querySelector(`.field-mm-active[data-axis="${axis === "x" ? "y" : "x"}"][data-port="${port}"]`);
+                    if (oppCheckbox && oppCheckbox.checked) {
+                        oppCheckbox.checked = false;
+                        const oppRow = oppCheckbox.closest(".multi-motor-row");
+                        const oppInvert = oppRow?.querySelector(".field-mm-invert");
+                        const oppInvertLabel = oppRow?.querySelector(".multi-motor-invert-label");
+                        if (oppInvert) { oppInvert.checked = false; oppInvert.disabled = true; }
+                        if (oppInvertLabel) oppInvertLabel.classList.add("disabled");
+                    }
                 } else {
                     if (idx !== -1) list.splice(idx, 1);
                 }
-                const patch = { [key]: list };
+                patch[key] = list;
                 if (list.length > 0) {
                     if (axis === "x") patch.xPort = list[0].port;
                     else patch.yPort = list[0].port;
