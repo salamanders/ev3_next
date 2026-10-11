@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use crate::sysfs::{MockController, Motor, MotorStatus, Sensor};
 use crate::web::handlers::{
-    is_motor_port, is_sensor_port, AllPortsStatus, ResolvedPortCommand, SensorStatus, MOTOR_PORTS,
-    SENSOR_PORTS,
+    is_motor_port, is_sensor_port, normalize_port_name, AllPortsStatus, BatchCommandPayload,
+    ResolvedPortCommand, SensorStatus, MOTOR_PORTS, SENSOR_PORTS,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,9 +29,10 @@ pub enum HardwareBackend {
 }
 
 struct WatchdogState {
-    last_tank_drive: Option<Instant>,
-    tank_drive_ports: (String, String),
-    tank_drive_active: bool,
+    last_heartbeat: Option<Instant>,
+    heartbeat_timeout: Duration,
+    heartbeat_ports: Vec<String>,
+    heartbeat_active: bool,
     last_status_poll: Instant,
     continuous_active: bool,
 }
@@ -93,9 +94,10 @@ impl MotorController {
             cached_battery: Arc::new(RwLock::new(initial_battery)),
             poll_interval_ms,
             watchdog: Mutex::new(WatchdogState {
-                last_tank_drive: None,
-                tank_drive_ports: ("B".into(), "C".into()),
-                tank_drive_active: false,
+                last_heartbeat: None,
+                heartbeat_timeout: Duration::from_millis(400),
+                heartbeat_ports: Vec::new(),
+                heartbeat_active: false,
                 last_status_poll: now,
                 continuous_active: false,
             }),
@@ -235,7 +237,7 @@ impl MotorController {
     }
 
     fn check_watchdogs(&self) {
-        let (stop_td, td_ports, stop_cr) = {
+        let (stop_hb, hb_ports, stop_cr) = {
             let mut wd = match self.watchdog.lock() {
                 Ok(guard) => guard,
                 Err(e) => {
@@ -244,14 +246,14 @@ impl MotorController {
                 }
             };
 
-            let mut stop_td = false;
-            let mut td_ports = (String::new(), String::new());
-            if wd.tank_drive_active {
-                if let Some(t) = wd.last_tank_drive {
-                    if t.elapsed() > Duration::from_millis(400) {
-                        wd.tank_drive_active = false;
-                        stop_td = true;
-                        td_ports = wd.tank_drive_ports.clone();
+            let mut stop_hb = false;
+            let mut hb_ports = Vec::new();
+            if wd.heartbeat_active {
+                if let Some(t) = wd.last_heartbeat {
+                    if t.elapsed() > wd.heartbeat_timeout {
+                        wd.heartbeat_active = false;
+                        stop_hb = true;
+                        hb_ports = wd.heartbeat_ports.clone();
                     }
                 }
             }
@@ -262,16 +264,15 @@ impl MotorController {
                 stop_cr = true;
             }
 
-            (stop_td, td_ports, stop_cr)
+            (stop_hb, hb_ports, stop_cr)
         };
 
-        if stop_td {
-            println!("[WATCHDOG] Tank drive heartbeat timed out (>400ms). Halting drive motors {} & {}.", td_ports.0, td_ports.1);
-            if let Err(e) = self.stop(&td_ports.0, Some("brake".into())) {
-                eprintln!("[WATCHDOG ERROR] Failed stopping port {}: {}", td_ports.0, e);
-            }
-            if let Err(e) = self.stop(&td_ports.1, Some("brake".into())) {
-                eprintln!("[WATCHDOG ERROR] Failed stopping port {}: {}", td_ports.1, e);
+        if stop_hb {
+            println!("[WATCHDOG] Heartbeat timed out. Halting active motors {:?}.", hb_ports);
+            for p in &hb_ports {
+                if let Err(e) = self.stop(p, Some("brake".into())) {
+                    eprintln!("[WATCHDOG ERROR] Failed stopping port {}: {}", p, e);
+                }
             }
         }
 
@@ -549,9 +550,10 @@ impl MotorController {
     pub fn joystick_drive(&self, x_port: &str, y_port: &str, x_speed: i32, y_speed: i32, stop_action: Option<&str>) -> Result<(), String> {
         let stop_act = stop_action.unwrap_or("brake");
         if let Ok(mut wd) = self.watchdog.lock() {
-            wd.last_tank_drive = Some(Instant::now());
-            wd.tank_drive_ports = (x_port.to_string(), y_port.to_string());
-            wd.tank_drive_active = x_speed != 0 || y_speed != 0;
+            wd.last_heartbeat = Some(Instant::now());
+            wd.heartbeat_timeout = Duration::from_millis(400);
+            wd.heartbeat_ports = vec![x_port.to_string(), y_port.to_string()];
+            wd.heartbeat_active = x_speed != 0 || y_speed != 0;
         }
 
         if x_speed == 0 {
@@ -569,13 +571,52 @@ impl MotorController {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn tank_drive(&self, left_port: &str, right_port: &str, left_speed: i32, right_speed: i32) -> Result<(), String> {
         self.joystick_drive(left_port, right_port, left_speed, right_speed, Some("brake"))
     }
 
+    pub fn execute_batch(&self, batch: &BatchCommandPayload) -> Result<Vec<String>, String> {
+        let mut results = Vec::new();
+        let mut motor_ports = Vec::new();
+        let mut has_motion = false;
+
+        for item in &batch.commands {
+            let norm_port = normalize_port_name(&item.port)
+                .ok_or_else(|| format!("Invalid port '{}'", item.port))?;
+            let resolved = item.payload.resolve(1050)?;
+            let msg = self.execute_port_command(&norm_port, &resolved)?;
+            results.push(msg);
+
+            if is_motor_port(&norm_port) {
+                motor_ports.push(norm_port);
+                match &resolved {
+                    ResolvedPortCommand::RunForever { speed } if *speed != 0 => {
+                        has_motion = true;
+                    }
+                    ResolvedPortCommand::RunDirect { duty_cycle } if *duty_cycle != 0 => {
+                        has_motion = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if let Some(hb_ms) = batch.heartbeat_ms {
+            if let Ok(mut wd) = self.watchdog.lock() {
+                wd.last_heartbeat = Some(Instant::now());
+                wd.heartbeat_timeout = Duration::from_millis(hb_ms.clamp(100, 5000));
+                wd.heartbeat_ports = motor_ports;
+                wd.heartbeat_active = has_motion;
+            }
+        }
+
+        Ok(results)
+    }
+
     pub fn emergency_stop(&self) -> Result<(), String> {
         if let Ok(mut wd) = self.watchdog.lock() {
-            wd.tank_drive_active = false;
+            wd.heartbeat_active = false;
             wd.continuous_active = false;
         }
 
@@ -740,5 +781,202 @@ mod tests {
         let c3 = status3.motors.iter().find(|m| m.port == "C").unwrap();
         assert_eq!(b3.speed, 0);
         assert_eq!(c3.speed, 0);
+    }
+
+    #[test]
+    fn test_controller_execute_batch() {
+        use crate::web::handlers::{BatchItemPayload, PortCommandPayload};
+        let controller = MotorController::new(true, 15);
+        let batch = BatchCommandPayload {
+            heartbeat_ms: Some(400),
+            commands: vec![
+                BatchItemPayload {
+                    port: "A".into(),
+                    payload: PortCommandPayload {
+                        speed: Some(500),
+                        stop_action: Some("coast".into()),
+                        ..Default::default()
+                    },
+                },
+                BatchItemPayload {
+                    port: "D".into(),
+                    payload: PortCommandPayload {
+                        speed: Some(-300),
+                        stop_action: Some("brake".into()),
+                        ..Default::default()
+                    },
+                },
+            ],
+        };
+
+        let res = controller.execute_batch(&batch).unwrap();
+        assert_eq!(res.len(), 2);
+        thread::sleep(Duration::from_millis(40));
+
+        let status = controller.get_system_status();
+        let a = status.motors.iter().find(|m| m.port == "A").unwrap();
+        let d = status.motors.iter().find(|m| m.port == "D").unwrap();
+        assert_eq!(a.speed, 500);
+        assert_eq!(d.speed, -300);
+
+        // Sleep >400ms to test heartbeat watchdog timeout on batch motors
+        thread::sleep(Duration::from_millis(450));
+        let status2 = controller.get_system_status();
+        let a2 = status2.motors.iter().find(|m| m.port == "A").unwrap();
+        let d2 = status2.motors.iter().find(|m| m.port == "D").unwrap();
+        assert_eq!(a2.speed, 0);
+        assert_eq!(d2.speed, 0);
+    }
+
+    #[test]
+    fn test_controller_execute_batch_multi_motor_joystick() {
+        use crate::web::handlers::{BatchItemPayload, PortCommandPayload};
+        let controller = MotorController::new(true, 15);
+
+        // Simulate multi-motor joystick: X drives B (normal) and C (inverted), Y drives A
+        let x_speed = 700;
+        let y_speed = 450;
+        let batch = BatchCommandPayload {
+            heartbeat_ms: Some(400),
+            commands: vec![
+                BatchItemPayload {
+                    port: "A".into(),
+                    payload: PortCommandPayload {
+                        speed: Some(y_speed),
+                        stop_action: Some("brake".into()),
+                        ..Default::default()
+                    },
+                },
+                BatchItemPayload {
+                    port: "B".into(),
+                    payload: PortCommandPayload {
+                        speed: Some(x_speed),
+                        stop_action: Some("brake".into()),
+                        ..Default::default()
+                    },
+                },
+                BatchItemPayload {
+                    port: "C".into(),
+                    payload: PortCommandPayload {
+                        speed: Some(-x_speed), // Inverted
+                        stop_action: Some("brake".into()),
+                        ..Default::default()
+                    },
+                },
+            ],
+        };
+
+        let res = controller.execute_batch(&batch).unwrap();
+        assert_eq!(res.len(), 3);
+        thread::sleep(Duration::from_millis(40));
+
+        let status = controller.get_system_status();
+        let a = status.motors.iter().find(|m| m.port == "A").unwrap();
+        let b = status.motors.iter().find(|m| m.port == "B").unwrap();
+        let c = status.motors.iter().find(|m| m.port == "C").unwrap();
+        assert_eq!(a.speed, 450);
+        assert_eq!(b.speed, 700);
+        assert_eq!(c.speed, -700);
+
+        // Simulate joystick stopMotion batch halt
+        let stop_batch = BatchCommandPayload {
+            heartbeat_ms: Some(400),
+            commands: vec![
+                BatchItemPayload {
+                    port: "A".into(),
+                    payload: PortCommandPayload {
+                        speed: Some(0),
+                        stop_action: Some("brake".into()),
+                        ..Default::default()
+                    },
+                },
+                BatchItemPayload {
+                    port: "B".into(),
+                    payload: PortCommandPayload {
+                        speed: Some(0),
+                        stop_action: Some("brake".into()),
+                        ..Default::default()
+                    },
+                },
+                BatchItemPayload {
+                    port: "C".into(),
+                    payload: PortCommandPayload {
+                        speed: Some(0),
+                        stop_action: Some("brake".into()),
+                        ..Default::default()
+                    },
+                },
+            ],
+        };
+
+        let stop_res = controller.execute_batch(&stop_batch).unwrap();
+        assert_eq!(stop_res.len(), 3);
+        thread::sleep(Duration::from_millis(40));
+
+        let stopped_status = controller.get_system_status();
+        assert_eq!(stopped_status.motors.iter().find(|m| m.port == "A").unwrap().speed, 0);
+        assert_eq!(stopped_status.motors.iter().find(|m| m.port == "B").unwrap().speed, 0);
+        assert_eq!(stopped_status.motors.iter().find(|m| m.port == "C").unwrap().speed, 0);
+    }
+
+    #[test]
+    fn test_controller_execute_batch_edge_cases() {
+        use crate::web::handlers::{BatchItemPayload, PortCommandPayload};
+        let controller = MotorController::new(true, 15);
+
+        // 1. Empty batch
+        let empty_batch = BatchCommandPayload {
+            heartbeat_ms: Some(400),
+            commands: vec![],
+        };
+        let empty_res = controller.execute_batch(&empty_batch).unwrap();
+        assert!(empty_res.is_empty());
+
+        // 2. Invalid port error path
+        let invalid_batch = BatchCommandPayload {
+            heartbeat_ms: Some(400),
+            commands: vec![
+                BatchItemPayload {
+                    port: "Z".into(),
+                    payload: PortCommandPayload {
+                        speed: Some(300),
+                        ..Default::default()
+                    },
+                },
+            ],
+        };
+        assert!(controller.execute_batch(&invalid_batch).is_err());
+
+        // 3. All 4 motors simultaneous batch
+        let all_four = BatchCommandPayload {
+            heartbeat_ms: Some(400),
+            commands: vec![
+                BatchItemPayload {
+                    port: "A".into(),
+                    payload: PortCommandPayload { speed: Some(100), ..Default::default() },
+                },
+                BatchItemPayload {
+                    port: "B".into(),
+                    payload: PortCommandPayload { speed: Some(-200), ..Default::default() },
+                },
+                BatchItemPayload {
+                    port: "C".into(),
+                    payload: PortCommandPayload { speed: Some(300), ..Default::default() },
+                },
+                BatchItemPayload {
+                    port: "D".into(),
+                    payload: PortCommandPayload { speed: Some(-400), ..Default::default() },
+                },
+            ],
+        };
+        let four_res = controller.execute_batch(&all_four).unwrap();
+        assert_eq!(four_res.len(), 4);
+        thread::sleep(Duration::from_millis(40));
+
+        let status = controller.get_system_status();
+        assert_eq!(status.motors.iter().find(|m| m.port == "A").unwrap().speed, 100);
+        assert_eq!(status.motors.iter().find(|m| m.port == "B").unwrap().speed, -200);
+        assert_eq!(status.motors.iter().find(|m| m.port == "C").unwrap().speed, 300);
+        assert_eq!(status.motors.iter().find(|m| m.port == "D").unwrap().speed, -400);
     }
 }

@@ -49,6 +49,19 @@ pub struct PortCommandPayload {
     pub mode: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BatchItemPayload {
+    pub port: String,
+    #[serde(flatten)]
+    pub payload: PortCommandPayload,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct BatchCommandPayload {
+    pub heartbeat_ms: Option<u64>,
+    pub commands: Vec<BatchItemPayload>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResolvedPortCommand {
     RunForever { speed: i32 },

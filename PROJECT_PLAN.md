@@ -25,6 +25,8 @@
 | **Phase 11** | Unified Low-Level Port Control API (`GET` & `POST /api/port/{port}`) | **COMPLETE**. Sysfs sensor driver, 4 mock sensors, hybrid JSON command resolver, cached non-blocking telemetry, and Sensor Display widget. |
 | **Phase 12** | Dedicated Route Pages & UI Simplification | **COMPLETE**. Dedicated `/design` and `/run` routes, compile-time gzip pipeline, 4-asset in-RAM cache, and uncluttered UI. |
 | **Phase 13** | Codebase Simplification & De-duplication | **COMPLETE**. Unified port command execution, table-driven asset loader, clean envelope handling, live card telemetry, and architecture boundary guide. |
+| **Phase 14** | Direct 2-Axis Joystick & Generic Batch Motor API | **COMPLETE**. Independent 2-axis direct control, expanded joystick boundary, `POST /api/batch` multi-port command executor, and generalized watchdog. |
+| **Phase 15** | Multi-Motor 2D Joystick Control | **COMPLETE**. Frontend multi-motor configuration matrix for X/Y axes, per-motor inversion, pure velocity calculation helpers, and multi-motor batch dispatch without backend API changes. |
 
 ---
 
@@ -45,6 +47,8 @@
 14. [Phase 11: Unified Low-Level Port Control API (`GET` & `POST /api/port/{port}`)](#14-phase-11-unified-low-level-port-control-api-get--post-apiportport)
 15. [Phase 12: Dedicated Route Pages & UI Simplification](#15-phase-12-dedicated-route-pages--ui-simplification)
 16. [Phase 13: Codebase Simplification & De-duplication](#16-phase-13-codebase-simplification--de-duplication)
+17. [Phase 14: Direct 2-Axis Joystick, Generic Batch Motor API, and Watchdog Generalization](#17-phase-14-direct-2-axis-joystick-generic-batch-motor-api-and-watchdog-generalization)
+18. [Phase 15: Multi-Motor 2D Joystick Control](#18-phase-15-multi-motor-2d-joystick-control)
 
 ---
 
@@ -750,6 +754,91 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
   - Harmonized template styling and eliminated inline CSS in `web_assets/index.html`.
   - Replaced unverified performance claims with factual architectural design in `README.md` and `docs/architecture.md`.
   - Re-captured and updated all desktop and mobile screenshots after deduplication.
+
+---
+
+## 17. Phase 14: Direct 2-Axis Joystick, Generic Batch Motor API, and Watchdog Generalization
+
+### 17.1 Goals
+- **Direct 2-Axis Motor Control:** Replace tank-drive differential mixing on the 2D joystick with direct, independent X and Y motor axis speed control.
+- **UI Ergonomics:** Expand the joystick boundary to fill ~85–90% of widget container width and add a configurable release action (Brake vs Coast).
+- **Generic Batch Motor Primitive:** Add `POST /api/batch` (and alias `POST /api/ports`) accepting multi-port commands and an optional heartbeat timeout.
+- **Watchdog Generalization:** Generalize the heartbeat safety watchdog from a fixed two-port tuple to an arbitrary list of motor ports, eliminating the need for custom Rust endpoints for future multi-motor UI widgets.
+
+### 17.2 Architectural Decisions and Status Labels
+
+| Decision / Component | Status Label | Technical Rationale |
+| :--- | :--- | :--- |
+| **Independent 2-Axis Joystick Control** | `[ADOPTED]` | Replaces tank-drive mixing so X controls Port A and Y controls Port B directly and linearly without cross-coupling. |
+| **Enlarged Joystick Boundary** | `[ADOPTED]` | Increases joystick boundary to `width: 88%` / `max-width: 280px` to fill the widget card cleanly. |
+| **Joystick Release Action Option** | `[ADOPTED]` | Adds Design view dropdown allowing user selection between `brake` and `coast` upon pointer release. |
+| **Generic Multi-Port Batch API** | `[ADOPTED]` | Adds `POST /api/batch` and `POST /api/ports` to accept an array of port commands, allowing frontend-only widget expansion. |
+| **Generalized Watchdog State** | `[ADOPTED]` | Generalizes `WatchdogState` to dynamic `heartbeat_ports: Vec<String>` with configurable timeout clamping (100–5000ms). |
+
+### 17.3 Implementation Checklist
+
+- [x] **Step 14.1: Direct 2-Axis Joystick Math & Ergonomics (`web_assets/`, `src/controller.rs`)**
+  - Updated `src/controller.rs` `joystick_drive` to set motor speeds directly (`left_speed` and `right_speed`) without differential mixing.
+  - Expanded `.joystick-boundary` in `web_assets/style.css` to 88% width with 280px maximum.
+  - Added "Release Action" select input (`Brake` / `Coast`) to joystick configuration in `web_assets/app.js`.
+  - Re-generated UI screenshots in `ui_screenshots.md`.
+- [x] **Step 14.2: Generic Batch Command Types & Routing (`src/web/handlers.rs`, `src/web/router.rs`)**
+  - Added `BatchItemPayload` and `BatchCommandPayload` in `src/web/handlers.rs`.
+  - Added `POST /api/batch` and `POST /api/ports` route handlers in `src/web/router.rs`.
+- [x] **Step 14.3: Generalized Watchdog & Controller Execution (`src/controller.rs`)**
+  - Generalized `WatchdogState` to `heartbeat_ports: Vec<String>` and `heartbeat_timeout: Duration`.
+  - Implemented `MotorController::execute_batch` to execute port commands and register watchdog monitoring.
+  - Added unit test `test_controller_execute_batch` verifying multi-port command execution and heartbeat timeout stop.
+- [x] **Step 14.4: Client Batch Helper Integration (`web_assets/app.js`)**
+  - Added `apiBatch(commands, heartbeatMs = 400)` method to `EV3App`.
+  - Switched joystick pointer move and pointer release handlers to dispatch via `apiBatch`.
+- [x] **Step 14.5: API Documentation & Test Verification (`docs/api.md`, `cargo test`)**
+  - Documented `POST /api/batch` and `POST /api/ports` in `docs/api.md`.
+  - Added automated test for `POST /api/batch` in `src/web/router.rs`.
+  - Verified all 37 unit tests pass in `cargo test`.
+
+---
+
+## 18. Phase 15: Multi-Motor 2D Joystick Control
+
+### 18.1 Goals
+- **Multi-Motor 2D Control:** Allow the 2D joystick widget to drive multiple motors per axis simultaneously with independent inversion flags.
+- **Zero Backend Changes:** Validate architectural extensibility by driving multi-motor configurations through the existing `POST /api/batch` endpoint without modifying the Rust backend API contract.
+- **Concise Configuration Matrix:** Provide a compact motor mapping UI in the Design card with active checkboxes and inversion toggles for Ports A through D.
+- **Pure Math Boundaries:** Isolate planar coordinate transforms and multi-motor speed calculations into pure functions adhering to `clean-javascript` guidelines.
+
+### 18.2 Architectural Decisions and Status Labels
+
+| Decision / Component | Status Label | Technical Rationale |
+| :--- | :--- | :--- |
+| **Multi-Motor 2D Joystick Option** | `[ADOPTED]` | Adds a configurable `multiMotor` boolean option to the 2D joystick widget with full backwards compatibility. |
+| **Zero Backend Changes (`POST /api/batch`)** | `[IMPLEMENTED]` | Relies completely on the generic batch API added in Phase 14; no modifications to the Rust HTTP server API contract. |
+| **Dual-Axis Motor Mapping Grid** | `[ADOPTED]` | Presents two columns (X Axis, Y Axis) each with Ports A–D, active toggles, and per-motor inversion checkboxes. |
+| **Pure Velocity Mapping Helpers** | `[IMPLEMENTED]` | Separates planar input math (`calculateJoystickCommands`) and stop targets (`getJoystickStopCommands`) from DOM event listeners. |
+| **Multi-Motor Run Card Summary Badge** | `[ADOPTED]` | Displays compact channel status in Run mode (for example, `X: B, -C \| Y: A`). |
+
+### 18.3 Implementation Checklist
+
+- [x] **Step 15.1: Multi-Motor State & Storage Schema (`web_assets/app.js`)**
+  - Updated `initStorage`, `loadDefaultWidgets`, and `addWidget` to store `multiMotor`, `xMotors`, and `yMotors`.
+  - Normalized stored port names to uppercase strings and preserved fallback values for legacy widgets loaded from browser localStorage.
+- [x] **Step 15.2: Pure Velocity Calculation Helpers (`web_assets/app.js`)**
+  - Created `calculateJoystickCommands(w, normX, normY, maxSpeed)` pure calculation helper.
+  - Created `getJoystickStopCommands(w)` pure halt generator.
+  - Deduplicated motor ports and combined velocity setpoints when identical ports are assigned to both axes in standard mode.
+- [x] **Step 15.3: Design View Configuration Matrix (`web_assets/app.js`, `web_assets/style.css`)**
+  - Added "Multi-Motor Control" checkbox toggle in the Design widget card.
+  - Rendered compact dual-axis port mapping matrix with active and invert toggles for Ports A, B, C, and D.
+  - Updated active motor toggle listener to update invert availability in-place without destructive full-widget DOM re-renders.
+  - Added styles for `.multi-motor-container`, `.multi-motor-row`, and `.multi-motor-invert-label`.
+- [x] **Step 15.4: Run View Summary Badge & Batch Dispatch (`web_assets/app.js`)**
+  - Added `joystickPortBadge` method formatting compact channel summaries (for example, `X: B, -C | Y: A` and `X: B | Y: C`).
+  - Updated `initJoystick` event handlers to dispatch multi-motor commands via `this.apiBatch`.
+- [x] **Step 15.5: Backend Integration Test Verification (`src/controller.rs`, `cargo test`)**
+  - Added `test_controller_execute_batch_multi_motor_joystick` verifying 3-motor simultaneous batch execution (ports A, B, and inverted C) and heartbeat halt.
+  - Added `test_controller_execute_batch_edge_cases` verifying empty batch, invalid port error handling, and 4-motor simultaneous execution.
+  - Verified all 39 tests pass with zero compiler warnings in `cargo check` and `cargo test`.
+
 
 
 

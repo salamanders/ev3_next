@@ -240,6 +240,19 @@ impl Router {
                 }
             }
 
+            // Batch Port Commands Endpoint: POST /api/batch and POST /api/ports
+            (Method::Post, "/api/batch") | (Method::Post, "/api/ports") => {
+                match self.read_json_body::<BatchCommandPayload>(&mut request) {
+                    Ok(batch) => {
+                        match self.controller.execute_batch(&batch) {
+                            Ok(results) => self.respond_json(request, StatusCode(200), &ApiResponse::ok(results)),
+                            Err(e) => self.respond_json(request, StatusCode(500), &ApiResponse::<()>::err(e)),
+                        }
+                    }
+                    Err(e) => self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(e)),
+                }
+            }
+
             // All Ports Endpoint (Motors and Sensors)
             (Method::Get, "/api/ports") => {
                 let status = self.controller.get_all_ports_status();
@@ -540,7 +553,7 @@ mod tests {
         let router_clone = router.clone();
         let server_clone = server;
         let thread_handle = std::thread::spawn(move || {
-            for _ in 0..18 {
+            for _ in 0..19 {
                 if let Ok(req) = server_clone.recv() {
                     router_clone.handle_request(req);
                 }
@@ -788,6 +801,24 @@ mod tests {
             assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
             assert!(resp_str.contains("\"success\":true"));
             assert!(resp_str.contains("All motors stopped"));
+        }
+
+        // 17. Test POST /api/batch
+        {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let body = b"{\"heartbeat_ms\": 400, \"commands\": [{\"port\": \"A\", \"speed\": 200}]}";
+            let req = format!(
+                "POST /api/batch HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                std::str::from_utf8(body).unwrap()
+            );
+            stream.write_all(req.as_bytes()).unwrap();
+            let mut resp = Vec::new();
+            stream.read_to_end(&mut resp).unwrap();
+            let resp_str = String::from_utf8_lossy(&resp);
+
+            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
+            assert!(resp_str.contains("\"success\":true"));
         }
 
         thread_handle.join().unwrap();
