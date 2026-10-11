@@ -40,17 +40,15 @@ Reading Linux sysfs files (`/sys/class/tacho-motor/` and `/sys/class/lego-sensor
 
 ---
 
-## 3. Two-Tier Safety Watchdogs
+## 3. Unified Safety Watchdog
 
 To prevent runaway robots when network connections drop:
 
-1. **Heartbeat Watchdog (Configurable 100–5000 ms, default 2000 ms):**
-   - Active during continuous motor operations (`POST /api/batch`, `POST /api/ports`, and legacy `/api/joystick`).
-   - If the client fails to send a renewal packet within the specified heartbeat window, the supervisor thread automatically stops all motors across all channels with coast action to reduce mechanical stress.
-2. **Client Disconnect Watchdog (1,000 ms):**
-   - Monitors active browser polling.
-   - If the browser tab closes, drops Wi-Fi, or crashes while continuous motor commands are running, the server halts all ports.
-3. **Emergency Stop (`POST /api/estop`):**
+1. **Unified Safety Watchdog (2000 ms default cutoff):**
+   - Applies equally to all driving controls (joystick, tank drive, sliders, single-port commands, and batch API requests).
+   - Any client communication (such as telemetry polling or motor commands) refreshes the watchdog activity timer.
+   - If client communication ceases for more than 2.0 seconds (2000 ms) while motion is active, the supervisor thread automatically stops and coasts all motors (`coast_all_motors`) to eliminate mechanical gear stress.
+2. **Emergency Stop (`POST /api/estop`):**
    - Immediately dispatches a broadcast reset to all motors and illuminates red status LEDs.
 
 ---

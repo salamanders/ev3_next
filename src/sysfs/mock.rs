@@ -126,7 +126,7 @@ impl MockController {
         if let Some(motor) = m.iter_mut().find(|m| m.port.eq_ignore_ascii_case(port)) {
             motor.speed_sp = speed.clamp(-motor.max_speed, motor.max_speed);
             motor.duty_cycle_sp = (motor.speed_sp * 100) / motor.max_speed;
-            motor.running = true;
+            motor.running = speed != 0;
             motor.holding = false;
             motor.target_pos = None;
             motor.time_remaining_ms = None;
@@ -176,7 +176,7 @@ impl MockController {
         if let Some(motor) = m.iter_mut().find(|m| m.port.eq_ignore_ascii_case(port)) {
             motor.duty_cycle_sp = duty_cycle.clamp(-100, 100);
             motor.speed_sp = (motor.max_speed * motor.duty_cycle_sp) / 100;
-            motor.running = true;
+            motor.running = duty_cycle != 0;
             motor.holding = false;
             motor.target_pos = None;
             motor.time_remaining_ms = None;
@@ -247,6 +247,14 @@ impl MockController {
             motor.holding = false;
             motor.stop_action = "coast".into();
         }
+    }
+
+    /// Checks whether any simulated actuator is actively rotating.
+    pub fn is_any_motor_running(&self) -> bool {
+        let m = self.motors.lock().unwrap();
+        m.iter().any(|motor| {
+            motor.running && (motor.speed_sp != 0 || motor.duty_cycle_sp != 0)
+        })
     }
 
     /// Steps virtual kinematics elapsed time and returns telemetry records.

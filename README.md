@@ -32,7 +32,7 @@ Detailed guides are modularized in the [`docs/`](docs/) directory:
 
 - **[Appliance Setup Guide](docs/setup.md):** Detailed image baking (`tools/bake-image.sh`), drive verification, command-line flashing (`tools/flash-image.sh`), and first boot.
 - **[Development & Deployment Guide](docs/development.md):** Cross-compilation toolchain, host simulation, USB networking (Windows RNDIS / macOS CDC), and deployment scripts.
-- **[System Architecture Guide](docs/architecture.md):** Runtime memory model, non-blocking sysfs polling, two-tier safety watchdogs, web asset pipeline, and code organization rules.
+- **[System Architecture Guide](docs/architecture.md):** Runtime memory model, non-blocking sysfs polling, unified safety watchdog, web asset pipeline, and code organization rules.
 - **[REST API Reference](docs/api.md):** Complete JSON REST API reference table, unified `/api/port` controller, payload schemas, and examples.
 
 ---
@@ -41,7 +41,7 @@ Detailed guides are modularized in the [`docs/`](docs/) directory:
 
 - **Non-Blocking Telemetry:** Background polling thread caches kernel sysfs telemetry every 50 ms. HTTP request threads read directly from RAM without blocking on sysfs file I/O.
 - **Embedded Web Assets:** Static web dashboard assets are pre-compressed with gzip at compile time and served directly from memory, with automatic baseline restore.
-- **Two-Tier Safety Watchdogs:** 2,000 ms multi-motor heartbeat timeout with coast action, plus a 1,000 ms browser disconnect watchdog.
+- **Unified Safety Watchdog:** 2,000 ms timeout across all driving controls with coast stop action to eliminate gear stress.
 - **On-Brick LCD Status Display:** Native 7-row console status renderer on `/dev/tty1` displaying live IP, battery voltage, and motor telemetry.
 - **Resource Targets:** Designed for ARM9 @ 300 MHz and 64 MB RAM, targeting < 3 MB RAM RSS with a statically linked musl binary.
 

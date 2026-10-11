@@ -30,6 +30,7 @@
 | **Phase 16** | Codebase Sweep, Chassis-Agnostic Backend & Frontend Tank Controls | **COMPLETE**. Combined single-caller functions, removed all tank references from Rust backend, and added frontend-only dual-track Tank Controls widget communicating via generic batch API. |
 | **Phase 17** | Codebase Simplification, Safety Hardening & State Consolidation | **COMPLETE**. Unified buffered sysfs descriptor reuse, consolidated sensor and motor state mutexes, resolved watchdog disconnect conflict on batch heartbeat commands, hardened emergency stop throttle disarming, pruned dead legacy payload fields, and updated docs. |
 | **Phase 18** | Heartbeat Watchdog Relaxation & Coast Stop Action Optimization | **COMPLETE**. Extended heartbeat timeout cutoff to 2000 ms to accommodate high-latency wireless networks, replaced watchdog timeout stop action with "coast" across all active motors to eliminate mechanical gear shock, and updated tests and documentation. |
+| **Phase 19** | Unified Safety Watchdog Architecture | **COMPLETE**. Unified 2.0-second safety watchdog across all driving controls (joystick, tank, slider, port commands, batch), coasting all motors on timeout, simplified `WatchdogState`, and updated tests. |
 
 ---
 
@@ -55,6 +56,7 @@
 19. [Phase 16: Codebase Sweep, Chassis-Agnostic Backend & Frontend Tank Controls](#19-phase-16-codebase-sweep-chassis-agnostic-backend--frontend-tank-controls)
 20. [Phase 17: Codebase Simplification, Safety Hardening & State Consolidation](#20-phase-17-codebase-simplification-safety-hardening--state-consolidation)
 21. [Phase 18: Heartbeat Watchdog Relaxation & Coast Stop Action Optimization](#21-phase-18-heartbeat-watchdog-relaxation--coast-stop-action-optimization)
+22. [Phase 19: Unified Safety Watchdog Architecture](#22-phase-19-unified-safety-watchdog-architecture)
 
 ---
 
@@ -973,9 +975,53 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
   - Updated `README.md`, `docs/api.md`, and `docs/architecture.md`.
   - Verified host simulation on port 8080.
 
+---
 
+## 22. Phase 19: Unified Safety Watchdog Architecture
 
+### 22.1 Context & Objectives
+- **Problem:** The previous watchdog design maintained a confusing split between a streaming "heartbeat watchdog" (2000 ms, coast stop action) and a continuous "client disconnect watchdog" (1000 ms, emergency stop brake action). This split created unnecessary complexity across driving modes, separate state booleans, and inconsistent timeout behaviors.
+- **Solution:**
+  1. Eliminate the split between `heartbeat_active` and `continuous_active`.
+  2. Implement ONE unified safety watchdog in `src/controller.rs` that applies equally to all driving controls (joystick, tank drive, sliders, single-port commands, and batch API).
+  3. Standardize the watchdog timeout cutoff consistently to 2.0 seconds (2000 ms) everywhere.
+  4. Ensure that any 2-second timeout without client communication always stops and coasts all motors (`coast_all_motors`).
+  5. Simplify `WatchdogState` to three fields (`last_activity: Instant`, `timeout: Duration`, `active: bool`) and simplify `check_watchdogs`.
+  6. Ensure all unit and integration tests verify the unified 2-second coasting watchdog.
 
+### 22.2 Architectural Decision Matrix
 
+| Option / Proposed Change | Status | Technical Rationale & File Links |
+| :--- | :--- | :--- |
+| **Unified Watchdog State** | `[IMPLEMENTED]` | Replaced multi-tier flags with a single `active: bool`, `last_activity: Instant`, and `timeout: Duration` in [`src/controller.rs`](src/controller.rs), eliminating state divergence. |
+| **Consistent 2.0-Second Cutoff** | `[IMPLEMENTED]` | Standardized 2,000 ms timeout across all driving controls with automatic coast stop action via `coast_all_motors` on timeout. |
+| **Simplified Port Command Execution** | `[IMPLEMENTED]` | Eliminated `execute_port_command_internal` and `is_heartbeat` flag; unified command dispatch under `execute_port_command`. |
+| **Bi-directional Activity Refresh** | `[IMPLEMENTED]` | Any client communication (status polling or command dispatch) refreshes `last_activity`, preventing unintended timeouts during active sessions. |
+| **Active Motion Guarding & Clean Stop Disarming** | `[IMPLEMENTED]` | Added `is_any_motor_running` in [`src/controller.rs`](src/controller.rs) and [`src/sysfs/mock.rs`](src/sysfs/mock.rs). Ensures zero-speed batches do not leave active channels unprotected, and explicit stops disarm idle watchdogs cleanly. |
 
+### 22.3 Implementation Checklist
 
+- [x] **Step 19.1: Unified Watchdog State & Controller Simplification (`src/controller.rs`)**
+  - Refactored `WatchdogState` to `last_activity: Instant`, `timeout: Duration`, and `active: bool`.
+  - Refactored `check_watchdogs` to a single timeout check triggering `coast_all_motors`.
+  - Implemented `arm_watchdog(&self, custom_timeout_ms: Option<u64>)`.
+  - Removed `execute_port_command_internal` and `is_heartbeat` suppression parameter.
+  - Added `is_any_motor_running` to both [`MockController`](src/sysfs/mock.rs) and [`MotorController`](src/controller.rs).
+  - Armed watchdog on `run_forever`, `run_direct`, and `execute_batch` with non-zero speeds.
+  - Guarded `execute_batch` zero-speed disarming against canceling protection on other active channels.
+  - Disarmed watchdog on explicit stop commands, `coast_all_motors`, and `emergency_stop` when all channels halt.
+  - Ensured `get_battery()`, `set_polarity()`, `set_sensor_mode()`, `run_timed()`, `run_to_rel_pos()`, and `rescan()` touch client poll.
+- [x] **Step 19.2: Unit Test Suite Hardening (`src/controller.rs`)**
+  - Updated `test_client_disconnect_watchdog_timeout` to verify 2,000 ms timeout and `coast` stop action.
+  - Updated `test_joystick_does_not_trigger_disconnect_watchdog` to verify periodic activity refresh.
+  - Added unit test `test_unified_watchdog_coasts_all_motors_after_2_seconds` for mixed driving controls.
+  - Added unit test `test_client_polling_refreshes_unified_watchdog` verifying telemetry polls refresh the timer.
+  - Added unit test `test_batch_zero_speed_does_not_disarm_watchdog_for_running_motors`.
+  - Added unit test `test_explicit_stop_disarms_watchdog_when_no_motors_running`.
+  - Added unit test `test_battery_polling_refreshes_unified_watchdog`.
+  - Verified all 52 unit tests pass in `cargo test`.
+- [x] **Step 19.3: Documentation & Plan Synchronization (`docs/architecture.md`, `docs/api.md`, `README.md`, `PROJECT_PLAN.md`)**
+  - Updated `docs/architecture.md` Section 3 to document the unified safety watchdog.
+  - Updated `docs/api.md` safety watchdog behavior section.
+  - Updated `README.md` features and architecture links.
+  - Verified host simulation on port 8080.

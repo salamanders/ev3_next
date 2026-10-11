@@ -101,11 +101,11 @@ Each object in the `commands` array specifies a target port and the motor or sen
 
 ### Safety Watchdog Behavior
 
-When `heartbeat_ms` is set:
-1. The server arms an in-memory safety timer for all moving motor ports in the batch.
-2. If the client stops sending requests (for example, network drop, closed tab, or client freeze) and the timer expires, the background supervisor thread automatically halts all motors across all ports using `coast` action to reduce mechanical stress.
-3. Sending a new batch request with `heartbeat_ms` resets the watchdog timer.
-4. Sending zero speed stops the motors and disarms the heartbeat watchdog.
+All driving operations are protected by the unified safety watchdog (2000 ms default cutoff):
+1. The server arms the unified safety timer when any motor starts moving.
+2. If client communication ceases (for example, network drop, closed tab, or client freeze) and the 2.0-second timer expires, the background supervisor thread automatically halts all motors across all ports using `coast` action to reduce mechanical stress.
+3. Any client communication (such as telemetry polling or command dispatches) resets the watchdog timer.
+4. Sending zero speed stops the motors and disarms the safety watchdog.
 
 ### Examples
 

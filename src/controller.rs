@@ -29,13 +29,12 @@ pub enum HardwareBackend {
     Mock(MockController),
 }
 
+pub const DEFAULT_WATCHDOG_TIMEOUT_MS: u64 = 2000;
+
 struct WatchdogState {
-    last_heartbeat: Option<Instant>,
-    heartbeat_timeout: Duration,
-    heartbeat_ports: Vec<String>,
-    heartbeat_active: bool,
-    last_status_poll: Instant,
-    continuous_active: bool,
+    last_activity: Instant,
+    timeout: Duration,
+    active: bool,
 }
 
 pub struct MotorController {
@@ -96,12 +95,9 @@ impl MotorController {
             cached_battery: Arc::new(RwLock::new(initial_battery)),
             poll_interval_ms,
             watchdog: Mutex::new(WatchdogState {
-                last_heartbeat: None,
-                heartbeat_timeout: Duration::from_millis(2000),
-                heartbeat_ports: Vec::new(),
-                heartbeat_active: false,
-                last_status_poll: now,
-                continuous_active: false,
+                last_activity: now,
+                timeout: Duration::from_millis(DEFAULT_WATCHDOG_TIMEOUT_MS),
+                active: false,
             }),
             rescan_signal,
         });
@@ -249,9 +245,9 @@ impl MotorController {
         }
     }
 
-    // Enforces expiration bounds on heartbeats and active client connections.
+    // Enforces the unified safety watchdog, coasting all motors on timeout.
     fn check_watchdogs(&self) {
-        let (stop_hb, stop_cr) = {
+        let should_stop = {
             let mut wd = match self.watchdog.lock() {
                 Ok(guard) => guard,
                 Err(e) => {
@@ -260,36 +256,40 @@ impl MotorController {
                 }
             };
 
-            let mut stop_hb = false;
-            if wd.heartbeat_active {
-                if let Some(t) = wd.last_heartbeat {
-                    if t.elapsed() > wd.heartbeat_timeout {
-                        wd.heartbeat_active = false;
-                        stop_hb = true;
-                    }
-                }
+            if wd.active && wd.last_activity.elapsed() > wd.timeout {
+                wd.active = false;
+                true
+            } else {
+                false
             }
-
-            let mut stop_cr = false;
-            if wd.continuous_active && wd.last_status_poll.elapsed() > Duration::from_millis(1000) {
-                wd.continuous_active = false;
-                stop_cr = true;
-            }
-
-            (stop_hb, stop_cr)
         };
 
-        if stop_hb {
-            println!("[WATCHDOG] Heartbeat timed out. Coasting all motors.");
+        if should_stop {
+            if !self.is_any_motor_running() {
+                return;
+            }
+            println!("[WATCHDOG] Client communication timed out (>2000ms). Coasting all motors.");
             if let Err(e) = self.coast_all_motors() {
                 eprintln!("[WATCHDOG ERROR] Failed coasting motors: {}", e);
             }
         }
+    }
 
-        if stop_cr {
-            println!("[WATCHDOG] Client connection poll timed out (>1000ms). Halting all continuous motors.");
-            if let Err(e) = self.emergency_stop() {
-                eprintln!("[WATCHDOG ERROR] Failed emergency stopping motors: {}", e);
+    /// Checks whether any output channel currently has active motion.
+    pub fn is_any_motor_running(&self) -> bool {
+        match &self.backend {
+            HardwareBackend::Mock(mock) => mock.is_any_motor_running(),
+            HardwareBackend::Real => {
+                if let Ok(cache) = self.cached_status.read() {
+                    cache.iter().any(|m| {
+                        m.connected
+                            && (m.speed != 0
+                                || m.duty_cycle != 0
+                                || m.state.iter().any(|s| s == "running"))
+                    })
+                } else {
+                    false
+                }
             }
         }
     }
@@ -305,10 +305,20 @@ impl MotorController {
             .ok_or_else(|| format!("Motor on Port {} is not connected", port))
     }
 
-    /// Bumps the link activity timestamp to prevent timeout disarming.
+    /// Refreshes the watchdog activity timer upon client communication.
     pub fn touch_client_poll(&self) {
         if let Ok(mut wd) = self.watchdog.lock() {
-            wd.last_status_poll = Instant::now();
+            wd.last_activity = Instant::now();
+        }
+    }
+
+    // Arms the unified watchdog with optional custom timeout duration.
+    fn arm_watchdog(&self, custom_timeout_ms: Option<u64>) {
+        if let Ok(mut wd) = self.watchdog.lock() {
+            wd.active = true;
+            wd.last_activity = Instant::now();
+            let ms = custom_timeout_ms.unwrap_or(DEFAULT_WATCHDOG_TIMEOUT_MS);
+            wd.timeout = Duration::from_millis(ms.clamp(100, 5000));
         }
     }
 
@@ -324,6 +334,7 @@ impl MotorController {
 
     /// Fetches the most recent cached power supply measurements.
     pub fn get_battery(&self) -> BatteryStatus {
+        self.touch_client_poll();
         self.cached_battery.read().unwrap().clone()
     }
 
@@ -378,6 +389,7 @@ impl MotorController {
 
     /// Configures the active measurement profile for an input channel.
     pub fn set_sensor_mode(&self, port: &str, mode: &str) -> Result<(), String> {
+        self.touch_client_poll();
         match &self.backend {
             HardwareBackend::Mock(mock) => mock.set_sensor_mode(port, mode),
             HardwareBackend::Real => {
@@ -404,16 +416,7 @@ impl MotorController {
         port: &str,
         cmd: &ResolvedPortCommand,
     ) -> Result<String, String> {
-        self.execute_port_command_internal(port, cmd, false)
-    }
-
-    // Dispatches port command with optional continuous watchdog suppression.
-    fn execute_port_command_internal(
-        &self,
-        port: &str,
-        cmd: &ResolvedPortCommand,
-        is_heartbeat: bool,
-    ) -> Result<String, String> {
+        self.touch_client_poll();
         if is_sensor_port(port) {
             match cmd {
                 ResolvedPortCommand::SetMode { mode } => {
@@ -425,11 +428,7 @@ impl MotorController {
         } else if is_motor_port(port) {
             match cmd {
                 ResolvedPortCommand::RunForever { speed } => {
-                    if is_heartbeat {
-                        self.raw_run_forever(port, *speed)?;
-                    } else {
-                        self.run_forever(port, *speed)?;
-                    }
+                    self.run_forever(port, *speed)?;
                     Ok(format!("Motor on Port {} running forever at speed {}", port, speed))
                 }
                 ResolvedPortCommand::RunTimed { speed, time_ms, stop_action } => {
@@ -441,11 +440,7 @@ impl MotorController {
                     Ok(format!("Motor on Port {} stepping {} counts at speed {}", port, position_sp, speed))
                 }
                 ResolvedPortCommand::RunDirect { duty_cycle } => {
-                    if is_heartbeat {
-                        self.raw_run_direct(port, *duty_cycle)?;
-                    } else {
-                        self.run_direct(port, *duty_cycle)?;
-                    }
+                    self.run_direct(port, *duty_cycle)?;
                     Ok(format!("Motor on Port {} direct duty {}%", port, duty_cycle))
                 }
                 ResolvedPortCommand::Stop { stop_action } => {
@@ -476,6 +471,7 @@ impl MotorController {
 
     /// Inverts or normalizes directional rotation on an output channel.
     pub fn set_polarity(&self, port: &str, polarity: &str) -> Result<(), String> {
+        self.touch_client_poll();
         let val = if polarity == "inversed" { "inversed" } else { "normal" };
         match &self.backend {
             HardwareBackend::Mock(mock) => {
@@ -525,14 +521,27 @@ impl MotorController {
 
     /// Initiates continuous movement on an actuator with watchdog monitoring.
     pub fn run_forever(&self, port: &str, speed: i32) -> Result<(), String> {
-        if let Ok(mut wd) = self.watchdog.lock() {
-            wd.continuous_active = true;
+        if speed != 0 {
+            self.arm_watchdog(None);
         }
-        self.raw_run_forever(port, speed)
+        let res = self.raw_run_forever(port, speed);
+        if speed == 0 && res.is_ok() && !self.is_any_motor_running() {
+            if let Ok(mut wd) = self.watchdog.lock() {
+                wd.active = false;
+            }
+        }
+        res
     }
 
     /// Activates an actuator for a fixed millisecond duration.
-    pub fn run_timed(&self, port: &str, speed: i32, time_ms: u32, stop_action: Option<String>) -> Result<(), String> {
+    pub fn run_timed(
+        &self,
+        port: &str,
+        speed: i32,
+        time_ms: u32,
+        stop_action: Option<String>,
+    ) -> Result<(), String> {
+        self.touch_client_poll();
         let action = stop_action.unwrap_or_else(|| "brake".into());
         match &self.backend {
             HardwareBackend::Mock(mock) => {
@@ -551,7 +560,14 @@ impl MotorController {
     }
 
     /// Rotates an actuator by an incremental count offset.
-    pub fn run_to_rel_pos(&self, port: &str, speed: i32, rel_pos: i32, stop_action: Option<String>) -> Result<(), String> {
+    pub fn run_to_rel_pos(
+        &self,
+        port: &str,
+        speed: i32,
+        rel_pos: i32,
+        stop_action: Option<String>,
+    ) -> Result<(), String> {
+        self.touch_client_poll();
         let action = stop_action.unwrap_or_else(|| "brake".into());
         match &self.backend {
             HardwareBackend::Mock(mock) => {
@@ -571,16 +587,23 @@ impl MotorController {
 
     /// Drives an actuator using raw pulse-width percentage modulation.
     pub fn run_direct(&self, port: &str, duty_cycle: i32) -> Result<(), String> {
-        if let Ok(mut wd) = self.watchdog.lock() {
-            wd.continuous_active = true;
+        if duty_cycle != 0 {
+            self.arm_watchdog(None);
         }
-        self.raw_run_direct(port, duty_cycle)
+        let res = self.raw_run_direct(port, duty_cycle);
+        if duty_cycle == 0 && res.is_ok() && !self.is_any_motor_running() {
+            if let Ok(mut wd) = self.watchdog.lock() {
+                wd.active = false;
+            }
+        }
+        res
     }
 
     /// Halts motion on a specified output channel using a braking strategy.
     pub fn stop(&self, port: &str, action: Option<String>) -> Result<(), String> {
+        self.touch_client_poll();
         let action_str = action.unwrap_or_else(|| "brake".into());
-        match &self.backend {
+        let res = match &self.backend {
             HardwareBackend::Mock(mock) => {
                 mock.stop(port, Some(action_str));
                 Ok(())
@@ -589,14 +612,31 @@ impl MotorController {
                 let motor = self.get_real_motor(port)?;
                 motor.set_stop_action(&action_str).map_err(|e| e.to_string())?;
                 motor.send_command("stop").map_err(|e| e.to_string())?;
+                if let Ok(mut cache) = self.cached_status.write() {
+                    if let Some(m) = cache
+                        .iter_mut()
+                        .find(|m| m.port.eq_ignore_ascii_case(port))
+                    {
+                        m.speed = 0;
+                        m.duty_cycle = 0;
+                        m.state.retain(|s| s != "running");
+                    }
+                }
                 Ok(())
             }
+        };
+        if res.is_ok() && !self.is_any_motor_running() {
+            if let Ok(mut wd) = self.watchdog.lock() {
+                wd.active = false;
+            }
         }
+        res
     }
 
     /// Clears encoder positions and fault flags on an output channel.
     pub fn reset(&self, port: &str) -> Result<(), String> {
-        match &self.backend {
+        self.touch_client_poll();
+        let res = match &self.backend {
             HardwareBackend::Mock(mock) => {
                 mock.reset(port);
                 Ok(())
@@ -604,9 +644,25 @@ impl MotorController {
             HardwareBackend::Real => {
                 let motor = self.get_real_motor(port)?;
                 motor.send_command("reset").map_err(|e| e.to_string())?;
+                if let Ok(mut cache) = self.cached_status.write() {
+                    if let Some(m) = cache
+                        .iter_mut()
+                        .find(|m| m.port.eq_ignore_ascii_case(port))
+                    {
+                        m.speed = 0;
+                        m.duty_cycle = 0;
+                        m.state.retain(|s| s != "running");
+                    }
+                }
                 Ok(())
             }
+        };
+        if res.is_ok() && !self.is_any_motor_running() {
+            if let Ok(mut wd) = self.watchdog.lock() {
+                wd.active = false;
+            }
         }
+        res
     }
 
     /// Controls dual-axis motion from paired velocity setpoints with timeout.
@@ -637,24 +693,21 @@ impl MotorController {
         Ok(())
     }
 
-    /// Applies multi-channel instructions with an atomic heartbeat watchdog.
+    /// Applies multi-channel instructions with unified safety watchdog.
     pub fn execute_batch(&self, batch: &BatchCommandPayload) -> Result<Vec<String>, String> {
         self.touch_client_poll();
         let mut results = Vec::new();
-        let mut motor_ports = Vec::new();
         let mut has_motion = false;
-        let is_heartbeat = batch.heartbeat_ms.is_some();
 
         for item in &batch.commands {
             let norm_port = normalize_port_name(&item.port)
                 .ok_or_else(|| format!("Invalid port '{}'", item.port))?;
             let max_speed = self.resolve_max_speed(&norm_port);
             let resolved = item.payload.resolve(max_speed)?;
-            let msg = self.execute_port_command_internal(&norm_port, &resolved, is_heartbeat)?;
+            let msg = self.execute_port_command(&norm_port, &resolved)?;
             results.push(msg);
 
             if is_motor_port(&norm_port) {
-                motor_ports.push(norm_port);
                 match &resolved {
                     ResolvedPortCommand::RunForever { speed } if *speed != 0 => {
                         has_motion = true;
@@ -667,12 +720,11 @@ impl MotorController {
             }
         }
 
-        if let Some(hb_ms) = batch.heartbeat_ms {
+        if has_motion {
+            self.arm_watchdog(batch.heartbeat_ms);
+        } else if !self.is_any_motor_running() {
             if let Ok(mut wd) = self.watchdog.lock() {
-                wd.last_heartbeat = Some(Instant::now());
-                wd.heartbeat_timeout = Duration::from_millis(hb_ms.clamp(100, 5000));
-                wd.heartbeat_ports = motor_ports;
-                wd.heartbeat_active = has_motion;
+                wd.active = false;
             }
         }
 
@@ -682,8 +734,7 @@ impl MotorController {
     /// Halts all motor channels with coast action to minimize gear stress.
     pub fn coast_all_motors(&self) -> Result<(), String> {
         if let Ok(mut wd) = self.watchdog.lock() {
-            wd.heartbeat_active = false;
-            wd.continuous_active = false;
+            wd.active = false;
         }
 
         match &self.backend {
@@ -714,8 +765,7 @@ impl MotorController {
     /// Immediately brakes all output channels and clears active motions.
     pub fn emergency_stop(&self) -> Result<(), String> {
         if let Ok(mut wd) = self.watchdog.lock() {
-            wd.heartbeat_active = false;
-            wd.continuous_active = false;
+            wd.active = false;
         }
 
         match &self.backend {
@@ -830,7 +880,7 @@ mod tests {
         assert_eq!(a.polarity, "inversed");
     }
 
-    // Ensures dropped network connections trigger safe automatic braking.
+    // Confirms dropped client communication halts motors with coast.
     #[test]
     fn test_client_disconnect_watchdog_timeout() {
         let controller = MotorController::new(true, 15);
@@ -843,16 +893,17 @@ mod tests {
         let a1 = st1.motors.iter().find(|m| m.port == "A").unwrap();
         assert_eq!(a1.speed, 400);
 
-        // Sleep >1000ms without calling get_system_status or touch_client_poll
-        thread::sleep(Duration::from_millis(1100));
+        // Sleep >2000ms without client communication (timeout is 2000ms)
+        thread::sleep(Duration::from_millis(2100));
 
-        // Background poller should have triggered emergency stop
+        // Background poller should have triggered coast on all motors
         let st2 = controller.get_system_status();
         let a2 = st2.motors.iter().find(|m| m.port == "A").unwrap();
         assert_eq!(a2.speed, 0);
+        assert_eq!(controller.get_mock_stop_action("A"), Some("coast".into()));
     }
 
-    // Confirms repeated joystick heartbeats avoid client disconnect timeout.
+    // Confirms repeated dispatches refresh the unified watchdog timer.
     #[test]
     fn test_joystick_does_not_trigger_disconnect_watchdog() {
         let controller = MotorController::new(true, 15);
@@ -865,6 +916,122 @@ mod tests {
         let c = st.motors.iter().find(|m| m.port == "C").unwrap();
         assert_eq!(b.speed, 500);
         assert_eq!(c.speed, 500);
+    }
+
+    // Verifies mixed continuous and direct runs coast after 2 seconds timeout.
+    #[test]
+    fn test_unified_watchdog_coasts_all_motors_after_2_seconds() {
+        let controller = MotorController::new(true, 15);
+        controller.run_forever("A", 350).unwrap();
+        controller.run_direct("B", 60).unwrap();
+        thread::sleep(Duration::from_millis(40));
+
+        let s1 = controller.get_system_status();
+        assert_eq!(s1.motors.iter().find(|m| m.port == "A").unwrap().speed, 350);
+        assert_eq!(s1.motors.iter().find(|m| m.port == "B").unwrap().speed, 630);
+
+        // Sleep >2000ms without client communication
+        thread::sleep(Duration::from_millis(2100));
+
+        let s2 = controller.get_system_status();
+        for port in &["A", "B", "C", "D"] {
+            let m = s2.motors.iter().find(|m| m.port == *port).unwrap();
+            assert_eq!(m.speed, 0);
+            assert_eq!(controller.get_mock_stop_action(port), Some("coast".into()));
+        }
+    }
+
+    // Verifies periodic telemetry polling prevents watchdog expiration.
+    #[test]
+    fn test_client_polling_refreshes_unified_watchdog() {
+        let controller = MotorController::new(true, 15);
+        controller.run_forever("A", 400).unwrap();
+
+        // Poll telemetry every 400ms for 2.4s (exceeds 2.0s watchdog limit)
+        for _ in 0..6 {
+            thread::sleep(Duration::from_millis(400));
+            let s = controller.get_system_status();
+            assert_eq!(s.motors.iter().find(|m| m.port == "A").unwrap().speed, 400);
+        }
+
+        // Cease polling and allow 2.0s watchdog to expire
+        thread::sleep(Duration::from_millis(2100));
+
+        let s_end = controller.get_system_status();
+        assert_eq!(s_end.motors.iter().find(|m| m.port == "A").unwrap().speed, 0);
+        assert_eq!(controller.get_mock_stop_action("A"), Some("coast".into()));
+    }
+
+    // Confirms stopping one channel in batch leaves other channels protected.
+    #[test]
+    fn test_batch_zero_speed_does_not_disarm_watchdog_for_running_motors() {
+        use crate::web::handlers::{BatchItemPayload, PortCommandPayload};
+        let controller = MotorController::new(true, 15);
+        controller.run_forever("B", 400).unwrap();
+        thread::sleep(Duration::from_millis(40));
+
+        let batch = BatchCommandPayload {
+            heartbeat_ms: None,
+            commands: vec![BatchItemPayload {
+                port: "A".into(),
+                payload: PortCommandPayload {
+                    speed: Some(0),
+                    stop_action: Some("brake".into()),
+                    ..Default::default()
+                },
+            }],
+        };
+        controller.execute_batch(&batch).unwrap();
+
+        // Motor B must remain running after batch on Port A
+        let s1 = controller.get_system_status();
+        assert_eq!(s1.motors.iter().find(|m| m.port == "B").unwrap().speed, 400);
+
+        // Sleep >2000ms: watchdog must coast Motor B when client drops
+        thread::sleep(Duration::from_millis(2100));
+
+        let s2 = controller.get_system_status();
+        assert_eq!(s2.motors.iter().find(|m| m.port == "B").unwrap().speed, 0);
+        assert_eq!(controller.get_mock_stop_action("B"), Some("coast".into()));
+    }
+
+    // Confirms explicit stop prevents spurious coast transitions on timeout.
+    #[test]
+    fn test_explicit_stop_disarms_watchdog_when_no_motors_running() {
+        let controller = MotorController::new(true, 15);
+        controller.run_forever("A", 400).unwrap();
+        thread::sleep(Duration::from_millis(40));
+
+        controller.stop("A", Some("brake".into())).unwrap();
+        assert_eq!(controller.get_mock_stop_action("A"), Some("brake".into()));
+
+        // Sleep >2000ms without client communication
+        thread::sleep(Duration::from_millis(2100));
+
+        // Watchdog must not overwrite explicit brake action when robot was idle
+        assert_eq!(controller.get_mock_stop_action("A"), Some("brake".into()));
+    }
+
+    // Verifies battery polling sustains watchdog activity during runs.
+    #[test]
+    fn test_battery_polling_refreshes_unified_watchdog() {
+        let controller = MotorController::new(true, 15);
+        controller.run_forever("A", 400).unwrap();
+
+        // Poll battery every 400ms for 2.4s (exceeds 2.0s limit)
+        for _ in 0..6 {
+            thread::sleep(Duration::from_millis(400));
+            let _ = controller.get_battery();
+            let s = controller.get_system_status();
+            assert_eq!(s.motors.iter().find(|m| m.port == "A").unwrap().speed, 400);
+        }
+
+        // Cease polling and allow 2.0s watchdog to expire
+        thread::sleep(Duration::from_millis(2100));
+
+        let s_end = controller.get_system_status();
+        assert_eq!(s_end.motors.iter().find(|m| m.port == "A").unwrap().speed, 0);
+        assert_eq!(controller.get_mock_stop_action("A"), Some("coast".into()));
     }
 
     // Verifies virtual device rediscovery populates simulated inventory.
