@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::sysfs::{MockController, Motor, MotorStatus, Sensor};
 use crate::web::handlers::{
     is_motor_port, is_sensor_port, normalize_port_name, AllPortsStatus, BatchCommandPayload,
-    ResolvedPortCommand, SensorStatus, MOTOR_PORTS, SENSOR_PORTS,
+    BatchItemPayload, PortCommandPayload, ResolvedPortCommand, SensorStatus, MOTOR_PORTS,
+    SENSOR_PORTS,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -407,6 +408,16 @@ impl MotorController {
         port: &str,
         cmd: &ResolvedPortCommand,
     ) -> Result<String, String> {
+        self.execute_port_command_internal(port, cmd, false)
+    }
+
+    // Dispatches port command with optional continuous watchdog suppression.
+    fn execute_port_command_internal(
+        &self,
+        port: &str,
+        cmd: &ResolvedPortCommand,
+        is_heartbeat: bool,
+    ) -> Result<String, String> {
         if is_sensor_port(port) {
             match cmd {
                 ResolvedPortCommand::SetMode { mode } => {
@@ -418,7 +429,11 @@ impl MotorController {
         } else if is_motor_port(port) {
             match cmd {
                 ResolvedPortCommand::RunForever { speed } => {
-                    self.run_forever(port, *speed)?;
+                    if is_heartbeat {
+                        self.raw_run_forever(port, *speed)?;
+                    } else {
+                        self.run_forever(port, *speed)?;
+                    }
                     Ok(format!("Motor on Port {} running forever at speed {}", port, speed))
                 }
                 ResolvedPortCommand::RunTimed { speed, time_ms, stop_action } => {
@@ -430,7 +445,11 @@ impl MotorController {
                     Ok(format!("Motor on Port {} stepping {} counts at speed {}", port, position_sp, speed))
                 }
                 ResolvedPortCommand::RunDirect { duty_cycle } => {
-                    self.run_direct(port, *duty_cycle)?;
+                    if is_heartbeat {
+                        self.raw_run_direct(port, *duty_cycle)?;
+                    } else {
+                        self.run_direct(port, *duty_cycle)?;
+                    }
                     Ok(format!("Motor on Port {} direct duty {}%", port, duty_cycle))
                 }
                 ResolvedPortCommand::Stop { stop_action } => {
@@ -475,14 +494,6 @@ impl MotorController {
         }
     }
 
-    /// Initiates continuous movement on an actuator with watchdog monitoring.
-    pub fn run_forever(&self, port: &str, speed: i32) -> Result<(), String> {
-        if let Ok(mut wd) = self.watchdog.lock() {
-            wd.continuous_active = true;
-        }
-        self.raw_run_forever(port, speed)
-    }
-
     // Directly engages continuous rotation without adjusting timers.
     fn raw_run_forever(&self, port: &str, speed: i32) -> Result<(), String> {
         match &self.backend {
@@ -498,6 +509,30 @@ impl MotorController {
                 Ok(())
             }
         }
+    }
+
+    // Directly commits PWM duty cycle without adjusting timers.
+    fn raw_run_direct(&self, port: &str, duty_cycle: i32) -> Result<(), String> {
+        match &self.backend {
+            HardwareBackend::Mock(mock) => {
+                mock.run_direct(port, duty_cycle);
+                Ok(())
+            }
+            HardwareBackend::Real => {
+                let motor = self.get_real_motor(port)?;
+                motor.set_duty_cycle_sp(duty_cycle).map_err(|e| e.to_string())?;
+                motor.send_command("run-direct").map_err(|e| e.to_string())?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Initiates continuous movement on an actuator with watchdog monitoring.
+    pub fn run_forever(&self, port: &str, speed: i32) -> Result<(), String> {
+        if let Ok(mut wd) = self.watchdog.lock() {
+            wd.continuous_active = true;
+        }
+        self.raw_run_forever(port, speed)
     }
 
     /// Activates an actuator for a fixed millisecond duration.
@@ -543,19 +578,7 @@ impl MotorController {
         if let Ok(mut wd) = self.watchdog.lock() {
             wd.continuous_active = true;
         }
-
-        match &self.backend {
-            HardwareBackend::Mock(mock) => {
-                mock.run_direct(port, duty_cycle);
-                Ok(())
-            }
-            HardwareBackend::Real => {
-                let motor = self.get_real_motor(port)?;
-                motor.set_duty_cycle_sp(duty_cycle).map_err(|e| e.to_string())?;
-                motor.send_command("run-direct").map_err(|e| e.to_string())?;
-                Ok(())
-            }
-        }
+        self.raw_run_direct(port, duty_cycle)
     }
 
     /// Halts motion on a specified output channel using a braking strategy.
@@ -593,40 +616,45 @@ impl MotorController {
     /// Controls dual-axis motion from paired velocity setpoints with timeout.
     pub fn joystick_drive(&self, x_port: &str, y_port: &str, x_speed: i32, y_speed: i32, stop_action: Option<&str>) -> Result<(), String> {
         let stop_act = stop_action.unwrap_or("brake");
-        if let Ok(mut wd) = self.watchdog.lock() {
-            wd.last_heartbeat = Some(Instant::now());
-            wd.heartbeat_timeout = Duration::from_millis(400);
-            wd.heartbeat_ports = vec![x_port.to_string(), y_port.to_string()];
-            wd.heartbeat_active = x_speed != 0 || y_speed != 0;
-        }
-
-        if x_speed == 0 {
-            self.stop(x_port, Some(stop_act.into()))?;
-        } else {
-            self.raw_run_forever(x_port, x_speed)?;
-        }
-
-        if y_speed == 0 {
-            self.stop(y_port, Some(stop_act.into()))?;
-        } else {
-            self.raw_run_forever(y_port, y_speed)?;
-        }
-
+        let batch = BatchCommandPayload {
+            heartbeat_ms: Some(400),
+            commands: vec![
+                BatchItemPayload {
+                    port: x_port.to_string(),
+                    payload: PortCommandPayload {
+                        speed: Some(x_speed),
+                        stop_action: Some(stop_act.to_string()),
+                        ..Default::default()
+                    },
+                },
+                BatchItemPayload {
+                    port: y_port.to_string(),
+                    payload: PortCommandPayload {
+                        speed: Some(y_speed),
+                        stop_action: Some(stop_act.to_string()),
+                        ..Default::default()
+                    },
+                },
+            ],
+        };
+        self.execute_batch(&batch)?;
         Ok(())
     }
 
     /// Applies multi-channel instructions with an atomic heartbeat watchdog.
     pub fn execute_batch(&self, batch: &BatchCommandPayload) -> Result<Vec<String>, String> {
+        self.touch_client_poll();
         let mut results = Vec::new();
         let mut motor_ports = Vec::new();
         let mut has_motion = false;
+        let is_heartbeat = batch.heartbeat_ms.is_some();
 
         for item in &batch.commands {
             let norm_port = normalize_port_name(&item.port)
                 .ok_or_else(|| format!("Invalid port '{}'", item.port))?;
             let max_speed = self.resolve_max_speed(&norm_port);
             let resolved = item.payload.resolve(max_speed)?;
-            let msg = self.execute_port_command(&norm_port, &resolved)?;
+            let msg = self.execute_port_command_internal(&norm_port, &resolved, is_heartbeat)?;
             results.push(msg);
 
             if is_motor_port(&norm_port) {
@@ -783,6 +811,21 @@ mod tests {
         let st2 = controller.get_system_status();
         let a2 = st2.motors.iter().find(|m| m.port == "A").unwrap();
         assert_eq!(a2.speed, 0);
+    }
+
+    // Confirms repeated joystick heartbeats avoid client disconnect timeout.
+    #[test]
+    fn test_joystick_does_not_trigger_disconnect_watchdog() {
+        let controller = MotorController::new(true, 15);
+        for _ in 0..6 {
+            controller.joystick_drive("B", "C", 500, 500, Some("brake")).unwrap();
+            thread::sleep(Duration::from_millis(200));
+        }
+        let st = controller.get_system_status();
+        let b = st.motors.iter().find(|m| m.port == "B").unwrap();
+        let c = st.motors.iter().find(|m| m.port == "C").unwrap();
+        assert_eq!(b.speed, 500);
+        assert_eq!(c.speed, 500);
     }
 
     // Verifies virtual device rediscovery populates simulated inventory.

@@ -1,12 +1,43 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use crate::web::handlers::SensorStatus;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SensorStatus {
+    pub port: String,
+    pub address: String,
+    pub driver_name: String,
+    pub connected: bool,
+    pub mode: String,
+    pub modes: Vec<String>,
+    pub value0: f32,
+    pub units: String,
+}
+
+impl SensorStatus {
+    /// Generates offline placeholder representation for unlinked input.
+    pub fn disconnected(port: &str) -> Self {
+        Self {
+            port: port.to_string(),
+            address: format!("in{}", port),
+            driver_name: "none".into(),
+            connected: false,
+            mode: "".into(),
+            modes: vec![],
+            value0: 0.0,
+            units: "".into(),
+        }
+    }
+}
 
 #[derive(Default)]
-struct CachedSensorFiles {
-    value0: Option<File>,
+struct SensorState {
+    mode: String,
+    decimals: u32,
+    units: String,
+    cached_file: Option<File>,
 }
 
 #[derive(Clone)]
@@ -15,11 +46,8 @@ pub struct Sensor {
     pub sysfs_path: PathBuf,
     pub address: String,
     pub driver_name: String,
-    mode: Arc<Mutex<String>>,
     pub modes: Vec<String>,
-    pub decimals: Arc<Mutex<u32>>,
-    pub units: Arc<Mutex<String>>,
-    cached_files: Arc<Mutex<CachedSensorFiles>>,
+    state: Arc<Mutex<SensorState>>,
 }
 
 impl Sensor {
@@ -67,11 +95,13 @@ impl Sensor {
                         sysfs_path: path,
                         address,
                         driver_name,
-                        mode: Arc::new(Mutex::new(mode)),
                         modes,
-                        decimals: Arc::new(Mutex::new(decimals)),
-                        units: Arc::new(Mutex::new(units)),
-                        cached_files: Arc::new(Mutex::new(CachedSensorFiles::default())),
+                        state: Arc::new(Mutex::new(SensorState {
+                            mode,
+                            decimals,
+                            units,
+                            cached_file: None,
+                        })),
                     });
                 }
             }
@@ -81,88 +111,61 @@ impl Sensor {
         sensors
     }
 
-    /// Obtains current operational configuration from memory cache.
-    pub fn mode(&self) -> String {
-        match self.mode.lock() {
-            Ok(g) => g.clone(),
-            Err(p) => p.into_inner().clone(),
-        }
-    }
-
-    /// Reads fractional precision exponent for fixed-point metric conversion.
-    pub fn decimals(&self) -> u32 {
-        match self.decimals.lock() {
-            Ok(g) => *g,
-            Err(p) => *p.into_inner(),
-        }
-    }
-
-    /// Retrieves human-readable measurement denomination string.
-    pub fn units(&self) -> String {
-        match self.units.lock() {
-            Ok(g) => g.clone(),
-            Err(p) => p.into_inner().clone(),
-        }
-    }
-
     /// Switches hardware capture configuration and re-queries scale factors.
     pub fn set_mode(&self, mode: &str) -> io::Result<()> {
+        let mut st = match self.state.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        st.cached_file = None;
+
         let mut file = OpenOptions::new().write(true).open(self.sysfs_path.join("mode"))?;
         file.write_all(mode.as_bytes())?;
         file.flush()?;
-        {
-            let mut m = match self.mode.lock() {
-                Ok(g) => g,
-                Err(p) => p.into_inner(),
-            };
-            *m = mode.to_string();
-        }
-        match self.cached_files.lock() {
-            Ok(mut cf) => cf.value0 = None,
-            Err(mut p) => p.get_mut().value0 = None,
-        }
 
-        // Re-read decimals and units from sysfs after mode change
-        let new_decimals = fs::read_to_string(self.sysfs_path.join("decimals"))
+        st.decimals = fs::read_to_string(self.sysfs_path.join("decimals"))
             .ok()
             .and_then(|s| s.trim().parse::<u32>().ok())
             .unwrap_or(0);
-        {
-            let mut dec = match self.decimals.lock() {
-                Ok(g) => g,
-                Err(p) => p.into_inner(),
-            };
-            *dec = new_decimals;
-        }
-
-        let new_units = fs::read_to_string(self.sysfs_path.join("units"))
+        st.units = fs::read_to_string(self.sysfs_path.join("units"))
             .map(|s| s.trim().to_string())
             .unwrap_or_default();
-        {
-            let mut u = match self.units.lock() {
-                Ok(g) => g,
-                Err(p) => p.into_inner(),
-            };
-            *u = new_units;
-        }
+        st.mode = mode.to_string();
 
         Ok(())
     }
 
     /// Computes scaled measurements with fallback for unplugged hardware.
     pub fn read_status(&self) -> SensorStatus {
-        let mode = self.mode();
-        let decimals = self.decimals();
-        let units = self.units();
-        let (connected, value0) = match self.read_value0() {
-            Ok(raw_val) => {
-                let val = if decimals > 0 {
-                    let divisor = 10f32.powi(decimals as i32);
-                    raw_val as f32 / divisor
-                } else {
-                    raw_val as f32
-                };
-                (true, val)
+        let mut st = match self.state.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let mode = st.mode.clone();
+        let decimals = st.decimals;
+        let units = st.units.clone();
+
+        let mut buf = [0u8; 32];
+        let path = self.sysfs_path.join("value0");
+        let (connected, value0) = match crate::sysfs::read_sysfs_cached(&mut st.cached_file, &path, &mut buf) {
+            Ok(n) => {
+                let parsed = std::str::from_utf8(&buf[..n])
+                    .ok()
+                    .and_then(|s| s.trim().parse::<i32>().ok());
+                match parsed {
+                    Some(raw_val) => {
+                        let val = if decimals > 0 {
+                            raw_val as f32 / 10f32.powi(decimals as i32)
+                        } else {
+                            raw_val as f32
+                        };
+                        (true, val)
+                    }
+                    None => {
+                        st.cached_file = None;
+                        (false, 0.0)
+                    }
+                }
             }
             Err(_) => (false, 0.0),
         };
@@ -176,59 +179,6 @@ impl Sensor {
             modes: self.modes.clone(),
             value0,
             units,
-        }
-    }
-
-    /// Fetches numeric measurement using cached file descriptor.
-    fn read_value0(&self) -> io::Result<i32> {
-        let mut buf = [0u8; 32];
-        let mut cf_guard = match self.cached_files.lock() {
-            Ok(g) => g,
-            Err(p) => p.into_inner(),
-        };
-        let path = self.sysfs_path.join("value0");
-
-        if cf_guard.value0.is_none() {
-            match File::open(&path) {
-                Ok(f) => cf_guard.value0 = Some(f),
-                Err(e) => return Err(e),
-            }
-        }
-
-        if let Some(file) = cf_guard.value0.as_mut() {
-            match file.seek(SeekFrom::Start(0)) {
-                Ok(_) => match file.read(&mut buf) {
-                    Ok(0) => {
-                        cf_guard.value0 = None;
-                        Err(io::Error::new(io::ErrorKind::UnexpectedEof, "empty sysfs file"))
-                    }
-                    Ok(n) => {
-                        match std::str::from_utf8(&buf[..n]) {
-                            Ok(s) => match s.trim().parse::<i32>() {
-                                Ok(val) => Ok(val),
-                                Err(e) => {
-                                    cf_guard.value0 = None;
-                                    Err(io::Error::new(io::ErrorKind::InvalidData, e))
-                                }
-                            },
-                            Err(e) => {
-                                cf_guard.value0 = None;
-                                Err(io::Error::new(io::ErrorKind::InvalidData, e))
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        cf_guard.value0 = None;
-                        Err(e)
-                    }
-                },
-                Err(e) => {
-                    cf_guard.value0 = None;
-                    Err(e)
-                }
-            }
-        } else {
-            Err(io::Error::other("Could not open value0"))
         }
     }
 }

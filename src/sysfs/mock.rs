@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use super::motor::MotorStatus;
-use crate::web::handlers::SensorStatus;
+use super::sensor::SensorStatus;
 
 #[derive(Clone)]
 pub struct MockController {

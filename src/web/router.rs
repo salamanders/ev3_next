@@ -1,4 +1,4 @@
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 use std::sync::Arc;
 use tiny_http::{Header, Method, Request, Response, StatusCode};
 use crate::controller::MotorController;
@@ -52,7 +52,7 @@ fn load_web_assets_from(assets_dir: &std::path::Path, is_mock: bool) -> (Arc<[u8
 
     let has_all_four = assets_dir.is_dir() && ASSET_ENTRIES.iter().all(|a| assets_dir.join(a.name).is_file());
 
-    if !assets_dir.exists() || !has_all_four {
+    if !has_all_four {
         println!(
             "[ASSETS] Self-healing: directory {:?} missing or incomplete. Restoring baseline assets...",
             assets_dir
@@ -299,10 +299,7 @@ impl Router {
         let raw_port = path.trim_start_matches("/api/port/");
         let normalized = match normalize_port_name(raw_port) {
             Some(p) => p,
-            None => {
-                self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(format!("Invalid port: '{}'", raw_port)));
-                return;
-            }
+            None => return self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(format!("Invalid port: '{}'", raw_port))),
         };
 
         match self.controller.get_port_status(&normalized) {
@@ -316,18 +313,12 @@ impl Router {
         let raw_port = path.trim_start_matches("/api/port/");
         let normalized = match normalize_port_name(raw_port) {
             Some(p) => p,
-            None => {
-                self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(format!("Invalid port: '{}'", raw_port)));
-                return;
-            }
+            None => return self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(format!("Invalid port: '{}'", raw_port))),
         };
 
         let payload = match self.read_json_body::<PortCommandPayload>(&mut request) {
             Ok(p) => p,
-            Err(e) => {
-                self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(e));
-                return;
-            }
+            Err(e) => return self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(e)),
         };
 
         let max_speed = self.controller.resolve_max_speed(&normalized);
@@ -348,7 +339,6 @@ impl Router {
             }
         }
         let mut body = String::new();
-        use std::io::Read;
         request.as_reader().take(4096).read_to_string(&mut body).map_err(|e| format!("Failed to read request body: {}", e))?;
         serde_json::from_str::<T>(&body).map_err(|e| format!("Invalid JSON payload: {}", e))
     }
@@ -559,7 +549,7 @@ mod tests {
         assert_eq!(js.as_ref(), BASELINE_JS_GZ);
     }
 
-    // Exercises network listening daemon across primary endpoints plus methods.
+    // Exercises network server across primary endpoints and HTTP methods.
     #[test]
     fn test_http_routes_serve_gzipped_assets_and_headers() {
         use std::io::{Read, Write};

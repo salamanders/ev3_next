@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
@@ -39,40 +39,12 @@ impl MotorStatus {
 }
 
 #[derive(Default)]
-struct CachedMotorFiles {
+struct MotorState {
+    polarity: String,
     position: Option<File>,
     speed: Option<File>,
     duty_cycle: Option<File>,
-    state: Option<File>,
-}
-
-impl CachedMotorFiles {
-    // Reuses open descriptors to sample sysfs files without reopening.
-    fn read_attr_buffered(file_opt: &mut Option<File>, path: &Path, buf: &mut [u8]) -> io::Result<usize> {
-        if file_opt.is_none() {
-            *file_opt = Some(File::open(path)?);
-        }
-        if let Some(file) = file_opt.as_mut() {
-            match file.seek(SeekFrom::Start(0)) {
-                Ok(_) => match file.read(buf) {
-                    Ok(0) => {
-                        *file_opt = None;
-                        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "empty sysfs file"));
-                    }
-                    Ok(n) => return Ok(n),
-                    Err(e) => {
-                        *file_opt = None;
-                        return Err(e);
-                    }
-                },
-                Err(e) => {
-                    *file_opt = None;
-                    return Err(e);
-                }
-            }
-        }
-        Err(io::Error::other("File not available"))
-    }
+    state_file: Option<File>,
 }
 
 #[derive(Clone)]
@@ -83,8 +55,7 @@ pub struct Motor {
     pub driver_name: String,
     pub max_speed: i32,
     pub count_per_rot: i32,
-    polarity: Arc<Mutex<String>>,
-    cached_files: Arc<Mutex<CachedMotorFiles>>,
+    state: Arc<Mutex<MotorState>>,
 }
 
 impl Motor {
@@ -132,8 +103,10 @@ impl Motor {
                         driver_name,
                         max_speed,
                         count_per_rot,
-                        polarity: Arc::new(Mutex::new(polarity)),
-                        cached_files: Arc::new(Mutex::new(CachedMotorFiles::default())),
+                        state: Arc::new(Mutex::new(MotorState {
+                            polarity,
+                            ..Default::default()
+                        })),
                     });
                 }
             }
@@ -146,7 +119,7 @@ impl Motor {
 
     /// Obtains currently synchronized directional rotation configuration.
     pub fn polarity(&self) -> String {
-        self.polarity.lock().map(|g| g.clone()).unwrap_or_else(|_| "normal".into())
+        self.state.lock().map(|g| g.polarity.clone()).unwrap_or_else(|_| "normal".into())
     }
 
     /// Writes clamped velocity target values to the kernel interface.
@@ -185,10 +158,16 @@ impl Motor {
     pub fn set_polarity(&self, polarity: &str) -> io::Result<()> {
         let val = if polarity == "inversed" { "inversed" } else { "normal" };
         self.write_attr("polarity", val)?;
-        if let Ok(mut pol) = self.polarity.lock() {
-            *pol = val.to_string();
+        if let Ok(mut st) = self.state.lock() {
+            st.polarity = val.to_string();
         }
         Ok(())
+    }
+
+    // Deserializes signed integer attribute from buffered descriptor.
+    fn read_i32(file_opt: &mut Option<File>, path: &Path, buf: &mut [u8]) -> Option<i32> {
+        let n = crate::sysfs::read_sysfs_cached(file_opt, path, buf).ok()?;
+        std::str::from_utf8(&buf[..n]).ok()?.trim().parse().ok()
     }
 
     /// Ingests live telemetry metrics using cached descriptors and buffers.
@@ -197,43 +176,15 @@ impl Motor {
             return None;
         }
 
-        let mut files = self.cached_files.lock().ok()?;
+        let mut st = self.state.lock().ok()?;
         let mut buf = [0u8; 64];
 
-        // 1. Position
-        let pos_n = CachedMotorFiles::read_attr_buffered(
-            &mut files.position,
-            &self.sysfs_path.join("position"),
-            &mut buf,
-        ).ok()?;
-        let pos_str = std::str::from_utf8(&buf[..pos_n]).ok()?.trim();
-        let position: i32 = pos_str.parse().ok()?;
+        let position = Self::read_i32(&mut st.position, &self.sysfs_path.join("position"), &mut buf)?;
+        let speed = Self::read_i32(&mut st.speed, &self.sysfs_path.join("speed"), &mut buf).unwrap_or(0);
+        let duty_cycle = Self::read_i32(&mut st.duty_cycle, &self.sysfs_path.join("duty_cycle"), &mut buf).unwrap_or(0);
 
-        // 2. Speed
-        let speed = if let Ok(n) = CachedMotorFiles::read_attr_buffered(
-            &mut files.speed,
-            &self.sysfs_path.join("speed"),
-            &mut buf,
-        ) {
-            std::str::from_utf8(&buf[..n]).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0)
-        } else {
-            0
-        };
-
-        // 3. Duty cycle
-        let duty_cycle = if let Ok(n) = CachedMotorFiles::read_attr_buffered(
-            &mut files.duty_cycle,
-            &self.sysfs_path.join("duty_cycle"),
-            &mut buf,
-        ) {
-            std::str::from_utf8(&buf[..n]).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0)
-        } else {
-            0
-        };
-
-        // 4. State
-        let state = if let Ok(n) = CachedMotorFiles::read_attr_buffered(
-            &mut files.state,
+        let state = if let Ok(n) = crate::sysfs::read_sysfs_cached(
+            &mut st.state_file,
             &self.sysfs_path.join("state"),
             &mut buf,
         ) {
@@ -246,6 +197,8 @@ impl Motor {
             Vec::new()
         };
 
+        let polarity = st.polarity.clone();
+
         Some(MotorStatus {
             port: self.port.clone(),
             address: self.address.clone(),
@@ -257,7 +210,7 @@ impl Motor {
             max_speed: self.max_speed,
             count_per_rot: self.count_per_rot,
             connected: true,
-            polarity: self.polarity(),
+            polarity,
         })
     }
 

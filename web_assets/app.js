@@ -224,6 +224,29 @@ class EV3App {
         }
     }
 
+    // Disarms scheduled trailing invocation for a rate-limited action.
+    clearThrottle(key) {
+        const entry = this.throttleMap.get(key);
+        if (entry) {
+            if (entry.timer) {
+                clearTimeout(entry.timer);
+                entry.timer = null;
+            }
+            entry.nextFn = null;
+        }
+    }
+
+    // Cancels all pending rate-limited callbacks across the application.
+    clearAllThrottles() {
+        this.throttleMap.forEach(entry => {
+            if (entry.timer) {
+                clearTimeout(entry.timer);
+                entry.timer = null;
+            }
+            entry.nextFn = null;
+        });
+    }
+
     // Transmits commands to server and unwraps result data.
     async apiPost(endpoint, payload) {
         const res = await fetch(endpoint, {
@@ -249,19 +272,24 @@ class EV3App {
     async emergencyStop() {
         try {
             await this.apiPost("/api/estop", {});
+            this.clearAllThrottles();
             document.querySelectorAll(".btn-toggle").forEach(b => {
                 b.className = "btn btn-big-action btn-toggle btn-secondary";
                 b.textContent = "Start Motor";
             });
-            document.querySelectorAll(".run-range-slider").forEach(s => {
+            document.querySelectorAll(".run-range-slider, .run-tank-slider").forEach(s => {
                 s.value = "0";
-                const readout = document.getElementById(`slider-val-${s.dataset.id}`);
+                const readout = s.dataset.side
+                    ? document.getElementById(`tank-${s.dataset.side}-val-${s.dataset.id}`)
+                    : document.getElementById(`slider-val-${s.dataset.id}`);
                 if (readout) readout.textContent = "0";
             });
-            document.querySelectorAll(".run-tank-slider").forEach(s => {
-                s.value = "0";
-                const readout = document.getElementById(`tank-${s.dataset.side}-val-${s.dataset.id}`);
-                if (readout) readout.textContent = "0";
+            document.querySelectorAll(".joystick-knob").forEach(k => {
+                k.style.transform = "translate(0px, 0px)";
+                k.classList.remove("active");
+            });
+            document.querySelectorAll(".joystick-readout").forEach(r => {
+                r.textContent = "X: 0% | Y: 0%";
             });
             this.log("Emergency stop dispatched.", "warn");
         } catch (e) {
@@ -639,7 +667,7 @@ class EV3App {
                 const patch = {};
                 if (isActive) {
                     if (idx === -1) list.push({ port, invert: false });
-                    // Remove from opposite axis so one motor is assigned to only one axis
+                    // Enforces single-axis assignment per actuator.
                     const oppKey = axis === "x" ? "yMotors" : "xMotors";
                     const oppList = (w[oppKey] ?? []).filter(m => m.port !== port);
                     patch[oppKey] = oppList;
@@ -821,7 +849,8 @@ class EV3App {
     }
 
     // Dispatches dual-track velocity targets via generic batch commands.
-    // This is only a custom front-end, don't make any API support for this widget!
+    // This is only a custom front-end,
+    // don't make any API support for this widget!
     initTank(w) {
         const leftSlider = document.getElementById(`tank-left-${w.id}`);
         const rightSlider = document.getElementById(`tank-right-${w.id}`);
@@ -854,11 +883,7 @@ class EV3App {
             rightSlider.value = "0";
             if (leftVal) leftVal.textContent = "0";
             if (rightVal) rightVal.textContent = "0";
-            const entry = this.throttleMap.get(`tank_${w.id}`);
-            if (entry?.timer) {
-                clearTimeout(entry.timer);
-                entry.timer = null;
-            }
+            this.clearThrottle(`tank_${w.id}`);
             const stopAction = w.stopAction || "brake";
             this.apiBatch([
                 { port: w.leftPort, speed: 0, stop_action: stopAction },
@@ -911,11 +936,7 @@ class EV3App {
             knob.style.transform = "translate(0px, 0px)";
             if (readout) readout.textContent = "X: 0% | Y: 0%";
 
-            const entry = this.throttleMap.get(`joy_${w.id}`);
-            if (entry?.timer) {
-                clearTimeout(entry.timer);
-                entry.timer = null;
-            }
+            this.clearThrottle(`joy_${w.id}`);
 
             const commands = getJoystickStopCommands(w);
             if (commands.length > 0) {
@@ -963,11 +984,7 @@ class EV3App {
         btnZero?.addEventListener("click", () => {
             slider.value = "0";
             if (readout) readout.textContent = "0";
-            const entry = this.throttleMap.get(`slider_${w.id}`);
-            if (entry?.timer) {
-                clearTimeout(entry.timer);
-                entry.timer = null;
-            }
+            this.clearThrottle(`slider_${w.id}`);
             this.apiPost(`/api/port/${w.port}`, { command: "stop", stop_action: "brake" }).catch(() => {});
         });
     }
@@ -1094,34 +1111,29 @@ class EV3App {
         }).join("");
     }
 
-    // Updates bottom metadata text across items matching a designated port.
-    updateCardFooters(attr, devices, formatText) {
-        document.querySelectorAll(`.run-card[${attr}]`).forEach(card => {
-            const port = card.getAttribute(attr);
-            const dev = devices.find(x => x.port === port);
-            const text = (!dev || !dev.connected) ? "Disconnected" : formatText(dev);
-            card.querySelectorAll(".run-card-footer").forEach(el => {
-                el.textContent = text;
-            });
-        });
-    }
-
     // Displays numeric metric values and driver metadata on cards.
     updateSensorReadouts(sensors) {
         document.querySelectorAll(".run-card[data-sensor-port]").forEach(card => {
             const port = card.getAttribute("data-sensor-port");
             const s = sensors.find(x => x.port === port);
-            const val = (s && s.connected) ? (s.value0 ?? s.value ?? "--") : "--";
-            card.querySelectorAll(`.sensor-display-val[data-sensor-port="${port}"]`).forEach(readout => {
-                readout.textContent = val;
-            });
+            const connected = s?.connected;
+            const readout = card.querySelector(".sensor-display-val");
+            if (readout) readout.textContent = connected ? (s.value0 ?? s.value ?? "--") : "--";
+            const unit = card.querySelector(".sensor-display-unit");
+            if (unit) unit.textContent = connected ? (s.units || s.mode) : "";
+            const footer = card.querySelector(".run-card-footer");
+            if (footer) footer.textContent = connected ? `${s.driver_name} (${s.mode})` : "Disconnected";
         });
-        this.updateCardFooters("data-sensor-port", sensors, s => `${s.driver_name} (${s.mode})`);
     }
 
     // Synchronizes action widget footers with hardware link states.
     updateMotorCardStatus(motors) {
-        this.updateCardFooters("data-motor-port", motors, m => m.state?.length ? m.state.join(", ") : "Ready");
+        document.querySelectorAll(".run-card[data-motor-port]").forEach(card => {
+            const port = card.getAttribute("data-motor-port");
+            const m = motors.find(x => x.port === port);
+            const footer = card.querySelector(".run-card-footer");
+            if (footer) footer.textContent = (!m || !m.connected) ? "Disconnected" : (m.state?.length ? m.state.join(", ") : "Ready");
+        });
     }
 
     // Records timestamped diagnostic entries in the event console.

@@ -10,7 +10,8 @@ pub struct DisplayController {
 
 impl DisplayController {
     pub const TTY_PATH: &'static str = "/dev/tty1";
-    pub const MAX_COLS: usize = 21; // Restrict to 21 chars to avoid fbcon auto-wrap glitch (BUG-22)
+    // Restricts width to 21 chars to avoid fbcon auto-wrap glitch (BUG-22).
+    pub const MAX_COLS: usize = 21;
 
     /// Instantiates terminal renderer with configured simulation toggles.
     pub fn new(mock_mode: bool) -> Self {
@@ -62,7 +63,8 @@ impl DisplayController {
         ];
 
         // Join lines with newline; last line has NO trailing newline (BUG-22)
-        let mut output = String::from("\x1b[?25l\x1b[2J\x1b[H"); // Hide cursor + Clear screen + Home cursor
+        // Hides cursor, clears screen, and homes cursor position.
+        let mut output = String::from("\x1b[?25l\x1b[2J\x1b[H");
         for (i, line) in raw_lines.iter().enumerate() {
             let truncated: String = line.chars().take(Self::MAX_COLS).collect();
             output.push_str(&truncated);

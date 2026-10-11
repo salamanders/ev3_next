@@ -28,6 +28,7 @@
 | **Phase 14** | Direct 2-Axis Joystick & Generic Batch Motor API | **COMPLETE**. Independent 2-axis direct control, expanded joystick boundary, `POST /api/batch` multi-port command executor, and generalized watchdog. |
 | **Phase 15** | Multi-Motor 2D Joystick Control | **COMPLETE**. Frontend multi-motor configuration matrix for X/Y axes, per-motor inversion, pure velocity calculation helpers, and multi-motor batch dispatch without backend API changes. |
 | **Phase 16** | Codebase Sweep, Chassis-Agnostic Backend & Frontend Tank Controls | **COMPLETE**. Combined single-caller functions, removed all tank references from Rust backend, and added frontend-only dual-track Tank Controls widget communicating via generic batch API. |
+| **Phase 17** | Codebase Simplification, Safety Hardening & State Consolidation | **COMPLETE**. Unified buffered sysfs descriptor reuse, consolidated sensor and motor state mutexes, resolved watchdog disconnect conflict on batch heartbeat commands, hardened emergency stop throttle disarming, pruned dead legacy payload fields, and updated docs. |
 
 ---
 
@@ -51,6 +52,7 @@
 17. [Phase 14: Direct 2-Axis Joystick, Generic Batch Motor API, and Watchdog Generalization](#17-phase-14-direct-2-axis-joystick-generic-batch-motor-api-and-watchdog-generalization)
 18. [Phase 15: Multi-Motor 2D Joystick Control](#18-phase-15-multi-motor-2d-joystick-control)
 19. [Phase 16: Codebase Sweep, Chassis-Agnostic Backend & Frontend Tank Controls](#19-phase-16-codebase-sweep-chassis-agnostic-backend--frontend-tank-controls)
+20. [Phase 17: Codebase Simplification, Safety Hardening & State Consolidation](#20-phase-17-codebase-simplification-safety-hardening--state-consolidation)
 
 ---
 
@@ -883,6 +885,54 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
 - [x] **Step 16.4: Host Simulation & Integration Testing (`cargo test`, `cargo run -- --mock`)**
   - Verified all 45 Rust tests pass in `cargo test`.
   - Verified host simulation on default port 8080 with mock motor telemetry and batch commands.
+
+---
+
+## 20. Phase 17: Codebase Simplification, Safety Hardening & State Consolidation
+
+### 20.1 Goals
+- **Codebase Simplification:** Continue making the codebase better and more elegant without expanding it (net negative line count).
+- **Safety Hardening on Emergency Stop:** Ensure emergency stop halts all pending throttled commands so delayed timer callbacks cannot restart motors after stop.
+- **Sysfs Descriptor Reading Unification:** Unify buffered descriptor sampling across motor and sensor drivers with a shared helper in `sysfs/mod.rs`.
+- **Sensor Synchronization Consolidation:** Collapse multiple `Arc<Mutex<...>>` in `Sensor` into a single atomic state struct, eliminating mutex lock contention and heap allocations.
+- **Single-Pass DOM Updates:** Consolidate sensor readouts and footer statuses in the frontend into single-pass card traversals.
+- **Channel Address Parsing Consolidation:** Unify motor and sensor sysfs address pattern matching with a table-driven parser.
+
+### 20.2 Architectural Decisions and Status Labels
+
+| Decision / Component | Status Label | Technical Rationale |
+| :--- | :--- | :--- |
+| **Shared `read_sysfs_cached` Helper** | `[IMPLEMENTED]` | Moved descriptor caching to [`src/sysfs/mod.rs`](src/sysfs/mod.rs), eliminating duplicate reading logic in motor and sensor. |
+| **Consolidated `SensorState` Mutex** | `[IMPLEMENTED]` | Grouped `mode`, `decimals`, `units`, and cached descriptor into one [`SensorState`](src/sysfs/sensor.rs), cutting 3 mutexes per sensor and preventing race conditions during mode switches. |
+| **Consolidated `MotorState` Mutex** | `[IMPLEMENTED]` | Grouped `polarity` and file descriptors into one [`MotorState`](src/sysfs/motor.rs), halving mutex allocations and eliminating double-locking in `poll_dynamic_status`. |
+| **SensorStatus Layer Boundary** | `[IMPLEMENTED]` | Moved [`SensorStatus`](src/sysfs/sensor.rs) from web handlers to sysfs module, eliminating inverted web dependency. |
+| **Heartbeat vs Continuous Watchdog Separation** | `[IMPLEMENTED]` | Dispatched heartbeat commands in [`execute_batch`](src/controller.rs) via `raw_run_forever` without arming continuous watchdog, avoiding spurious emergency stops when driving without polling `/api/status`. |
+| **Throttle Timer Disarm on E-Stop** | `[IMPLEMENTED]` | Extracted `clearAllThrottles` in [`web_assets/app.js`](web_assets/app.js) to cancel queued callbacks and unified slider reset passes. |
+| **Pruning Dead Payload Fields & API Docs** | `[IMPLEMENTED]` | Removed obsolete `left_port`/`right_port`/`left_speed`/`right_speed` fields from [`JoystickPayload`](src/web/handlers.rs) and removed deleted `/api/tank-drive` endpoint from [`docs/api.md`](docs/api.md). |
+| **Table-Driven Address Parsing** | `[IMPLEMENTED]` | Unified motor and sensor address recognition into `parse_channel_address` in [`src/web/handlers.rs`](src/web/handlers.rs). |
+
+### 20.3 Implementation Checklist
+
+- [x] **Step 17.1: Shared Sysfs Descriptor Reading & State Synchronization (`src/sysfs/mod.rs`, `src/sysfs/sensor.rs`, `src/sysfs/motor.rs`)**
+  - Added `read_sysfs_cached` in `src/sysfs/mod.rs` for shared buffered descriptor sampling.
+  - Replaced 4 separate `Arc<Mutex>` instances in `Sensor` with a single atomic `SensorState`, locking during mode transitions.
+  - Replaced separate `polarity` and `cached_files` in `Motor` with a single `MotorState` lock.
+  - Moved `SensorStatus` to `src/sysfs/sensor.rs` and re-exported it in `sysfs/mod.rs`.
+  - Replaced redundant attribute reading in `Motor::poll_dynamic_status` with `read_i32` helper.
+- [x] **Step 17.2: Watchdog Separation & Address Parsing (`src/web/handlers.rs`, `src/controller.rs`, `docs/api.md`)**
+  - Fixed disconnect watchdog bug by separating raw motor execution from continuous watchdog arming in `execute_batch`.
+  - Added `test_joystick_does_not_trigger_disconnect_watchdog` unit test.
+  - Unified address parsing in `src/web/handlers.rs` via `parse_channel_address`.
+  - Pruned dead legacy fields from `JoystickPayload` and updated `docs/api.md`.
+- [x] **Step 17.3: Frontend Safety Hardening & DOM Optimization (`web_assets/app.js`)**
+  - Extracted `clearAllThrottles()` and disarmed all active throttle timers on emergency stop.
+  - Unified range and tank slider resets into a single DOM query.
+  - Centered joystick knobs and readouts upon emergency stop.
+  - Updated sensor unit readouts dynamically in `updateSensorReadouts`.
+  - Enforced comment length limit (<= 79 characters) across all files.
+- [x] **Step 17.4: Verification & Host Simulation (`cargo test`, `cargo run -- --mock`)**
+  - Verified all 46 unit tests pass in `cargo test` with zero warnings.
+  - Verified host simulation on port 8080 (`/api/status`, `/api/batch`, `/api/joystick`, `/api/estop`).
 
 
 

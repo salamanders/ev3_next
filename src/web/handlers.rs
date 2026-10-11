@@ -8,25 +8,19 @@ pub struct JoystickPayload {
     pub x_speed: Option<i32>,
     pub y_speed: Option<i32>,
     pub stop_action: Option<String>,
-    pub left_port: Option<String>,
-    pub right_port: Option<String>,
-    pub left_speed: Option<i32>,
-    pub right_speed: Option<i32>,
 }
 
 impl JoystickPayload {
     /// Fallbacks omitted axes to standard dual-drive letter names.
     pub fn resolve_ports(&self) -> (String, String) {
-        let x = self.x_port.as_ref().or(self.left_port.as_ref()).and_then(|s| normalize_port_name(s)).unwrap_or_else(|| "B".to_string());
-        let y = self.y_port.as_ref().or(self.right_port.as_ref()).and_then(|s| normalize_port_name(s)).unwrap_or_else(|| "C".to_string());
+        let x = self.x_port.as_ref().and_then(|s| normalize_port_name(s)).unwrap_or_else(|| "B".to_string());
+        let y = self.y_port.as_ref().and_then(|s| normalize_port_name(s)).unwrap_or_else(|| "C".to_string());
         (x, y)
     }
 
-    /// Extracts coordinate rates from primary or legacy aliases.
+    /// Extracts coordinate rates from primary axis values.
     pub fn resolve_speeds(&self) -> (i32, i32) {
-        let sx = self.x_speed.or(self.left_speed).unwrap_or(0);
-        let sy = self.y_speed.or(self.right_speed).unwrap_or(0);
-        (sx, sy)
+        (self.x_speed.unwrap_or(0), self.y_speed.unwrap_or(0))
     }
 
     /// Normalizes braking preference strings with fallback default.
@@ -179,36 +173,36 @@ pub fn is_sensor_port(port: &str) -> bool {
     SENSOR_PORTS.iter().any(|p| p.eq_ignore_ascii_case(port))
 }
 
+// Matches kernel sysfs address text against device port candidate prefixes.
+fn parse_channel_address(address: &str, patterns: &[(&str, &str, &'static str)]) -> Option<&'static str> {
+    let clean = address.trim().to_ascii_uppercase();
+    patterns.iter().find_map(|&(prefix, suffix, port)| {
+        if clean.contains(prefix) || clean.ends_with(suffix) {
+            Some(port)
+        } else {
+            None
+        }
+    })
+}
+
 /// Extracts actuator socket letter from kernel path text.
 pub fn parse_motor_address(address: &str) -> Option<&'static str> {
-    let clean = address.trim().to_ascii_uppercase();
-    if clean.contains("OUTA") || clean.ends_with(":A") {
-        Some("A")
-    } else if clean.contains("OUTB") || clean.ends_with(":B") {
-        Some("B")
-    } else if clean.contains("OUTC") || clean.ends_with(":C") {
-        Some("C")
-    } else if clean.contains("OUTD") || clean.ends_with(":D") {
-        Some("D")
-    } else {
-        None
-    }
+    parse_channel_address(address, &[
+        ("OUTA", ":A", "A"),
+        ("OUTB", ":B", "B"),
+        ("OUTC", ":C", "C"),
+        ("OUTD", ":D", "D"),
+    ])
 }
 
 /// Extracts input channel index from kernel path text.
 pub fn parse_sensor_address(address: &str) -> Option<&'static str> {
-    let clean = address.trim().to_ascii_uppercase();
-    if clean.contains("IN1") || clean.ends_with(":1") || clean.ends_with(":IN1") {
-        Some("1")
-    } else if clean.contains("IN2") || clean.ends_with(":2") || clean.ends_with(":IN2") {
-        Some("2")
-    } else if clean.contains("IN3") || clean.ends_with(":3") || clean.ends_with(":IN3") {
-        Some("3")
-    } else if clean.contains("IN4") || clean.ends_with(":4") || clean.ends_with(":IN4") {
-        Some("4")
-    } else {
-        None
-    }
+    parse_channel_address(address, &[
+        ("IN1", ":1", "1"),
+        ("IN2", ":2", "2"),
+        ("IN3", ":3", "3"),
+        ("IN4", ":4", "4"),
+    ])
 }
 
 /// Converts mixed-case socket aliases into canonical uppercase tokens.
@@ -227,33 +221,7 @@ pub fn normalize_port_name(port: &str) -> Option<String> {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SensorStatus {
-    pub port: String,
-    pub address: String,
-    pub driver_name: String,
-    pub connected: bool,
-    pub mode: String,
-    pub modes: Vec<String>,
-    pub value0: f32,
-    pub units: String,
-}
-
-impl SensorStatus {
-    /// Generates offline placeholder representation for unlinked input.
-    pub fn disconnected(port: &str) -> Self {
-        Self {
-            port: port.to_string(),
-            address: format!("in{}", port),
-            driver_name: "none".into(),
-            connected: false,
-            mode: "".into(),
-            modes: vec![],
-            value0: 0.0,
-            units: "".into(),
-        }
-    }
-}
+pub use crate::sysfs::SensorStatus;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AllPortsStatus {
