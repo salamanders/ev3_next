@@ -243,8 +243,8 @@ impl Router {
                 }
             }
 
-            // 2D Joystick Endpoint (and legacy /api/tank-drive alias)
-            (Method::Post, "/api/joystick") | (Method::Post, "/api/tank-drive") => {
+            // 2D Joystick Directional Command Endpoint
+            (Method::Post, "/api/joystick") => {
                 match self.read_json_body::<JoystickPayload>(&mut request) {
                     Ok(payload) => {
                         let (x_port, y_port) = payload.resolve_ports();

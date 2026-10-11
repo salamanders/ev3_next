@@ -723,7 +723,7 @@ mod tests {
 
     // Confirms missed heartbeats automatically halt dual-axis motion.
     #[test]
-    fn test_tank_drive_watchdog_timeout() {
+    fn test_joystick_watchdog_timeout() {
         let controller = MotorController::new(true, 15);
         // Start dual-motor drive
         controller.joystick_drive("B", "C", 500, 500, Some("brake")).unwrap();
