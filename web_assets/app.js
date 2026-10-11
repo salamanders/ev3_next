@@ -19,42 +19,22 @@ function calculateJoystickCommands(w, normX, normY, maxSpeed = 1000) {
         ];
     }
 
-    const commands = [];
-    for (const m of w.xMotors ?? []) {
-        commands.push({
-            port: m.port,
-            speed: m.invert ? -xSpeed : xSpeed,
-            stop_action: stopAction
-        });
-    }
-    for (const m of w.yMotors ?? []) {
-        commands.push({
-            port: m.port,
-            speed: m.invert ? -ySpeed : ySpeed,
-            stop_action: stopAction
-        });
-    }
-    return commands;
+    const mapMotors = (motors, speed) => (motors ?? []).map(m => ({
+        port: m.port,
+        speed: m.invert ? -speed : speed,
+        stop_action: stopAction
+    }));
+    return [...mapMotors(w.xMotors, xSpeed), ...mapMotors(w.yMotors, ySpeed)];
 }
 
 // Generates zero-velocity brake targets across all configured channels.
 function getJoystickStopCommands(w) {
     const stopAction = w.stopAction || "brake";
-    if (!w.multiMotor) {
-        return [
-            { port: w.xPort, speed: 0, stop_action: stopAction },
-            { port: w.yPort, speed: 0, stop_action: stopAction }
-        ];
-    }
-    const ports = [...new Set([
-        ...(w.xMotors ?? []).map(m => m.port),
-        ...(w.yMotors ?? []).map(m => m.port)
-    ])];
-    return ports.map(port => ({
-        port,
-        speed: 0,
-        stop_action: stopAction
-    }));
+    const ports = !w.multiMotor
+        ? [w.xPort, w.yPort]
+        : [...new Set([...(w.xMotors ?? []).map(m => m.port), ...(w.yMotors ?? []).map(m => m.port)])];
+
+    return ports.map(port => ({ port, speed: 0, stop_action: stopAction }));
 }
 
 class EV3App {
@@ -91,6 +71,10 @@ class EV3App {
             if (raw) {
                 const parsed = JSON.parse(raw);
                 if (Array.isArray(parsed) && parsed.length > 0) {
+                    const parseMotors = (motors, fallbackPort) => Array.isArray(motors)
+                        ? motors.map(m => ({ port: String(m.port).trim().toUpperCase(), invert: !!m.invert }))
+                        : [{ port: fallbackPort, invert: false }];
+
                     this.widgets = parsed.map(w => {
                         const base = { id: w.id, type: w.type };
                         if (w.type === "joystick") {
@@ -102,23 +86,13 @@ class EV3App {
                                 yPort,
                                 stopAction: w.stopAction ?? "brake",
                                 multiMotor: !!w.multiMotor,
-                                xMotors: Array.isArray(w.xMotors)
-                                    ? w.xMotors.map(m => ({ port: String(m.port).trim().toUpperCase(), invert: !!m.invert }))
-                                    : [{ port: xPort, invert: false }],
-                                yMotors: Array.isArray(w.yMotors)
-                                    ? w.yMotors.map(m => ({ port: String(m.port).trim().toUpperCase(), invert: !!m.invert }))
-                                    : [{ port: yPort, invert: false }]
+                                xMotors: parseMotors(w.xMotors, xPort),
+                                yMotors: parseMotors(w.yMotors, yPort)
                             };
                         }
-                        if (w.type === "slider") {
-                            return { ...base, port: w.port ?? "A" };
-                        }
-                        if (w.type === "button") {
-                            return { ...base, port: w.port ?? "A", action: w.action ?? "momentary", degrees: w.degrees ?? 90 };
-                        }
-                        if (w.type === "sensor") {
-                            return { ...base, port: w.port ?? "1", mode: w.mode ?? "TOUCH" };
-                        }
+                        if (w.type === "slider") return { ...base, port: w.port ?? "A" };
+                        if (w.type === "button") return { ...base, port: w.port ?? "A", action: w.action ?? "momentary", degrees: w.degrees ?? 90 };
+                        if (w.type === "sensor") return { ...base, port: w.port ?? "1", mode: w.mode ?? "TOUCH" };
                         return base;
                     });
                     this.saveWidgets();
@@ -299,9 +273,10 @@ class EV3App {
 
     renderHardwarePanel() {
         if (!this.dom.hardwareList) return;
-        const portMap = new Map();
-        ["A", "B", "C", "D"].forEach(p => portMap.set(p, { type: "motor", name: `Port ${p}`, desc: "Disconnected", connected: false }));
-        ["1", "2", "3", "4"].forEach(p => portMap.set(p, { type: "sensor", name: `Port ${p}`, desc: "Disconnected", connected: false }));
+        const portMap = new Map([
+            ...["A", "B", "C", "D"].map(p => [p, { type: "motor", name: `Port ${p}`, desc: "Disconnected", connected: false }]),
+            ...["1", "2", "3", "4"].map(p => [p, { type: "sensor", name: `Port ${p}`, desc: "Disconnected", connected: false }])
+        ]);
 
         this.hardwareMotors.forEach(m => {
             if (portMap.has(m.port)) {
@@ -316,7 +291,7 @@ class EV3App {
 
         let connectedCount = 0;
         let html = "";
-        for (const [_, item] of portMap) {
+        for (const [, item] of portMap) {
             if (item.connected) connectedCount++;
             const badgeClass = item.connected ? "badge-connected" : "badge-disconnected";
             const badgeLabel = item.connected ? (item.mode || "Connected") : "None";
@@ -397,52 +372,36 @@ class EV3App {
 
         if (w.type === "joystick") {
             const motorCols = ["A", "B", "C", "D"];
+            const axes = [
+                { axis: "x", label: "X Axis (Left / Right)", motors: w.xMotors },
+                { axis: "y", label: "Y Axis (Up / Down)", motors: w.yMotors }
+            ];
             const multiMotorContent = `
                 <div class="multi-motor-container">
-                    <div class="multi-motor-column">
-                        <span class="multi-motor-heading">X Axis (Left / Right)</span>
-                        <div class="multi-motor-grid">
-                            ${motorCols.map(p => {
-                                const assigned = w.xMotors?.find(m => m.port === p);
-                                const isChecked = !!assigned;
-                                const isInverted = !!assigned?.invert;
-                                return `
-                                    <div class="multi-motor-row">
-                                        <label class="multi-motor-label">
-                                            <input type="checkbox" class="field-mm-active" data-id="${w.id}" data-axis="x" data-port="${p}" ${isChecked ? "checked" : ""}>
-                                            <span>Port ${p}</span>
-                                        </label>
-                                        <label class="multi-motor-invert-label ${isChecked ? "" : "disabled"}">
-                                            <input type="checkbox" class="field-mm-invert" data-id="${w.id}" data-axis="x" data-port="${p}" ${isInverted ? "checked" : ""} ${isChecked ? "" : "disabled"}>
-                                            <span>Invert</span>
-                                        </label>
-                                    </div>
-                                `;
-                            }).join("")}
+                    ${axes.map(({ axis, label, motors }) => `
+                        <div class="multi-motor-column">
+                            <span class="multi-motor-heading">${label}</span>
+                            <div class="multi-motor-grid">
+                                ${motorCols.map(p => {
+                                    const assigned = motors?.find(m => m.port === p);
+                                    const isChecked = !!assigned;
+                                    const isInverted = !!assigned?.invert;
+                                    return `
+                                        <div class="multi-motor-row">
+                                            <label class="multi-motor-label">
+                                                <input type="checkbox" class="field-mm-active" data-id="${w.id}" data-axis="${axis}" data-port="${p}" ${isChecked ? "checked" : ""}>
+                                                <span>Port ${p}</span>
+                                            </label>
+                                            <label class="multi-motor-invert-label ${isChecked ? "" : "disabled"}">
+                                                <input type="checkbox" class="field-mm-invert" data-id="${w.id}" data-axis="${axis}" data-port="${p}" ${isInverted ? "checked" : ""} ${isChecked ? "" : "disabled"}>
+                                                <span>Invert</span>
+                                            </label>
+                                        </div>
+                                    `;
+                                }).join("")}
+                            </div>
                         </div>
-                    </div>
-                    <div class="multi-motor-column">
-                        <span class="multi-motor-heading">Y Axis (Up / Down)</span>
-                        <div class="multi-motor-grid">
-                            ${motorCols.map(p => {
-                                const assigned = w.yMotors?.find(m => m.port === p);
-                                const isChecked = !!assigned;
-                                const isInverted = !!assigned?.invert;
-                                return `
-                                    <div class="multi-motor-row">
-                                        <label class="multi-motor-label">
-                                            <input type="checkbox" class="field-mm-active" data-id="${w.id}" data-axis="y" data-port="${p}" ${isChecked ? "checked" : ""}>
-                                            <span>Port ${p}</span>
-                                        </label>
-                                        <label class="multi-motor-invert-label ${isChecked ? "" : "disabled"}">
-                                            <input type="checkbox" class="field-mm-invert" data-id="${w.id}" data-axis="y" data-port="${p}" ${isInverted ? "checked" : ""} ${isChecked ? "" : "disabled"}>
-                                            <span>Invert</span>
-                                        </label>
-                                    </div>
-                                `;
-                            }).join("")}
-                        </div>
-                    </div>
+                    `).join("")}
                 </div>
             `;
 
@@ -555,29 +514,19 @@ class EV3App {
         bindField(".field-sensor-port", "port");
         bindField(".field-sensor-mode", "mode");
 
-        this.dom.designList?.querySelectorAll(".field-x-port").forEach(el => {
-            el.addEventListener("change", (e) => {
-                const id = e.target.dataset.id;
-                const port = e.target.value;
-                const w = this.widgets.find(x => x.id === id);
-                const patch = { xPort: port };
-                if (w && !w.multiMotor) {
-                    patch.xMotors = [{ port, invert: false }];
-                }
-                this.updateWidget(id, patch);
-            });
-        });
-
-        this.dom.designList?.querySelectorAll(".field-y-port").forEach(el => {
-            el.addEventListener("change", (e) => {
-                const id = e.target.dataset.id;
-                const port = e.target.value;
-                const w = this.widgets.find(x => x.id === id);
-                const patch = { yPort: port };
-                if (w && !w.multiMotor) {
-                    patch.yMotors = [{ port, invert: false }];
-                }
-                this.updateWidget(id, patch);
+        [".field-x-port", ".field-y-port"].forEach(selector => {
+            const axis = selector.includes("x") ? "x" : "y";
+            this.dom.designList?.querySelectorAll(selector).forEach(el => {
+                el.addEventListener("change", (e) => {
+                    const { id } = e.target.dataset;
+                    const port = e.target.value;
+                    const w = this.widgets.find(x => x.id === id);
+                    const patch = { [`${axis}Port`]: port };
+                    if (w && !w.multiMotor) {
+                        patch[`${axis}Motors`] = [{ port, invert: false }];
+                    }
+                    this.updateWidget(id, patch);
+                });
             });
         });
 
@@ -868,6 +817,7 @@ class EV3App {
         const btn = document.getElementById(`btn-action-${w.id}`);
         if (!btn) return;
         const defaultSpeed = 600;
+        const sendCmd = (payload) => this.apiPost(`/api/port/${w.port}`, payload).catch(() => {});
 
         if (w.action === "momentary") {
             let active = false;
@@ -877,14 +827,14 @@ class EV3App {
                 active = true;
                 btn.classList.add("btn-danger");
                 try { btn.setPointerCapture(e.pointerId); } catch (_) {}
-                this.apiPost(`/api/port/${w.port}`, { speed: defaultSpeed }).catch(() => {});
+                sendCmd({ speed: defaultSpeed });
             };
             const stop = (e) => {
                 e.preventDefault();
                 if (!active) return;
                 active = false;
                 btn.classList.remove("btn-danger");
-                this.apiPost(`/api/port/${w.port}`, { command: "stop", stop_action: "brake" }).catch(() => {});
+                sendCmd({ command: "stop", stop_action: "brake" });
             };
             btn.addEventListener("pointerdown", start);
             btn.addEventListener("pointerup", stop);
@@ -893,15 +843,9 @@ class EV3App {
         } else if (w.action === "toggle") {
             btn.addEventListener("click", () => {
                 const isRunning = btn.classList.toggle("toggle-active");
-                if (isRunning) {
-                    btn.classList.remove("btn-secondary");
-                    btn.textContent = "Stop Motor";
-                    this.apiPost(`/api/port/${w.port}`, { speed: defaultSpeed }).catch(() => {});
-                } else {
-                    btn.classList.add("btn-secondary");
-                    btn.textContent = "Start Motor";
-                    this.apiPost(`/api/port/${w.port}`, { command: "stop", stop_action: "brake" }).catch(() => {});
-                }
+                btn.classList.toggle("btn-secondary", !isRunning);
+                btn.textContent = isRunning ? "Stop Motor" : "Start Motor";
+                sendCmd(isRunning ? { speed: defaultSpeed } : { command: "stop", stop_action: "brake" });
             });
         } else if (w.action === "step") {
             btn.addEventListener("click", async () => {
