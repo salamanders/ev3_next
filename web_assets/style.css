@@ -623,6 +623,72 @@ body {
     text-align: center;
 }
 
+/* Dual vertical throttle columns for independent track speed regulation. */
+.tank-controls-container {
+    display: flex;
+    justify-content: space-around;
+    align-items: center;
+    flex: 1;
+    min-height: 0;
+    padding: 8px 12px;
+    gap: 16px;
+}
+
+.tank-track-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+}
+
+.tank-track-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
+.tank-slider-wrapper {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 160px;
+    width: 48px;
+}
+
+.run-tank-slider {
+    writing-mode: vertical-lr;
+    direction: rtl;
+    appearance: slider-vertical;
+    -webkit-appearance: slider-vertical;
+    width: 28px;
+    height: 140px;
+    accent-color: var(--primary);
+    cursor: pointer;
+}
+
+.tank-speed-readout {
+    font-size: 13px;
+    font-weight: 700;
+    color: #38bdf8;
+    font-variant-numeric: tabular-nums;
+    min-width: 44px;
+    text-align: center;
+}
+
+.tank-track-divider {
+    width: 1px;
+    height: 140px;
+    background: var(--border);
+    opacity: 0.6;
+}
+
+.tank-actions {
+    display: flex;
+    justify-content: center;
+    padding-top: 6px;
+}
+
 /* Speed Slider Widget */
 .run-slider-box {
     display: flex;

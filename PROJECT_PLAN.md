@@ -27,6 +27,7 @@
 | **Phase 13** | Codebase Simplification & De-duplication | **COMPLETE**. Unified port command execution, table-driven asset loader, clean envelope handling, live card telemetry, and architecture boundary guide. |
 | **Phase 14** | Direct 2-Axis Joystick & Generic Batch Motor API | **COMPLETE**. Independent 2-axis direct control, expanded joystick boundary, `POST /api/batch` multi-port command executor, and generalized watchdog. |
 | **Phase 15** | Multi-Motor 2D Joystick Control | **COMPLETE**. Frontend multi-motor configuration matrix for X/Y axes, per-motor inversion, pure velocity calculation helpers, and multi-motor batch dispatch without backend API changes. |
+| **Phase 16** | Codebase Sweep, Chassis-Agnostic Backend & Frontend Tank Controls | **COMPLETE**. Combined single-caller functions, removed all tank references from Rust backend, and added frontend-only dual-track Tank Controls widget communicating via generic batch API. |
 
 ---
 
@@ -49,6 +50,7 @@
 16. [Phase 13: Codebase Simplification & De-duplication](#16-phase-13-codebase-simplification--de-duplication)
 17. [Phase 14: Direct 2-Axis Joystick, Generic Batch Motor API, and Watchdog Generalization](#17-phase-14-direct-2-axis-joystick-generic-batch-motor-api-and-watchdog-generalization)
 18. [Phase 15: Multi-Motor 2D Joystick Control](#18-phase-15-multi-motor-2d-joystick-control)
+19. [Phase 16: Codebase Sweep, Chassis-Agnostic Backend & Frontend Tank Controls](#19-phase-16-codebase-sweep-chassis-agnostic-backend--frontend-tank-controls)
 
 ---
 
@@ -838,6 +840,50 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
   - Added `test_controller_execute_batch_multi_motor_joystick` verifying 3-motor simultaneous batch execution (ports A, B, and inverted C) and heartbeat halt.
   - Added `test_controller_execute_batch_edge_cases` verifying empty batch, invalid port error handling, and 4-motor simultaneous execution.
   - Verified all 39 tests pass with zero compiler warnings in `cargo check` and `cargo test`.
+
+---
+
+## 19. Phase 16: Codebase Sweep, Chassis-Agnostic Backend & Frontend Tank Controls
+
+### 19.1 Goals
+- **Codebase Consolidation:** Sweep Rust, JavaScript, HTML, and CSS for duplicated code, single-caller functions, and dead code.
+- **Chassis-Agnostic Backend:** Remove all "tank" terminology, endpoints, and vehicle-specific assumptions from the Rust backend.
+- **Frontend Tank Controls Widget:** Provide a dedicated dual-track widget (left track / right track vertical sliders) in the frontend using existing generic batch API commands (`POST /api/batch`).
+- **Regression Guard:** Add explicit warning comment in frontend code to prevent future agents from introducing vehicle-specific backend APIs.
+
+### 19.2 Architectural Decisions and Status Labels
+
+| Decision / Component | Status Label | Technical Rationale |
+| :--- | :--- | :--- |
+| **Consolidate Single-Caller Router Handlers** | `[IMPLEMENTED]` | Merged single-caller `dispatch_port_command` into [`handle_port_post`](src/web/router.rs), simplifying request dispatch. |
+| **Deduplicate Motor Speed Clamping** | `[IMPLEMENTED]` | Extracted [`resolve_max_speed`](src/controller.rs) on `MotorController`, unifying limit calculation across batch and single-port requests. |
+| **Prune Dead Tank Methods in Rust** | `[IMPLEMENTED]` | Removed unused `tank_drive` method in `MotorController` and deleted `/api/tank-drive` endpoint alias. |
+| **Chassis-Agnostic Backend Contract** | `[ADOPTED]` | Ensured zero mentions of "tank" in `src/`; the Rust server provides generic motor and sensor primitives. |
+| **Frontend Tank Controls Widget** | `[IMPLEMENTED]` | Added dual-track slider widget in [`web_assets/app.js`](web_assets/app.js) communicating via [`POST /api/batch`](src/web/router.rs). |
+| **API Support for Tank Widget** | `[REJECTED]` | Kept backend completely generic; tank widget maps left and right tracks to generic batch commands without dedicated backend endpoints. |
+
+### 19.3 Implementation Checklist
+
+- [x] **Step 16.1: Codebase Sweep & Function Consolidation (`src/web/router.rs`, `src/controller.rs`, `web_assets/app.js`, `web_assets/style.css`)**
+  - Consolidated single-caller `dispatch_port_command` into `handle_port_post`.
+  - Added `resolve_max_speed` to `MotorController` to deduplicate motor clamping across batch and port endpoints.
+  - Consolidated card footer text updates into `updateCardFooters` in `web_assets/app.js`.
+  - Combined duplicated badge classes `.badge-connected, .badge-running` in `web_assets/style.css`.
+- [x] **Step 16.2: Eliminate Tank Terminology from Rust Backend (`src/web/router.rs`, `src/controller.rs`)**
+  - Removed `/api/tank-drive` alias endpoint from the HTTP router.
+  - Renamed test to `test_joystick_watchdog_timeout` in `src/controller.rs`.
+  - Confirmed 0 occurrences of "tank" across all Rust source files in `src/`.
+- [x] **Step 16.3: Frontend Dual-Track Tank Controls Widget (`web_assets/design.html`, `web_assets/app.js`, `web_assets/style.css`)**
+  - Added "Tank Controls" option in `web_assets/design.html`.
+  - Added schema and configuration UI for left and right track port selection and stop action in `web_assets/app.js`.
+  - Added dual vertical sliders and "Stop Both" zero button in Run mode in `web_assets/app.js`.
+  - Added `initTank` dispatcher using generic `apiBatch` calls with rate limiting.
+  - Added exact regression guard comment: `// This is only a custom front-end, don't make any API support for this widget!`.
+  - Added cross-browser vertical slider and track column styling in `web_assets/style.css`.
+- [x] **Step 16.4: Host Simulation & Integration Testing (`cargo test`, `cargo run -- --mock`)**
+  - Verified all 45 Rust tests pass in `cargo test`.
+  - Verified host simulation on default port 8080 with mock motor telemetry and batch commands.
+
 
 
 

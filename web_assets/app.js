@@ -4,7 +4,13 @@
  */
 
 // Translates component category keys to presentation title strings.
-const TYPE_LABELS = { joystick: "Joystick", slider: "Slider", button: "Button", sensor: "Sensor" };
+const TYPE_LABELS = {
+    joystick: "Joystick",
+    tank: "Tank Controls",
+    slider: "Slider",
+    button: "Button",
+    sensor: "Sensor"
+};
 
 // Restricts numeric magnitude between lower and upper bounds.
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
@@ -96,6 +102,14 @@ class EV3App {
                                 multiMotor: !!w.multiMotor,
                                 xMotors: parseMotors(w.xMotors, xPort),
                                 yMotors: parseMotors(w.yMotors, yPort)
+                            };
+                        }
+                        if (w.type === "tank") {
+                            return {
+                                ...base,
+                                leftPort: String(w.leftPort ?? "B").trim().toUpperCase(),
+                                rightPort: String(w.rightPort ?? "C").trim().toUpperCase(),
+                                stopAction: w.stopAction ?? "brake"
                             };
                         }
                         if (w.type === "slider") return { ...base, port: w.port ?? "A" };
@@ -244,6 +258,11 @@ class EV3App {
                 const readout = document.getElementById(`slider-val-${s.dataset.id}`);
                 if (readout) readout.textContent = "0";
             });
+            document.querySelectorAll(".run-tank-slider").forEach(s => {
+                s.value = "0";
+                const readout = document.getElementById(`tank-${s.dataset.side}-val-${s.dataset.id}`);
+                if (readout) readout.textContent = "0";
+            });
             this.log("Emergency stop dispatched.", "warn");
         } catch (e) {
             this.log(`Emergency stop failed: ${e.message}`, "error");
@@ -351,6 +370,13 @@ class EV3App {
                 xMotors: [{ port: "B", invert: false }],
                 yMotors: [{ port: "C", invert: false }]
             },
+            tank: {
+                id,
+                type: "tank",
+                leftPort: "B",
+                rightPort: "C",
+                stopAction: "brake"
+            },
             slider: { id, type: "slider", port: "A" },
             button: { id, type: "button", port: "A", action: "momentary", degrees: 90 },
             sensor: { id, type: "sensor", port: "1", mode: "TOUCH" }
@@ -452,6 +478,24 @@ class EV3App {
                     </select>
                 </div>
             `;
+        } else if (w.type === "tank") {
+            fields = `
+                <div class="widget-config-field">
+                    <label>Left Track</label>
+                    <select class="field-left-port" data-id="${w.id}">${this.portOptions(w.leftPort)}</select>
+                </div>
+                <div class="widget-config-field">
+                    <label>Right Track</label>
+                    <select class="field-right-port" data-id="${w.id}">${this.portOptions(w.rightPort)}</select>
+                </div>
+                <div class="widget-config-field full-width">
+                    <label>Release Action</label>
+                    <select class="field-stop-action" data-id="${w.id}">
+                        <option value="brake" ${w.stopAction === "brake" ? "selected" : ""}>Brake (Hold Position)</option>
+                        <option value="coast" ${w.stopAction === "coast" ? "selected" : ""}>Coast (Free Spin)</option>
+                    </select>
+                </div>
+            `;
         } else if (w.type === "slider") {
             fields = `
                 <div class="widget-config-field full-width">
@@ -530,6 +574,8 @@ class EV3App {
 
         bindField(".field-stop-action", "stopAction");
         bindField(".field-port", "port");
+        bindField(".field-left-port", "leftPort");
+        bindField(".field-right-port", "rightPort");
         bindField(".field-action", "action");
         bindField(".field-degrees", "degrees", Number);
         bindField(".field-sensor-port", "port");
@@ -668,8 +714,10 @@ class EV3App {
 
     // Constructs operational interface markup for an active item.
     renderRunCard(w) {
-        const sizeClass = w.type === "joystick" ? "run-card-2x2" : "run-card-2x1";
-        const portBadge = w.type === "joystick" ? this.joystickPortBadge(w) : `Port ${w.port}`;
+        const sizeClass = (w.type === "joystick" || w.type === "tank") ? "run-card-2x2" : "run-card-2x1";
+        const portBadge = w.type === "joystick"
+            ? this.joystickPortBadge(w)
+            : (w.type === "tank" ? `L: ${w.leftPort} | R: ${w.rightPort}` : `Port ${w.port}`);
         const cardTitle = TYPE_LABELS[w.type] ?? w.type;
         const portAttr = (w.type === "slider" || w.type === "button")
             ? `data-motor-port="${w.port}"`
@@ -685,6 +733,33 @@ class EV3App {
                         <div class="joystick-knob" id="joy-knob-${w.id}"></div>
                     </div>
                     <div class="joystick-readout" id="joy-readout-${w.id}">X: 0% | Y: 0%</div>
+                </div>
+            `;
+        } else if (w.type === "tank") {
+            body = `
+                <div class="tank-controls-container">
+                    <div class="tank-track-col">
+                        <span class="tank-track-title">Left (${w.leftPort})</span>
+                        <div class="tank-slider-wrapper">
+                            <input type="range" class="run-tank-slider" id="tank-left-${w.id}"
+                                   min="-1000" max="1000" value="0" step="25" data-id="${w.id}" data-side="left"
+                                   orient="vertical">
+                        </div>
+                        <span class="tank-speed-readout" id="tank-left-val-${w.id}">0</span>
+                    </div>
+                    <div class="tank-track-divider"></div>
+                    <div class="tank-track-col">
+                        <span class="tank-track-title">Right (${w.rightPort})</span>
+                        <div class="tank-slider-wrapper">
+                            <input type="range" class="run-tank-slider" id="tank-right-${w.id}"
+                                   min="-1000" max="1000" value="0" step="25" data-id="${w.id}" data-side="right"
+                                   orient="vertical">
+                        </div>
+                        <span class="tank-speed-readout" id="tank-right-val-${w.id}">0</span>
+                    </div>
+                </div>
+                <div class="tank-actions">
+                    <button class="btn btn-sm btn-secondary btn-tank-zero" data-id="${w.id}">Stop Both</button>
                 </div>
             `;
         } else if (w.type === "slider") {
@@ -739,8 +814,56 @@ class EV3App {
     attachRunCardListeners() {
         this.widgets.forEach(w => {
             if (w.type === "joystick") this.initJoystick(w);
+            else if (w.type === "tank") this.initTank(w);
             else if (w.type === "slider") this.initSlider(w);
             else if (w.type === "button") this.initButton(w);
+        });
+    }
+
+    // Dispatches dual-track velocity targets via generic batch commands.
+    // This is only a custom front-end, don't make any API support for this widget!
+    initTank(w) {
+        const leftSlider = document.getElementById(`tank-left-${w.id}`);
+        const rightSlider = document.getElementById(`tank-right-${w.id}`);
+        const leftVal = document.getElementById(`tank-left-val-${w.id}`);
+        const rightVal = document.getElementById(`tank-right-val-${w.id}`);
+        const btnZero = document.querySelector(`.btn-tank-zero[data-id="${w.id}"]`);
+        if (!leftSlider || !rightSlider) return;
+
+        const updateSpeeds = () => {
+            const leftSpeed = parseInt(leftSlider.value, 10);
+            const rightSpeed = parseInt(rightSlider.value, 10);
+            if (leftVal) leftVal.textContent = leftSpeed;
+            if (rightVal) rightVal.textContent = rightSpeed;
+
+            this.throttle(`tank_${w.id}`, 66, () => {
+                const stopAction = w.stopAction || "brake";
+                const commands = [
+                    { port: w.leftPort, speed: leftSpeed, stop_action: stopAction },
+                    { port: w.rightPort, speed: rightSpeed, stop_action: stopAction }
+                ];
+                this.apiBatch(commands, 400).catch(() => {});
+            });
+        };
+
+        leftSlider.addEventListener("input", updateSpeeds);
+        rightSlider.addEventListener("input", updateSpeeds);
+
+        btnZero?.addEventListener("click", () => {
+            leftSlider.value = "0";
+            rightSlider.value = "0";
+            if (leftVal) leftVal.textContent = "0";
+            if (rightVal) rightVal.textContent = "0";
+            const entry = this.throttleMap.get(`tank_${w.id}`);
+            if (entry?.timer) {
+                clearTimeout(entry.timer);
+                entry.timer = null;
+            }
+            const stopAction = w.stopAction || "brake";
+            this.apiBatch([
+                { port: w.leftPort, speed: 0, stop_action: stopAction },
+                { port: w.rightPort, speed: 0, stop_action: stopAction }
+            ], 400).catch(() => {});
         });
     }
 
