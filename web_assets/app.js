@@ -38,6 +38,7 @@ function getJoystickStopCommands(w) {
 }
 
 class EV3App {
+    // Initializes client state and activates primary subsystem pipelines.
     constructor() {
         this.widgets = [];
         this.hardwareMotors = [];
@@ -60,6 +61,7 @@ class EV3App {
         }
     }
 
+    // Distinguishes configuration editing mode from runtime operations.
     get isDesignView() {
         return !!document.getElementById("design-view");
     }
@@ -103,6 +105,7 @@ class EV3App {
         this.loadDefaultWidgets();
     }
 
+    // Seeds initial interface layout when persistent storage is absent.
     loadDefaultWidgets() {
         this.widgets = [
             {
@@ -120,12 +123,14 @@ class EV3App {
         this.saveWidgets();
     }
 
+    // Commits current UI configurations to browser storage for persistence.
     saveWidgets() {
         try {
             localStorage.setItem("ev3_dashboard_widgets", JSON.stringify(this.widgets));
         } catch (_) {}
     }
 
+    // Caches page markup references to avoid repeated document lookups.
     initDOMElements() {
         this.dom = {
             designList: document.getElementById("design-widget-list"),
@@ -149,6 +154,7 @@ class EV3App {
         };
     }
 
+    // Registers top-level keyboard and header button event bindings.
     attachGlobalListeners() {
         this.dom.btnEstop?.addEventListener("click", () => this.emergencyStop());
         this.dom.btnShutdown?.addEventListener("click", () => this.powerOff());
@@ -207,7 +213,8 @@ class EV3App {
             signal: AbortSignal.timeout(3000)
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json().catch(() => ({}));
+        const json = await res.json().catch(() => ({}));
+        return json?.data !== undefined ? json.data : json;
     }
 
     // Dispatches a multi-port command batch with heartbeat safety watchdog.
@@ -255,7 +262,8 @@ class EV3App {
             this.dom.btnRescan.textContent = "Scanning...";
         }
         try {
-            const data = await this.apiPost("/api/rescan", {});
+            const res = await this.apiPost("/api/rescan", {});
+            const data = res?.data ?? res;
             this.hardwareMotors = data.motors ?? [];
             this.hardwareSensors = data.sensors ?? [];
             this.renderHardwarePanel();
@@ -271,6 +279,7 @@ class EV3App {
         }
     }
 
+    // Displays connected peripheral inventory with live link indicators.
     renderHardwarePanel() {
         if (!this.dom.hardwareList) return;
         const portMap = new Map([
@@ -311,6 +320,7 @@ class EV3App {
         }
     }
 
+    // Builds selection dropdown entries matching available device categories.
     portOptions(selected, isSensor = false) {
         const ports = isSensor ? ["1", "2", "3", "4"] : ["A", "B", "C", "D"];
         const list = isSensor ? this.hardwareSensors : this.hardwareMotors;
@@ -321,6 +331,7 @@ class EV3App {
         }).join("");
     }
 
+    // Appends a new item schema and triggers canvas refresh.
     addWidget(type) {
         const id = `w_${Date.now()}`;
         const templates = {
@@ -343,12 +354,14 @@ class EV3App {
         this.renderDesignWidgets();
     }
 
+    // Deletes a configured item and updates the layout canvas.
     removeWidget(id) {
         this.widgets = this.widgets.filter(w => w.id !== id);
         this.saveWidgets();
         this.renderDesignWidgets();
     }
 
+    // Modifies specific properties on an item without recreating it.
     updateWidget(id, patch) {
         const w = this.widgets.find(x => x.id === id);
         if (w) {
@@ -357,6 +370,7 @@ class EV3App {
         }
     }
 
+    // Populates the setup container with editable cards and listeners.
     renderDesignWidgets() {
         if (!this.dom.designList) return;
         const countLabel = document.getElementById("widget-count-label");
@@ -366,6 +380,7 @@ class EV3App {
         this.attachDesignCardListeners();
     }
 
+    // Formats editable inputs and settings markup for an item.
     renderDesignCard(w) {
         const typeLabels = { joystick: "Joystick", slider: "Slider", button: "Button", sensor: "Sensor" };
         let fields = "";
@@ -491,6 +506,7 @@ class EV3App {
         `;
     }
 
+    // Connects change events on configuration inputs to schema mutators.
     attachDesignCardListeners() {
         this.dom.designList?.querySelectorAll(".btn-remove").forEach(b => {
             b.addEventListener("click", () => this.removeWidget(b.dataset.id));
@@ -512,7 +528,20 @@ class EV3App {
         bindField(".field-action", "action");
         bindField(".field-degrees", "degrees", Number);
         bindField(".field-sensor-port", "port");
-        bindField(".field-sensor-mode", "mode");
+
+        this.dom.designList?.querySelectorAll(".field-sensor-mode").forEach(el => {
+            el.addEventListener("change", (e) => {
+                const { id } = e.target.dataset;
+                const mode = e.target.value;
+                this.updateWidget(id, { mode });
+                const w = this.widgets.find(x => x.id === id);
+                if (w?.port) {
+                    this.apiPost(`/api/port/${w.port}`, { mode }).catch(err => {
+                        this.log(`Failed to set sensor mode: ${err.message}`, "error");
+                    });
+                }
+            });
+        });
 
         [".field-x-port", ".field-y-port"].forEach(selector => {
             const axis = selector.includes("x") ? "x" : "y";
@@ -606,6 +635,7 @@ class EV3App {
         });
     }
 
+    // Displays live operator controls and attaches input handlers.
     renderRunWidgets() {
         if (!this.dom.runList) return;
         if (this.widgets.length === 0) {
@@ -631,6 +661,7 @@ class EV3App {
         return `X: ${formatAxis(w.xMotors)} | Y: ${formatAxis(w.yMotors)}`;
     }
 
+    // Constructs operational interface markup for an active item.
     renderRunCard(w) {
         const sizeClass = w.type === "joystick" ? "run-card-2x2" : "run-card-2x1";
         const portBadge = w.type === "joystick" ? this.joystickPortBadge(w) : `Port ${w.port}`;
@@ -700,6 +731,7 @@ class EV3App {
         `;
     }
 
+    // Wires up interactive behaviors across operational control panels.
     attachRunCardListeners() {
         this.widgets.forEach(w => {
             if (w.type === "joystick") this.initJoystick(w);
@@ -783,6 +815,7 @@ class EV3App {
         boundary.addEventListener("pointercancel", stopMotion);
     }
 
+    // Connects range bar input events to throttled velocity updates.
     initSlider(w) {
         const slider = document.getElementById(`slider-input-${w.id}`);
         const readout = document.getElementById(`slider-val-${w.id}`);
@@ -876,12 +909,14 @@ class EV3App {
             try {
                 const res = await fetch("/api/status", { signal: AbortSignal.timeout(2000) });
                 if (!res.ok) throw new Error();
-                const data = await res.json();
+                const json = await res.json();
+                const data = json?.data ?? json;
                 const rtt = Math.round(performance.now() - t0);
 
                 this.setConnectionState(true, rtt);
-                if (this.dom.batteryVal && data.battery_voltage) {
-                    this.dom.batteryVal.textContent = data.battery_voltage.toFixed(1);
+                const volt = data.battery?.voltage_v ?? data.battery_voltage;
+                if (this.dom.batteryVal && volt != null) {
+                    this.dom.batteryVal.textContent = Number(volt).toFixed(1);
                 }
 
                 if (this.isDesignView && this.dom.diagDetails?.open) {
@@ -901,6 +936,7 @@ class EV3App {
         }, 250);
     }
 
+    // Refreshes link indicators and round-trip delay readouts.
     setConnectionState(online, rtt) {
         this.isOnline = online;
         if (this.dom.connBadge && this.dom.connText) {
@@ -912,15 +948,16 @@ class EV3App {
         }
     }
 
+    // Formats rotational status records for the system inspection grid.
     renderDiagnosticsTable(motors) {
         if (!this.dom.telemetryBody) return;
         this.dom.telemetryBody.innerHTML = ["A", "B", "C", "D"].map(port => {
             const m = motors.find(x => x.port === port);
-            if (!m) return `<tr><td><strong>${port}</strong></td><td colspan="5" class="text-muted">None</td></tr>`;
+            if (!m || !m.connected) return `<tr><td><strong>${port}</strong></td><td colspan="5" class="text-muted">Disconnected</td></tr>`;
             return `
                 <tr>
                     <td><strong>${port}</strong></td>
-                    <td><span class="badge ${m.state.length ? "badge-running" : "badge-ready"}">${m.state.join(", ") || "Ready"}</span></td>
+                    <td><span class="badge ${m.state?.length ? "badge-running" : "badge-ready"}">${m.state?.join(", ") || "Ready"}</span></td>
                     <td>${m.speed}</td>
                     <td>${m.position}</td>
                     <td>${m.duty_cycle}%</td>
@@ -930,28 +967,35 @@ class EV3App {
         }).join("");
     }
 
+    // Displays numeric metric values and driver metadata on cards.
     updateSensorReadouts(sensors) {
-        sensors.forEach(s => {
-            const readout = document.querySelector(`.sensor-display-val[data-sensor-port="${s.port}"]`);
-            if (readout && s.value !== undefined) {
-                readout.textContent = s.value;
-            }
-            const cardFooter = document.querySelector(`.run-card[data-sensor-port="${s.port}"] .run-card-footer`);
-            if (cardFooter) {
-                cardFooter.textContent = s.connected ? `${s.driver_name} (${s.mode})` : "Disconnected";
-            }
+        document.querySelectorAll(".run-card[data-sensor-port]").forEach(card => {
+            const port = card.getAttribute("data-sensor-port");
+            const s = sensors.find(x => x.port === port);
+            const val = s?.value0 ?? s?.value;
+            card.querySelectorAll(`.sensor-display-val[data-sensor-port="${port}"]`).forEach(readout => {
+                readout.textContent = (s && s.connected && val !== undefined) ? val : "--";
+            });
+            card.querySelectorAll(".run-card-footer").forEach(cardFooter => {
+                cardFooter.textContent = (s && s.connected) ? `${s.driver_name} (${s.mode})` : "Disconnected";
+            });
         });
     }
 
+    // Synchronizes action widget footers with hardware link states.
     updateMotorCardStatus(motors) {
-        motors.forEach(m => {
-            const cardFooter = document.querySelector(`.run-card[data-motor-port="${m.port}"] .run-card-footer`);
-            if (cardFooter) {
-                cardFooter.textContent = m.state.length ? m.state.join(", ") : "Ready";
-            }
+        document.querySelectorAll(".run-card[data-motor-port]").forEach(card => {
+            const port = card.getAttribute("data-motor-port");
+            const m = motors.find(x => x.port === port);
+            card.querySelectorAll(".run-card-footer").forEach(cardFooter => {
+                cardFooter.textContent = (!m || !m.connected)
+                    ? "Disconnected"
+                    : (m.state?.length ? m.state.join(", ") : "Ready");
+            });
         });
     }
 
+    // Records timestamped diagnostic entries in the event console.
     log(msg, type = "info") {
         if (!this.dom.logBox) return;
         const entry = document.createElement("div");
@@ -962,7 +1006,7 @@ class EV3App {
     }
 }
 
-// Bootstrap application on page load
+// Initializes UI runtime components when DOM parsing finishes.
 window.addEventListener("DOMContentLoaded", () => {
     window.ev3App = new EV3App();
 });

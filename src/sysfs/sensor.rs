@@ -17,18 +17,18 @@ pub struct Sensor {
     pub driver_name: String,
     mode: Arc<Mutex<String>>,
     pub modes: Vec<String>,
-    pub decimals: u32,
-    pub units: String,
+    pub decimals: Arc<Mutex<u32>>,
+    pub units: Arc<Mutex<String>>,
     cached_files: Arc<Mutex<CachedSensorFiles>>,
 }
 
 impl Sensor {
-    /// Enumerate connected sensors from default sysfs path
+    /// Scans standard Linux kernel classes for attached input devices.
     pub fn find_all() -> Vec<Sensor> {
         Self::find_all_in(Path::new("/sys/class/lego-sensor"))
     }
 
-    /// Enumerate connected sensors from specified base path (supports testing and hardware)
+    /// Inspects targeted directory trees to construct device representations.
     pub fn find_all_in(base_path: &Path) -> Vec<Sensor> {
         let mut sensors = Vec::new();
         if !base_path.exists() {
@@ -69,8 +69,8 @@ impl Sensor {
                         driver_name,
                         mode: Arc::new(Mutex::new(mode)),
                         modes,
-                        decimals,
-                        units,
+                        decimals: Arc::new(Mutex::new(decimals)),
+                        units: Arc::new(Mutex::new(units)),
                         cached_files: Arc::new(Mutex::new(CachedSensorFiles::default())),
                     });
                 }
@@ -81,61 +81,155 @@ impl Sensor {
         sensors
     }
 
+    /// Obtains current operational configuration from memory cache.
+    pub fn mode(&self) -> String {
+        match self.mode.lock() {
+            Ok(g) => g.clone(),
+            Err(p) => p.into_inner().clone(),
+        }
+    }
+
+    /// Reads fractional precision exponent for fixed-point metric conversion.
+    pub fn decimals(&self) -> u32 {
+        match self.decimals.lock() {
+            Ok(g) => *g,
+            Err(p) => *p.into_inner(),
+        }
+    }
+
+    /// Retrieves human-readable measurement denomination string.
+    pub fn units(&self) -> String {
+        match self.units.lock() {
+            Ok(g) => g.clone(),
+            Err(p) => p.into_inner().clone(),
+        }
+    }
+
+    /// Switches hardware capture configuration and re-queries scale factors.
     pub fn set_mode(&self, mode: &str) -> io::Result<()> {
         let mut file = OpenOptions::new().write(true).open(self.sysfs_path.join("mode"))?;
         file.write_all(mode.as_bytes())?;
         file.flush()?;
-        if let Ok(mut m) = self.mode.lock() {
+        {
+            let mut m = match self.mode.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
             *m = mode.to_string();
         }
-        if let Ok(mut cf) = self.cached_files.lock() {
-            cf.value0 = None;
+        match self.cached_files.lock() {
+            Ok(mut cf) => cf.value0 = None,
+            Err(mut p) => p.get_mut().value0 = None,
         }
+
+        // Re-read decimals and units from sysfs after mode change
+        let new_decimals = fs::read_to_string(self.sysfs_path.join("decimals"))
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .unwrap_or(0);
+        {
+            let mut dec = match self.decimals.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            *dec = new_decimals;
+        }
+
+        let new_units = fs::read_to_string(self.sysfs_path.join("units"))
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        {
+            let mut u = match self.units.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            *u = new_units;
+        }
+
         Ok(())
     }
 
+    /// Computes scaled measurements with fallback for unplugged hardware.
     pub fn read_status(&self) -> SensorStatus {
-        let mode = self.mode.lock().map(|g| g.clone()).unwrap_or_default();
-        let raw_val = self.read_value0().unwrap_or(0);
-        let value0 = if self.decimals > 0 {
-            let divisor = 10f32.powi(self.decimals as i32);
-            raw_val as f32 / divisor
-        } else {
-            raw_val as f32
+        let mode = self.mode();
+        let decimals = self.decimals();
+        let units = self.units();
+        let (connected, value0) = match self.read_value0() {
+            Ok(raw_val) => {
+                let val = if decimals > 0 {
+                    let divisor = 10f32.powi(decimals as i32);
+                    raw_val as f32 / divisor
+                } else {
+                    raw_val as f32
+                };
+                (true, val)
+            }
+            Err(_) => (false, 0.0),
         };
 
         SensorStatus {
             port: self.port.clone(),
             address: self.address.clone(),
             driver_name: self.driver_name.clone(),
-            connected: true,
+            connected,
             mode,
             modes: self.modes.clone(),
             value0,
-            units: self.units.clone(),
+            units,
         }
     }
 
+    /// Fetches numeric measurement using cached file descriptor.
     fn read_value0(&self) -> io::Result<i32> {
         let mut buf = [0u8; 32];
-        let mut cf_guard = self.cached_files.lock().unwrap();
+        let mut cf_guard = match self.cached_files.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
         let path = self.sysfs_path.join("value0");
 
         if cf_guard.value0.is_none() {
-            cf_guard.value0 = Some(File::open(&path)?);
+            match File::open(&path) {
+                Ok(f) => cf_guard.value0 = Some(f),
+                Err(e) => return Err(e),
+            }
         }
 
         if let Some(file) = cf_guard.value0.as_mut() {
-            file.seek(SeekFrom::Start(0))?;
-            let n = file.read(&mut buf)?;
-            if n > 0 {
-                let s = std::str::from_utf8(&buf[..n])
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                return s.trim().parse::<i32>()
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e));
+            match file.seek(SeekFrom::Start(0)) {
+                Ok(_) => match file.read(&mut buf) {
+                    Ok(0) => {
+                        cf_guard.value0 = None;
+                        Err(io::Error::new(io::ErrorKind::UnexpectedEof, "empty sysfs file"))
+                    }
+                    Ok(n) => {
+                        match std::str::from_utf8(&buf[..n]) {
+                            Ok(s) => match s.trim().parse::<i32>() {
+                                Ok(val) => Ok(val),
+                                Err(e) => {
+                                    cf_guard.value0 = None;
+                                    Err(io::Error::new(io::ErrorKind::InvalidData, e))
+                                }
+                            },
+                            Err(e) => {
+                                cf_guard.value0 = None;
+                                Err(io::Error::new(io::ErrorKind::InvalidData, e))
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        cf_guard.value0 = None;
+                        Err(e)
+                    }
+                },
+                Err(e) => {
+                    cf_guard.value0 = None;
+                    Err(e)
+                }
             }
+        } else {
+            Err(io::Error::other("Could not open value0"))
         }
-        Err(io::Error::other("Could not read value0"))
     }
 }
 
@@ -143,6 +237,7 @@ impl Sensor {
 mod tests {
     use super::*;
 
+    // Verifies tree inspection with fixed-point telemetry normalization.
     #[test]
     fn test_sensor_discovery_and_readings() {
         let temp_dir = std::env::temp_dir().join(format!("test_ev3_sensor_{}", std::process::id()));
@@ -160,7 +255,7 @@ mod tests {
         fs::write(s1_dir.join("units"), "state\n").unwrap();
         fs::write(s1_dir.join("value0"), "1\n").unwrap();
 
-        // Sensor 2: Ultrasonic on in2 with 1 decimal place (e.g. 254 -> 25.4 cm)
+        // Ultrasonic on in2 with 1 decimal place (254 -> 25.4 cm).
         fs::write(s2_dir.join("address"), "ev3-ports:in2\n").unwrap();
         fs::write(s2_dir.join("driver_name"), "lego-ev3-us\n").unwrap();
         fs::write(s2_dir.join("mode"), "US-DIST-CM\n").unwrap();
@@ -183,8 +278,96 @@ mod tests {
         assert_eq!(st2.driver_name, "lego-ev3-us");
         assert_eq!(st2.value0, 25.4);
         assert_eq!(st2.units, "cm");
+        assert!(st2.connected);
 
         // Clean up
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    // Validates reconfiguring capture schemes refreshes scaling exponents.
+    #[test]
+    fn test_sensor_mode_change_updates_decimals_and_units() {
+        let temp_dir = std::env::temp_dir().join(format!("test_ev3_sensor_mode_{}", std::process::id()));
+        let s_dir = temp_dir.join("sensor0");
+        fs::create_dir_all(&s_dir).unwrap();
+
+        fs::write(s_dir.join("address"), "ev3-ports:in2\n").unwrap();
+        fs::write(s_dir.join("driver_name"), "lego-ev3-us\n").unwrap();
+        fs::write(s_dir.join("mode"), "US-DIST-CM\n").unwrap();
+        fs::write(s_dir.join("modes"), "US-DIST-CM US-DIST-IN\n").unwrap();
+        fs::write(s_dir.join("decimals"), "1\n").unwrap();
+        fs::write(s_dir.join("units"), "cm\n").unwrap();
+        fs::write(s_dir.join("value0"), "254\n").unwrap();
+
+        let sensors = Sensor::find_all_in(&temp_dir);
+        let s = sensors.iter().find(|s| s.port == "2").unwrap();
+        let st = s.read_status();
+        assert_eq!(st.mode, "US-DIST-CM");
+        assert_eq!(st.units, "cm");
+        assert_eq!(st.value0, 25.4);
+
+        // Simulate sysfs driver behavior when mode changes:
+        // Updates decimals to 2, units to "in", value0 to "1000".
+        fs::write(s_dir.join("decimals"), "2\n").unwrap();
+        fs::write(s_dir.join("units"), "in\n").unwrap();
+        fs::write(s_dir.join("value0"), "1000\n").unwrap();
+
+        s.set_mode("US-DIST-IN").unwrap();
+
+        let st2 = s.read_status();
+        assert_eq!(st2.mode, "US-DIST-IN");
+        assert_eq!(st2.units, "in");
+        assert_eq!(st2.value0, 10.0);
+
+        // Simulate mode change where decimals and units are omitted in sysfs
+        let _ = fs::remove_file(s_dir.join("decimals"));
+        let _ = fs::remove_file(s_dir.join("units"));
+        fs::write(s_dir.join("value0"), "42\n").unwrap();
+        s.set_mode("RAW").unwrap();
+
+        let st3 = s.read_status();
+        assert_eq!(st3.mode, "RAW");
+        assert_eq!(st3.units, "");
+        assert_eq!(st3.value0, 42.0);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    // Asserts empty payloads trigger offline flags while purging open handles.
+    #[test]
+    fn test_sensor_disconnected_and_cached_fd_reset_on_error() {
+        let temp_dir = std::env::temp_dir().join(format!("test_ev3_sensor_disc_{}", std::process::id()));
+        let s_dir = temp_dir.join("sensor0");
+        fs::create_dir_all(&s_dir).unwrap();
+
+        fs::write(s_dir.join("address"), "ev3-ports:in1\n").unwrap();
+        fs::write(s_dir.join("driver_name"), "lego-ev3-touch\n").unwrap();
+        fs::write(s_dir.join("mode"), "TOUCH\n").unwrap();
+        fs::write(s_dir.join("modes"), "TOUCH\n").unwrap();
+        fs::write(s_dir.join("decimals"), "0\n").unwrap();
+        fs::write(s_dir.join("units"), "state\n").unwrap();
+        fs::write(s_dir.join("value0"), "1\n").unwrap();
+
+        let sensors = Sensor::find_all_in(&temp_dir);
+        let s = sensors.iter().find(|s| s.port == "1").unwrap();
+
+        // 1. Initially connected
+        let st = s.read_status();
+        assert!(st.connected);
+        assert_eq!(st.value0, 1.0);
+
+        // 2. Disconnect (empty sysfs value0 on unplug / EOF)
+        fs::write(s_dir.join("value0"), "").unwrap();
+        let st_disc = s.read_status();
+        assert!(!st_disc.connected);
+        assert_eq!(st_disc.value0, 0.0);
+
+        // 3. Reconnect (value0 populated again, cached fd reopens).
+        fs::write(s_dir.join("value0"), "0\n").unwrap();
+        let st_rec = s.read_status();
+        assert!(st_rec.connected);
+        assert_eq!(st_rec.value0, 0.0);
+
         let _ = fs::remove_dir_all(&temp_dir);
     }
 }

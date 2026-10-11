@@ -6,11 +6,13 @@ pub struct Config {
 }
 
 impl Config {
+    /// Gathers process environment flags before delegating downstream.
     pub fn parse_from_args() -> Self {
         let args: Vec<String> = std::env::args().collect();
         Self::parse_from(&args)
     }
 
+    /// Resolves CLI tokens with fallback defaults and environment detection.
     pub fn parse_from(args: &[String]) -> Self {
         let mut host = "0.0.0.0".to_string();
         let mut port: u16 = 80;
@@ -70,7 +72,7 @@ impl Config {
             mock_mode = true;
         }
 
-        // Default to port 8080 for mock development mode, 80 for real hardware on EV3
+        // Defaults to 8080 for mock development, 80 for hardware.
         if !port_explicit {
             port = if mock_mode { 8080 } else { 80 };
         }
@@ -88,6 +90,7 @@ impl Config {
 mod tests {
     use super::*;
 
+    // Ensures out-of-range sleep durations stay within safe limits.
     #[test]
     fn test_config_poll_interval_clamping() {
         let args = vec![
@@ -107,6 +110,7 @@ mod tests {
         assert_eq!(cfg_high.poll_interval_ms, 1000, "Poll interval 5000 must be clamped to 1000ms");
     }
 
+    // Asserts simulation flags correctly reassign communication sockets.
     #[test]
     fn test_config_mock_mode_and_port() {
         let args = vec![

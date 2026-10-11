@@ -9,6 +9,7 @@ use config::Config;
 use controller::MotorController;
 use web::Router;
 
+// Initializes runtimes and dispatches concurrent network worker loops.
 fn main() {
     let config = Config::parse_from_args();
 
@@ -81,7 +82,7 @@ fn main() {
         })
         .expect("Failed to spawn display refresh thread");
 
-    // Worker pool for servicing requests concurrently on ARM/Host (2 workers for single-core CPU)
+    // Worker pool servicing requests concurrently on ARM/Host.
     let num_workers = 2;
     let mut handles = Vec::new();
 

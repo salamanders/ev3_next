@@ -19,6 +19,7 @@ pub struct Router {
 }
 
 
+// Inspects compression header tokens and minimal payload bounds.
 fn is_valid_gz(bytes: &[u8]) -> bool {
     bytes.len() >= 18 && bytes.starts_with(&[0x1f, 0x8b])
 }
@@ -35,6 +36,7 @@ const ASSET_ENTRIES: [AssetEntry; 4] = [
     AssetEntry { name: "app.js.gz", baseline: BASELINE_JS_GZ },
 ];
 
+// Restores embedded client payloads from memory if disk copies fail.
 fn load_web_assets_from(assets_dir: &std::path::Path, is_mock: bool) -> (Arc<[u8]>, Arc<[u8]>, Arc<[u8]>, Arc<[u8]>) {
     let custom_dir = std::env::var("WEB_ASSETS_DIR").is_ok();
 
@@ -105,6 +107,7 @@ fn load_web_assets_from(assets_dir: &std::path::Path, is_mock: bool) -> (Arc<[u8
     (loaded[0].clone(), loaded[1].clone(), loaded[2].clone(), loaded[3].clone())
 }
 
+// Inspects environment variables for client directory location.
 fn load_web_assets(is_mock: bool) -> (Arc<[u8]>, Arc<[u8]>, Arc<[u8]>, Arc<[u8]>) {
     use std::path::PathBuf;
 
@@ -115,7 +118,20 @@ fn load_web_assets(is_mock: bool) -> (Arc<[u8]>, Arc<[u8]>, Arc<[u8]>, Arc<[u8]>
     load_web_assets_from(&assets_dir, is_mock)
 }
 
+/// Trims redundant standard network scheme suffixes from origin headers.
+pub(crate) fn strip_default_port(host: &str) -> &str {
+    let trimmed = host.trim();
+    if let Some(stripped) = trimmed.strip_suffix(":80") {
+        stripped
+    } else if let Some(stripped) = trimmed.strip_suffix(":443") {
+        stripped
+    } else {
+        trimmed
+    }
+}
+
 impl Router {
+    /// Populates compressed frontend cache and prepares request dispatcher.
     pub fn new(controller: Arc<MotorController>) -> Self {
         let is_mock = controller.is_mock();
         let (html_gz, design_html_gz, css_gz, js_gz) = load_web_assets(is_mock);
@@ -128,12 +144,13 @@ impl Router {
         }
     }
 
+    /// Evaluates incoming HTTP verb and path to execute endpoint logic.
     pub fn handle_request(&self, mut request: Request) {
         let url = request.url().to_string();
         let path = url.split('?').next().unwrap_or("/");
         let method = request.method().clone();
 
-        // Reject cross-origin POST requests to prevent drive-by motor control (BUG-30)
+        // Reject cross-origin requests to prevent unauthorized actuation.
         if method == Method::Post {
             let headers = request.headers().to_vec();
             let host_hdr = headers.iter().find(|h| h.field.equiv("Host")).map(|h| h.value.as_str());
@@ -142,7 +159,9 @@ impl Router {
             if let (Some(origin), Some(host)) = (origin_hdr, host_hdr) {
                 let clean_origin = origin.trim_start_matches("http://").trim_start_matches("https://");
                 let clean_origin_host = clean_origin.split('/').next().unwrap_or("");
-                if !clean_origin_host.eq_ignore_ascii_case(host) {
+                let norm_origin = strip_default_port(clean_origin_host);
+                let norm_host = strip_default_port(host);
+                if !norm_origin.eq_ignore_ascii_case(norm_host) {
                     eprintln!("[SECURITY] Rejected cross-origin POST from Origin '{}' targeting Host '{}'", origin, host);
                     self.respond_json(request, StatusCode(403), &ApiResponse::<()>::err("Cross-origin requests forbidden"));
                     return;
@@ -240,7 +259,7 @@ impl Router {
                 }
             }
 
-            // Batch Port Commands Endpoint: POST /api/batch and POST /api/ports
+            // Batch Port Commands: POST /api/batch and POST /api/ports.
             (Method::Post, "/api/batch") | (Method::Post, "/api/ports") => {
                 match self.read_json_body::<BatchCommandPayload>(&mut request) {
                     Ok(batch) => {
@@ -275,6 +294,7 @@ impl Router {
         }
     }
 
+    // Queries individual channel metrics and returns JSON representation.
     fn handle_port_get(&self, request: Request, path: &str) {
         let raw_port = path.trim_start_matches("/api/port/");
         let normalized = match normalize_port_name(raw_port) {
@@ -291,6 +311,7 @@ impl Router {
         }
     }
 
+    // Evaluates velocity limits and sends hardware actuation instructions.
     fn dispatch_port_command(&self, request: Request, port_str: &str, payload: PortCommandPayload) {
         let normalized = match normalize_port_name(port_str) {
             Some(p) => p,
@@ -318,6 +339,7 @@ impl Router {
         }
     }
 
+    // Extracts incoming JSON body before delegating channel actuation.
     fn handle_port_post(&self, mut request: Request, path: &str) {
         let raw_port = path.trim_start_matches("/api/port/");
         let payload = match self.read_json_body::<PortCommandPayload>(&mut request) {
@@ -330,6 +352,7 @@ impl Router {
         self.dispatch_port_command(request, raw_port, payload);
     }
 
+    // Deserializes size-bounded incoming stream payloads into concrete types.
     fn read_json_body<T: serde::de::DeserializeOwned>(&self, request: &mut Request) -> Result<T, String> {
         if let Some(len) = request.body_length() {
             if len > 4096 {
@@ -342,6 +365,7 @@ impl Router {
         serde_json::from_str::<T>(&body).map_err(|e| format!("Invalid JSON payload: {}", e))
     }
 
+    // Streams pre-compressed memory payloads with appropriate HTTP headers.
     fn respond_static_gz(&self, request: Request, content: Arc<[u8]>, content_type: &str) {
         let len = content.len();
         let res = Response::new(
@@ -360,6 +384,7 @@ impl Router {
         }
     }
 
+    // Serializes structures into textual wire representations.
     fn respond_json<T: serde::Serialize>(&self, request: Request, status: StatusCode, data: &T) {
         let json_str = serde_json::to_string(data).unwrap_or_else(|_| "{\"success\":false,\"error\":\"JSON serialization error\"}".into());
         let res = Response::new(
@@ -384,6 +409,7 @@ mod tests {
     use flate2::read::GzDecoder;
     use std::io::Read;
 
+    // Expands encoded byte slices into UTF-8 text strings.
     fn decompress_gz(bytes: &[u8]) -> String {
         let mut decoder = GzDecoder::new(bytes);
         let mut s = String::new();
@@ -391,6 +417,7 @@ mod tests {
         s
     }
 
+    // Encodes arbitrary input byte slices using flate2 stream.
     fn compress_test(data: &[u8]) -> Vec<u8> {
         use flate2::write::GzEncoder;
         use flate2::Compression;
@@ -400,6 +427,7 @@ mod tests {
         encoder.finish().unwrap()
     }
 
+    // Verifies bundled memory binaries have proper headers plus text content.
     #[test]
     fn test_baseline_assets_embedded_and_valid_gzip() {
         assert!(!BASELINE_HTML_GZ.is_empty());
@@ -421,6 +449,7 @@ mod tests {
         assert!(js.contains("function") || js.contains("const") || js.contains("let") || js.contains("document"));
     }
 
+    // Asserts non-existent filesystem locations are recreated and populated.
     #[test]
     fn test_self_healing_missing_directory() {
         let temp_dir = std::env::temp_dir().join(format!("ev3_test_assets_missing_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
@@ -443,6 +472,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
+    // Checks truncated bundles and obsolete marker tokens are reconstructed.
     #[test]
     fn test_self_healing_corrupted_or_fewer_than_3_files() {
         let temp_dir = std::env::temp_dir().join(format!("ev3_test_assets_partial_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
@@ -468,6 +498,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
+    // Asserts empty payloads trigger recovery while retaining sound items.
     #[test]
     fn test_self_healing_corrupted_zero_length_file() {
         let temp_dir = std::env::temp_dir().join(format!("ev3_test_assets_zero_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
@@ -500,6 +531,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
+    // Ensures valid custom on-disk bundles are preserved without replacement.
     #[test]
     fn test_load_existing_updated_assets_without_overwriting() {
         let temp_dir = std::env::temp_dir().join(format!("ev3_test_assets_custom_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
@@ -528,6 +560,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
+    // Verifies simulation uses built-in memory buffers if disk path is absent.
     #[test]
     fn test_mock_fallback_when_directory_missing() {
         let non_existent = std::path::PathBuf::from("/non_existent_path_ev3_mock_test");
@@ -538,6 +571,7 @@ mod tests {
         assert_eq!(js.as_ref(), BASELINE_JS_GZ);
     }
 
+    // Exercises network listening daemon across primary endpoints plus methods.
     #[test]
     fn test_http_routes_serve_gzipped_assets_and_headers() {
         use std::io::{Read, Write};
@@ -553,7 +587,7 @@ mod tests {
         let router_clone = router.clone();
         let server_clone = server;
         let thread_handle = std::thread::spawn(move || {
-            for _ in 0..19 {
+            for _ in 0..21 {
                 if let Ok(req) = server_clone.recv() {
                     router_clone.handle_request(req);
                 }
@@ -821,6 +855,42 @@ mod tests {
             assert!(resp_str.contains("\"success\":true"));
         }
 
+        // 18. Cross-origin POST with port 80 in Host omitted in Origin.
+        {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let req = "POST /api/estop HTTP/1.1\r\nHost: localhost:80\r\nOrigin: http://localhost\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+            stream.write_all(req.as_bytes()).unwrap();
+            let mut resp = Vec::new();
+            stream.read_to_end(&mut resp).unwrap();
+            let resp_str = String::from_utf8_lossy(&resp);
+
+            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
+        }
+
+        // 19. Test genuine cross-origin POST rejected with 403 Forbidden
+        {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let req = "POST /api/estop HTTP/1.1\r\nHost: localhost\r\nOrigin: http://attacker.com\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+            stream.write_all(req.as_bytes()).unwrap();
+            let mut resp = Vec::new();
+            stream.read_to_end(&mut resp).unwrap();
+            let resp_str = String::from_utf8_lossy(&resp);
+
+            assert!(resp_str.starts_with("HTTP/1.1 403 Forbidden"));
+        }
+
         thread_handle.join().unwrap();
+    }
+
+    // Asserts standard network numbers are removed while keeping custom ones.
+    #[test]
+    fn test_strip_default_port() {
+        assert_eq!(strip_default_port("localhost:80"), "localhost");
+        assert_eq!(strip_default_port("localhost"), "localhost");
+        assert_eq!(strip_default_port("ev3dev.local:80"), "ev3dev.local");
+        assert_eq!(strip_default_port("ev3dev.local:443"), "ev3dev.local");
+        assert_eq!(strip_default_port("localhost:8080"), "localhost:8080");
+        assert_eq!(strip_default_port("localhost:1080"), "localhost:1080");
+        assert_eq!(strip_default_port("[::1]:80"), "[::1]");
     }
 }

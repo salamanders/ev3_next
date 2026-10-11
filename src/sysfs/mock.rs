@@ -39,6 +39,7 @@ struct MockMotorState {
 }
 
 impl MockMotorState {
+    // Initializes baseline simulation registers for a virtual output channel.
     fn new(port: &'static str, driver_name: &'static str, max_speed: i32, now: Instant) -> Self {
         Self {
             port,
@@ -60,6 +61,7 @@ impl MockMotorState {
 }
 
 impl MockController {
+    /// Provisions simulated actuator and sensor banks in host memory.
     pub fn new() -> Self {
         let now = Instant::now();
         Self {
@@ -110,6 +112,7 @@ impl MockController {
         }
     }
 
+    /// Flips or normalizes simulated rotation direction on a virtual channel.
     pub fn set_polarity(&self, port: &str, polarity: &str) {
         let mut m = self.motors.lock().unwrap();
         if let Some(motor) = m.iter_mut().find(|m| m.port.eq_ignore_ascii_case(port)) {
@@ -117,6 +120,7 @@ impl MockController {
         }
     }
 
+    /// Spins a simulated actuator continuously at target velocity.
     pub fn run_forever(&self, port: &str, speed: i32) {
         let mut m = self.motors.lock().unwrap();
         if let Some(motor) = m.iter_mut().find(|m| m.port.eq_ignore_ascii_case(port)) {
@@ -130,6 +134,7 @@ impl MockController {
         }
     }
 
+    /// Executes simulated rotation for an allocated millisecond window.
     pub fn run_timed(&self, port: &str, speed: i32, time_ms: u32, stop_action: Option<String>) {
         let mut m = self.motors.lock().unwrap();
         if let Some(motor) = m.iter_mut().find(|m| m.port.eq_ignore_ascii_case(port)) {
@@ -146,6 +151,7 @@ impl MockController {
         }
     }
 
+    /// Advances simulated encoder count by an incremental angular distance.
     pub fn run_to_rel_pos(&self, port: &str, speed: i32, rel_pos: i32, stop_action: Option<String>) {
         let mut m = self.motors.lock().unwrap();
         if let Some(motor) = m.iter_mut().find(|m| m.port.eq_ignore_ascii_case(port)) {
@@ -164,6 +170,7 @@ impl MockController {
         }
     }
 
+    /// Applies raw pulse-width modulation percentage to simulated coils.
     pub fn run_direct(&self, port: &str, duty_cycle: i32) {
         let mut m = self.motors.lock().unwrap();
         if let Some(motor) = m.iter_mut().find(|m| m.port.eq_ignore_ascii_case(port)) {
@@ -177,6 +184,7 @@ impl MockController {
         }
     }
 
+    /// Decelerates a simulated actuator to zero using specified braking.
     pub fn stop(&self, port: &str, action: Option<String>) {
         let mut m = self.motors.lock().unwrap();
         if let Some(motor) = m.iter_mut().find(|m| m.port.eq_ignore_ascii_case(port)) {
@@ -192,6 +200,7 @@ impl MockController {
         }
     }
 
+    /// Clears simulated encoder readings and zeros active velocity targets.
     pub fn reset(&self, port: &str) {
         let mut m = self.motors.lock().unwrap();
         if let Some(motor) = m.iter_mut().find(|m| m.port.eq_ignore_ascii_case(port)) {
@@ -205,6 +214,7 @@ impl MockController {
         }
     }
 
+    /// Instantly brakes all simulated output channels and engages holding.
     pub fn emergency_stop(&self) {
         let mut m = self.motors.lock().unwrap();
         for motor in m.iter_mut() {
@@ -218,6 +228,7 @@ impl MockController {
         }
     }
 
+    /// Steps virtual kinematics elapsed time and returns telemetry records.
     pub fn poll_and_get_all_status(&self) -> Vec<MotorStatus> {
         let mut m = self.motors.lock().unwrap();
         let now = Instant::now();
@@ -289,6 +300,7 @@ impl MockController {
         }).collect()
     }
 
+    /// Collects artificial measurement values across simulated input banks.
     pub fn poll_and_get_all_sensors(&self) -> Vec<SensorStatus> {
         let s = self.sensors.lock().unwrap();
         s.iter()
@@ -305,6 +317,7 @@ impl MockController {
             .collect()
     }
 
+    /// Switches simulated input profile and reconfigures synthetic units.
     pub fn set_sensor_mode(&self, port: &str, mode: &str) -> Result<(), String> {
         let mut s = self.sensors.lock().unwrap();
         if let Some(sensor) = s.iter_mut().find(|s| s.port.eq_ignore_ascii_case(port)) {
@@ -361,6 +374,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    // Confirms directional inversion updates reflected hardware flags.
     #[test]
     fn test_mock_polarity() {
         let mock = MockController::new();
@@ -372,6 +386,7 @@ mod tests {
         assert_eq!(statuses_inv[0].polarity, "inversed");
     }
 
+    // Verifies zeroed telemetry registers upon fresh subsystem boot.
     #[test]
     fn test_mock_initial_state() {
         let mock = MockController::new();
@@ -385,6 +400,7 @@ mod tests {
         }
     }
 
+    // Validates continuous velocity integration followed by braking.
     #[test]
     fn test_mock_run_forever_and_stop() {
         let mock = MockController::new();
@@ -403,6 +419,7 @@ mod tests {
         assert!(!statuses[0].state.contains(&"running".to_string()));
     }
 
+    // Ensures rapid halt disarms all channels into holding posture.
     #[test]
     fn test_mock_emergency_stop() {
         let mock = MockController::new();
@@ -420,6 +437,7 @@ mod tests {
         }
     }
 
+    // Confirms excessive velocity inputs truncate to rated thresholds.
     #[test]
     fn test_mock_speed_clamping() {
         let mock = MockController::new();
@@ -433,6 +451,7 @@ mod tests {
         assert_eq!(statuses[0].speed, -1050);
     }
 
+    // Verifies input detection, profile transitions, and unit conversions.
     #[test]
     fn test_mock_sensors() {
         let mock = MockController::new();

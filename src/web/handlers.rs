@@ -15,18 +15,21 @@ pub struct JoystickPayload {
 }
 
 impl JoystickPayload {
+    /// Fallbacks omitted axes to standard dual-drive letter names.
     pub fn resolve_ports(&self) -> (String, String) {
         let x = self.x_port.as_ref().or(self.left_port.as_ref()).and_then(|s| normalize_port_name(s)).unwrap_or_else(|| "B".to_string());
         let y = self.y_port.as_ref().or(self.right_port.as_ref()).and_then(|s| normalize_port_name(s)).unwrap_or_else(|| "C".to_string());
         (x, y)
     }
 
+    /// Extracts coordinate rates from primary or legacy aliases.
     pub fn resolve_speeds(&self) -> (i32, i32) {
         let sx = self.x_speed.or(self.left_speed).unwrap_or(0);
         let sy = self.y_speed.or(self.right_speed).unwrap_or(0);
         (sx, sy)
     }
 
+    /// Normalizes braking preference strings with fallback default.
     pub fn resolve_stop_action(&self) -> &str {
         match self.stop_action.as_deref() {
             Some("coast") => "coast",
@@ -75,6 +78,7 @@ pub enum ResolvedPortCommand {
 }
 
 impl PortCommandPayload {
+    /// Maps input JSON fields to executable hardware operation variants.
     pub fn resolve(&self, max_speed: i32) -> Result<ResolvedPortCommand, String> {
         let stop_act = self.stop_action.clone().unwrap_or_else(|| "brake".into());
 
@@ -165,14 +169,17 @@ impl PortCommandPayload {
 pub const MOTOR_PORTS: [&str; 4] = ["A", "B", "C", "D"];
 pub const SENSOR_PORTS: [&str; 4] = ["1", "2", "3", "4"];
 
+/// Checks whether an identifier denotes an actuator output channel.
 pub fn is_motor_port(port: &str) -> bool {
     MOTOR_PORTS.iter().any(|p| p.eq_ignore_ascii_case(port))
 }
 
+/// Checks whether an identifier denotes a peripheral input channel.
 pub fn is_sensor_port(port: &str) -> bool {
     SENSOR_PORTS.iter().any(|p| p.eq_ignore_ascii_case(port))
 }
 
+/// Extracts actuator socket letter from kernel path text.
 pub fn parse_motor_address(address: &str) -> Option<&'static str> {
     let clean = address.trim().to_ascii_uppercase();
     if clean.contains("OUTA") || clean.ends_with(":A") {
@@ -188,6 +195,7 @@ pub fn parse_motor_address(address: &str) -> Option<&'static str> {
     }
 }
 
+/// Extracts input channel index from kernel path text.
 pub fn parse_sensor_address(address: &str) -> Option<&'static str> {
     let clean = address.trim().to_ascii_uppercase();
     if clean.contains("IN1") || clean.ends_with(":1") || clean.ends_with(":IN1") {
@@ -203,6 +211,7 @@ pub fn parse_sensor_address(address: &str) -> Option<&'static str> {
     }
 }
 
+/// Converts mixed-case socket aliases into canonical uppercase tokens.
 pub fn normalize_port_name(port: &str) -> Option<String> {
     let clean = port.trim().to_ascii_uppercase();
     match clean.as_str() {
@@ -231,6 +240,7 @@ pub struct SensorStatus {
 }
 
 impl SensorStatus {
+    /// Generates offline placeholder representation for unlinked input.
     pub fn disconnected(port: &str) -> Self {
         Self {
             port: port.to_string(),
@@ -261,6 +271,7 @@ pub struct ApiResponse<T: Serialize> {
 }
 
 impl<T: Serialize> ApiResponse<T> {
+    /// Wraps successful computation results into standard transport envelope.
     pub fn ok(data: T) -> Self {
         Self {
             success: true,
@@ -269,6 +280,7 @@ impl<T: Serialize> ApiResponse<T> {
         }
     }
 
+    /// Wraps failure diagnostics into standard transport envelope.
     pub fn err(message: impl Into<String>) -> Self {
         Self {
             success: false,
@@ -282,6 +294,7 @@ impl<T: Serialize> ApiResponse<T> {
 mod tests {
     use super::*;
 
+    // Verifies alias resolution maps uppercase and prefixed inputs correctly.
     #[test]
     fn test_normalize_port_name() {
         assert_eq!(normalize_port_name("a"), Some("A".into()));
@@ -296,6 +309,7 @@ mod tests {
         assert_eq!(normalize_port_name("outE"), None);
     }
 
+    // Asserts partial payloads map to expected execution variants.
     #[test]
     fn test_resolve_inferred_commands() {
         // 1. Inferred RunForever from integer speed

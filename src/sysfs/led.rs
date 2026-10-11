@@ -20,10 +20,12 @@ impl LedController {
     const RIGHT_RED: &'static str = "/sys/class/leds/led1:red:brick-status/brightness";
     const RIGHT_GREEN: &'static str = "/sys/class/leds/led1:green:brick-status/brightness";
 
+    /// Instantiates status indicator interface with simulation settings.
     pub fn new(mock_mode: bool) -> Self {
         Self { mock_mode }
     }
 
+    /// Adjusts dual optical elements on brick chassis.
     #[allow(dead_code)]
     pub fn set(&self, left: LedColor, right: LedColor) {
         if self.mock_mode {
@@ -40,23 +42,28 @@ impl LedController {
         Self::write_sysfs(Self::RIGHT_GREEN, right_g);
     }
 
+    /// Signals boot initialization sequence using amber illumination.
     pub fn set_starting(&self) {
         self.set(LedColor::Amber, LedColor::Amber);
     }
 
+    /// Illuminates green to confirm operational server availability.
     pub fn set_ready(&self) {
         self.set(LedColor::Green, LedColor::Green);
     }
 
+    /// Illuminates crimson to indicate critical runtime or bind faults.
     pub fn set_error(&self) {
         self.set(LedColor::Red, LedColor::Red);
     }
 
+    /// Extinguishes all chassis optical indicators.
     #[allow(dead_code)]
     pub fn set_off(&self) {
         self.set(LedColor::Off, LedColor::Off);
     }
 
+    // Translates high-level chromatic state into dual brightness levels.
     fn color_to_values(color: LedColor) -> (u8, u8) {
         match color {
             LedColor::Off => (0, 0),
@@ -66,11 +73,20 @@ impl LedController {
         }
     }
 
+    // Disables kernel triggers before updating intensity levels.
     fn write_sysfs(path_str: &str, value: u8) {
         let path = Path::new(path_str);
         if !path.exists() {
             // Path does not exist on non-EV3 hardware or simulation host
             return;
+        }
+
+        // Clears kernel trigger so direct brightness writes work (BUG-42).
+        let trigger_path = path.with_file_name("trigger");
+        if trigger_path.exists() {
+            if let Err(e) = fs::write(&trigger_path, "none\n") {
+                eprintln!("[WARN] Failed to write LED trigger to {:?}: {}", trigger_path, e);
+            }
         }
 
         let val_str = format!("{}\n", value);
@@ -84,6 +100,7 @@ impl LedController {
 mod tests {
     use super::*;
 
+    // Validates numeric intensity mappings across chromatic enum variants.
     #[test]
     fn test_led_color_values() {
         assert_eq!(LedController::color_to_values(LedColor::Off), (0, 0));
@@ -92,6 +109,7 @@ mod tests {
         assert_eq!(LedController::color_to_values(LedColor::Amber), (255, 255));
     }
 
+    // Verifies virtual state transitions execute safely without filesystem.
     #[test]
     fn test_mock_led_controller() {
         let leds = LedController::new(true);
@@ -99,5 +117,25 @@ mod tests {
         leds.set_ready();
         leds.set_error();
         leds.set_off();
+    }
+
+    // Confirms kernel unbind directives precede hardware level mutation.
+    #[test]
+    fn test_write_sysfs_clears_trigger_and_sets_brightness() {
+        let temp_dir = std::env::temp_dir().join(format!("test_ev3_led_{}", std::process::id()));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let brightness_path = temp_dir.join("brightness");
+        let trigger_path = temp_dir.join("trigger");
+
+        fs::write(&brightness_path, "0\n").unwrap();
+        fs::write(&trigger_path, "heartbeat\n").unwrap();
+
+        LedController::write_sysfs(brightness_path.to_str().unwrap(), 255);
+
+        assert_eq!(fs::read_to_string(&trigger_path).unwrap(), "none\n");
+        assert_eq!(fs::read_to_string(&brightness_path).unwrap(), "255\n");
+
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 }

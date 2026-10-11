@@ -25,7 +25,7 @@ impl WifiManager {
         "/home/robot/wifi.txt",
     ];
 
-    /// Find and parse wifi.txt from candidate paths
+    /// Discovers setup text files across candidate system storage paths.
     pub fn find_wifi_credentials() -> Result<Option<WifiCredentials>, WifiError> {
         for path_str in Self::CANDIDATE_PATHS {
             let p = Path::new(path_str);
@@ -47,7 +47,7 @@ impl WifiManager {
         Ok(None)
     }
 
-    /// Parse 2 lines: line 1 = SSID, line 2 = Password
+    /// Extracts network identification and secret from configuration lines.
     pub fn parse_credentials(content: &str) -> Option<(String, String)> {
         let mut lines = content.lines().map(|l| l.trim()).filter(|l| !l.is_empty());
         let ssid = lines.next()?.to_string();
@@ -58,7 +58,7 @@ impl WifiManager {
         Some((ssid, pass))
     }
 
-    /// Check for wifi.txt and provision if present
+    /// Configures network daemon when setup instructions are discovered.
     pub fn auto_provision(mock_mode: bool) -> WifiProvisionResult {
         let (path, ssid, pass) = match Self::find_wifi_credentials() {
             Ok(Some(creds)) => creds,
@@ -92,6 +92,7 @@ impl WifiManager {
         }
     }
 
+    /// Generates structured network daemon service declaration text.
     pub fn format_connman_config(ssid: &str, pass: &str) -> String {
         format!(
             "[global]\nName = EV3_WiFi\nDescription = EV3 Auto-Connect Wi-Fi\n\n[service_ev3_wifi]\nType = wifi\nName = {}\nPassphrase = {}\nIPv4 = dhcp\nAutoConnect = true\n",
@@ -99,6 +100,7 @@ impl WifiManager {
         )
     }
 
+    /// Persists network settings to daemon storage with restricted chmod.
     pub fn write_connman_config(ssid: &str, pass: &str) -> std::io::Result<()> {
         let config_dir = Path::new("/var/lib/connman");
         if !config_dir.exists() {
@@ -125,6 +127,7 @@ impl WifiManager {
 mod tests {
     use super::*;
 
+    // Verifies extraction accepts correct two-line network token pairs.
     #[test]
     fn test_parse_credentials_valid() {
         let content = "MyHomeNetwork\nSecretPassword123\n";
@@ -135,6 +138,7 @@ mod tests {
         );
     }
 
+    // Asserts DOS newline delimiters are trimmed without corrupting tokens.
     #[test]
     fn test_parse_credentials_windows_crlf() {
         let content = "Office_WiFi\r\nSuperSecretPass!\r\n";
@@ -145,6 +149,7 @@ mod tests {
         );
     }
 
+    // Ensures short or blank secrets are rejected during token validation.
     #[test]
     fn test_parse_credentials_invalid_pass_length() {
         // Less than 8 characters
@@ -156,6 +161,7 @@ mod tests {
         assert_eq!(WifiManager::parse_credentials(content), None);
     }
 
+    // Checks generated INI output contains required daemon service keys.
     #[test]
     fn test_format_connman_config() {
         let config = WifiManager::format_connman_config("TestNetwork", "Password123");

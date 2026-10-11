@@ -20,6 +20,7 @@ pub struct MotorStatus {
 }
 
 impl MotorStatus {
+    /// Generates an offline placeholder state for an unlinked channel.
     pub fn disconnected(port: &str) -> Self {
         Self {
             port: port.to_string(),
@@ -46,6 +47,7 @@ struct CachedMotorFiles {
 }
 
 impl CachedMotorFiles {
+    // Reuses open descriptors to sample sysfs files without reopening.
     fn read_attr_buffered(file_opt: &mut Option<File>, path: &Path, buf: &mut [u8]) -> io::Result<usize> {
         if file_opt.is_none() {
             *file_opt = Some(File::open(path)?);
@@ -86,12 +88,12 @@ pub struct Motor {
 }
 
 impl Motor {
-    /// Enumerate all connected motors from `/sys/class/tacho-motor/`
+    /// Scans standard Linux kernel classes for available actuators.
     pub fn find_all() -> Vec<Motor> {
         Self::find_all_in(Path::new("/sys/class/tacho-motor"))
     }
 
-    /// Enumerate connected motors from a specified base path (for testing and hardware)
+    /// Discovers and validates actuator sysfs trees under a designated root.
     pub fn find_all_in(base_path: &Path) -> Vec<Motor> {
         let mut motors = Vec::new();
         if !base_path.exists() {
@@ -142,36 +144,44 @@ impl Motor {
         motors
     }
 
+    /// Obtains currently synchronized directional rotation configuration.
     pub fn polarity(&self) -> String {
         self.polarity.lock().map(|g| g.clone()).unwrap_or_else(|_| "normal".into())
     }
 
+    /// Writes clamped velocity target values to the kernel interface.
     pub fn set_speed_sp(&self, speed: i32) -> io::Result<()> {
         let clamped = speed.clamp(-self.max_speed, self.max_speed);
         self.write_attr("speed_sp", &clamped.to_string())
     }
 
+    /// Configures pulse-width modulation limits on the output driver.
     pub fn set_duty_cycle_sp(&self, duty: i32) -> io::Result<()> {
         let clamped = duty.clamp(-100, 100);
         self.write_attr("duty_cycle_sp", &clamped.to_string())
     }
 
+    /// Commits angular step displacement goals into the kernel node.
     pub fn set_position_sp(&self, pos: i32) -> io::Result<()> {
         self.write_attr("position_sp", &pos.to_string())
     }
 
+    /// Designates active rotation durations for timed kinematic cycles.
     pub fn set_time_sp(&self, ms: u32) -> io::Result<()> {
         self.write_attr("time_sp", &ms.to_string())
     }
 
+    /// Assigns the terminal deceleration behavior upon motion completion.
     pub fn set_stop_action(&self, action: &str) -> io::Result<()> {
         self.write_attr("stop_action", action)
     }
 
+    /// Dispatches operational directives to trigger driver execution.
     pub fn send_command(&self, cmd: &str) -> io::Result<()> {
         self.write_attr("command", cmd)
     }
 
+    /// Flips rotational sign conventions across hardware registers.
     pub fn set_polarity(&self, polarity: &str) -> io::Result<()> {
         let val = if polarity == "inversed" { "inversed" } else { "normal" };
         self.write_attr("polarity", val)?;
@@ -181,7 +191,7 @@ impl Motor {
         Ok(())
     }
 
-    /// Read dynamic telemetry using persistent open file descriptors and stack buffers (BUG-15)
+    /// Ingests live telemetry metrics using cached descriptors and buffers.
     pub fn poll_dynamic_status(&self) -> Option<MotorStatus> {
         if !self.sysfs_path.exists() {
             return None;
@@ -251,6 +261,7 @@ impl Motor {
         })
     }
 
+    /// Returns current measurements with safe fallback upon disconnects.
     pub fn read_status(&self) -> MotorStatus {
         self.poll_dynamic_status().unwrap_or_else(|| MotorStatus {
             port: self.port.clone(),
@@ -267,6 +278,7 @@ impl Motor {
         })
     }
 
+    /// Dispatches string payloads into designated kernel file paths.
     fn write_attr(&self, attr: &str, val: &str) -> io::Result<()> {
         let path = self.sysfs_path.join(attr);
         let mut file = OpenOptions::new().write(true).open(&path)?;
@@ -279,6 +291,7 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    // Constructs isolated scratch filesystem trees for hardware mocks.
     fn make_test_dir(name: &str) -> PathBuf {
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let p = std::env::temp_dir().join(format!("ev3_test_{}_{}", name, nanos));
@@ -287,6 +300,7 @@ mod tests {
         p
     }
 
+    // Verifies tree inspection identifies valid hardware ports correctly.
     #[test]
     fn test_real_motor_discovery_and_address_parsing() {
         let root = make_test_dir("discovery");
@@ -327,6 +341,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    // Asserts velocity thresholds truncate out-of-range register writes.
     #[test]
     fn test_real_motor_clamping_and_commands() {
         let root = make_test_dir("commands");
@@ -374,6 +389,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    // Confirms telemetry cache refreshes while unlinking cleanly on unplug.
     #[test]
     fn test_real_motor_dynamic_polling_and_disconnected() {
         let root = make_test_dir("polling");
