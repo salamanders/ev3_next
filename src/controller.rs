@@ -341,6 +341,17 @@ impl MotorController {
             .ok_or_else(|| format!("Port '{}' not found", port))
     }
 
+    /// Determines velocity ceiling from channel telemetry with safe fallback.
+    pub fn resolve_max_speed(&self, port: &str) -> i32 {
+        if is_motor_port(port) {
+            self.get_port_motor_status(port)
+                .map(|s| s.max_speed)
+                .unwrap_or(1050)
+        } else {
+            1050
+        }
+    }
+
     /// Resolves telemetry for either input or output channels dynamically.
     pub fn get_port_status(&self, port: &str) -> Result<serde_json::Value, String> {
         if is_motor_port(port) {
@@ -604,12 +615,6 @@ impl MotorController {
         Ok(())
     }
 
-    /// Translates differential steering velocities to dual actuator channels.
-    #[allow(dead_code)]
-    pub fn tank_drive(&self, left_port: &str, right_port: &str, left_speed: i32, right_speed: i32) -> Result<(), String> {
-        self.joystick_drive(left_port, right_port, left_speed, right_speed, Some("brake"))
-    }
-
     /// Applies multi-channel instructions with an atomic heartbeat watchdog.
     pub fn execute_batch(&self, batch: &BatchCommandPayload) -> Result<Vec<String>, String> {
         let mut results = Vec::new();
@@ -619,13 +624,7 @@ impl MotorController {
         for item in &batch.commands {
             let norm_port = normalize_port_name(&item.port)
                 .ok_or_else(|| format!("Invalid port '{}'", item.port))?;
-            let max_speed = if is_motor_port(&norm_port) {
-                self.get_port_motor_status(&norm_port)
-                    .map(|s| s.max_speed)
-                    .unwrap_or(1050)
-            } else {
-                1050
-            };
+            let max_speed = self.resolve_max_speed(&norm_port);
             let resolved = item.payload.resolve(max_speed)?;
             let msg = self.execute_port_command(&norm_port, &resolved)?;
             results.push(msg);
@@ -726,8 +725,8 @@ mod tests {
     #[test]
     fn test_tank_drive_watchdog_timeout() {
         let controller = MotorController::new(true, 15);
-        // Start tank drive
-        controller.tank_drive("B", "C", 500, 500).unwrap();
+        // Start dual-motor drive
+        controller.joystick_drive("B", "C", 500, 500, Some("brake")).unwrap();
         thread::sleep(Duration::from_millis(40));
 
         // Immediately check: motors B and C should be running

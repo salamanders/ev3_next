@@ -94,7 +94,8 @@ body {
     border-radius: 50%;
 }
 
-.badge-connected {
+.badge-connected,
+.badge-running {
     background-color: rgba(16, 185, 129, 0.2);
     color: #34d399;
 }
@@ -109,11 +110,6 @@ body {
 .badge-ready {
     background-color: rgba(59, 130, 246, 0.2);
     color: #60a5fa;
-}
-
-.badge-running {
-    background-color: rgba(16, 185, 129, 0.2);
-    color: #34d399;
 }
 
 .badge-info {

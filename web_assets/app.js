@@ -3,8 +3,18 @@
  * Enforces strict single-responsibility boundaries, zero duplication, and ES2025+ standards.
  */
 
+// Translates component category keys to presentation title strings.
+const TYPE_LABELS = { joystick: "Joystick", slider: "Slider", button: "Button", sensor: "Sensor" };
+
 // Restricts numeric magnitude between lower and upper bounds.
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+
+// Extracts unique active actuator sockets assigned to directional axes.
+function getJoystickPorts(w) {
+    return !w.multiMotor
+        ? [w.xPort, w.yPort]
+        : [...new Set([...(w.xMotors ?? []).map(m => m.port), ...(w.yMotors ?? []).map(m => m.port)])];
+}
 
 // Maps planar displacement vectors to multi-channel velocity setpoints.
 function calculateJoystickCommands(w, normX, normY, maxSpeed = 1000) {
@@ -30,11 +40,7 @@ function calculateJoystickCommands(w, normX, normY, maxSpeed = 1000) {
 // Generates zero-velocity brake targets across all configured channels.
 function getJoystickStopCommands(w) {
     const stopAction = w.stopAction || "brake";
-    const ports = !w.multiMotor
-        ? [w.xPort, w.yPort]
-        : [...new Set([...(w.xMotors ?? []).map(m => m.port), ...(w.yMotors ?? []).map(m => m.port)])];
-
-    return ports.map(port => ({ port, speed: 0, stop_action: stopAction }));
+    return getJoystickPorts(w).map(port => ({ port, speed: 0, stop_action: stopAction }));
 }
 
 class EV3App {
@@ -382,7 +388,6 @@ class EV3App {
 
     // Formats editable inputs and settings markup for an item.
     renderDesignCard(w) {
-        const typeLabels = { joystick: "Joystick", slider: "Slider", button: "Button", sensor: "Sensor" };
         let fields = "";
 
         if (w.type === "joystick") {
@@ -495,7 +500,7 @@ class EV3App {
             <div class="design-card" id="card-${w.id}">
                 <div class="design-card-header">
                     <div class="design-card-title">
-                        <span>${typeLabels[w.type] ?? w.type}</span>
+                        <span>${TYPE_LABELS[w.type] ?? w.type}</span>
                     </div>
                     <button class="btn btn-sm btn-danger btn-remove" data-id="${w.id}">Remove</button>
                 </div>
@@ -665,8 +670,7 @@ class EV3App {
     renderRunCard(w) {
         const sizeClass = w.type === "joystick" ? "run-card-2x2" : "run-card-2x1";
         const portBadge = w.type === "joystick" ? this.joystickPortBadge(w) : `Port ${w.port}`;
-        const typeLabels = { joystick: "Joystick", slider: "Slider", button: "Button", sensor: "Sensor" };
-        const cardTitle = typeLabels[w.type] ?? w.type;
+        const cardTitle = TYPE_LABELS[w.type] ?? w.type;
         const portAttr = (w.type === "slider" || w.type === "button")
             ? `data-motor-port="${w.port}"`
             : (w.type === "sensor" ? `data-sensor-port="${w.port}"` : "");
@@ -967,32 +971,34 @@ class EV3App {
         }).join("");
     }
 
+    // Updates bottom metadata text across items matching a designated port.
+    updateCardFooters(attr, devices, formatText) {
+        document.querySelectorAll(`.run-card[${attr}]`).forEach(card => {
+            const port = card.getAttribute(attr);
+            const dev = devices.find(x => x.port === port);
+            const text = (!dev || !dev.connected) ? "Disconnected" : formatText(dev);
+            card.querySelectorAll(".run-card-footer").forEach(el => {
+                el.textContent = text;
+            });
+        });
+    }
+
     // Displays numeric metric values and driver metadata on cards.
     updateSensorReadouts(sensors) {
         document.querySelectorAll(".run-card[data-sensor-port]").forEach(card => {
             const port = card.getAttribute("data-sensor-port");
             const s = sensors.find(x => x.port === port);
-            const val = s?.value0 ?? s?.value;
+            const val = (s && s.connected) ? (s.value0 ?? s.value ?? "--") : "--";
             card.querySelectorAll(`.sensor-display-val[data-sensor-port="${port}"]`).forEach(readout => {
-                readout.textContent = (s && s.connected && val !== undefined) ? val : "--";
-            });
-            card.querySelectorAll(".run-card-footer").forEach(cardFooter => {
-                cardFooter.textContent = (s && s.connected) ? `${s.driver_name} (${s.mode})` : "Disconnected";
+                readout.textContent = val;
             });
         });
+        this.updateCardFooters("data-sensor-port", sensors, s => `${s.driver_name} (${s.mode})`);
     }
 
     // Synchronizes action widget footers with hardware link states.
     updateMotorCardStatus(motors) {
-        document.querySelectorAll(".run-card[data-motor-port]").forEach(card => {
-            const port = card.getAttribute("data-motor-port");
-            const m = motors.find(x => x.port === port);
-            card.querySelectorAll(".run-card-footer").forEach(cardFooter => {
-                cardFooter.textContent = (!m || !m.connected)
-                    ? "Disconnected"
-                    : (m.state?.length ? m.state.join(", ") : "Ready");
-            });
-        });
+        this.updateCardFooters("data-motor-port", motors, m => m.state?.length ? m.state.join(", ") : "Ready");
     }
 
     // Records timestamped diagnostic entries in the event console.

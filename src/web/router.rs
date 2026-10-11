@@ -311,37 +311,17 @@ impl Router {
         }
     }
 
-    // Evaluates velocity limits and sends hardware actuation instructions.
-    fn dispatch_port_command(&self, request: Request, port_str: &str, payload: PortCommandPayload) {
-        let normalized = match normalize_port_name(port_str) {
+    // Decodes transport payload and dispatches instructions to hardware.
+    fn handle_port_post(&self, mut request: Request, path: &str) {
+        let raw_port = path.trim_start_matches("/api/port/");
+        let normalized = match normalize_port_name(raw_port) {
             Some(p) => p,
             None => {
-                self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(format!("Invalid port: '{}'", port_str)));
+                self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(format!("Invalid port: '{}'", raw_port)));
                 return;
             }
         };
 
-        let max_speed = if is_motor_port(&normalized) {
-            self.controller
-                .get_port_motor_status(&normalized)
-                .map(|s| s.max_speed)
-                .unwrap_or(1050)
-        } else {
-            1050
-        };
-
-        match payload.resolve(max_speed) {
-            Ok(cmd) => match self.controller.execute_port_command(&normalized, &cmd) {
-                Ok(msg) => self.respond_json(request, StatusCode(200), &ApiResponse::ok(msg)),
-                Err(e) => self.respond_json(request, StatusCode(500), &ApiResponse::<()>::err(e)),
-            },
-            Err(e) => self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(e)),
-        }
-    }
-
-    // Extracts incoming JSON body before delegating channel actuation.
-    fn handle_port_post(&self, mut request: Request, path: &str) {
-        let raw_port = path.trim_start_matches("/api/port/");
         let payload = match self.read_json_body::<PortCommandPayload>(&mut request) {
             Ok(p) => p,
             Err(e) => {
@@ -349,7 +329,15 @@ impl Router {
                 return;
             }
         };
-        self.dispatch_port_command(request, raw_port, payload);
+
+        let max_speed = self.controller.resolve_max_speed(&normalized);
+        match payload.resolve(max_speed) {
+            Ok(cmd) => match self.controller.execute_port_command(&normalized, &cmd) {
+                Ok(msg) => self.respond_json(request, StatusCode(200), &ApiResponse::ok(msg)),
+                Err(e) => self.respond_json(request, StatusCode(500), &ApiResponse::<()>::err(e)),
+            },
+            Err(e) => self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(e)),
+        }
     }
 
     // Deserializes size-bounded incoming stream payloads into concrete types.
