@@ -3,28 +3,23 @@
   "widgets": {
     "joystick": {
       "version": "1.0.0",
-      "timestamp": 1728670000,
-      "files": ["widget.js"]
+      "timestamp": 1728670000
     },
     "tank": {
       "version": "1.0.0",
-      "timestamp": 1728670000,
-      "files": ["widget.js"]
+      "timestamp": 1728670000
     },
     "slider": {
       "version": "1.0.0",
-      "timestamp": 1728670000,
-      "files": ["widget.js"]
+      "timestamp": 1728670000
     },
     "button": {
       "version": "1.0.0",
-      "timestamp": 1728670000,
-      "files": ["widget.js"]
+      "timestamp": 1728670000
     },
     "sensor": {
       "version": "1.0.0",
-      "timestamp": 1728670000,
-      "files": ["widget.js"]
+      "timestamp": 1728670000
     }
   }
 }

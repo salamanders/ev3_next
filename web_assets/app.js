@@ -94,6 +94,12 @@ class EV3App {
         await this.registry.init();
         await this.registry.loadActive(this.widgets.map(w => w.type));
 
+        // Ensure default properties are populated from widget module definitions
+        this.widgets = this.widgets.map(w => {
+            const def = this.registry.get(w.type);
+            return def?.createDefault ? { ...def.createDefault(w.id), ...w } : w;
+        });
+
         if (this.isDesignView) {
             await this.registry.loadAll();
             this.renderHardwarePanel();
@@ -111,52 +117,8 @@ class EV3App {
             if (raw) {
                 const parsed = JSON.parse(raw);
                 if (Array.isArray(parsed) && parsed.length > 0) {
-                    const parseMotors = (motors, fallbackPort) => Array.isArray(motors)
-                        ? motors.map(m => ({
-                            port: String(m.port).trim().toUpperCase(),
-                            invert: !!m.invert
-                        }))
-                        : [{ port: fallbackPort, invert: false }];
-
-                    this.widgets = parsed.map(w => {
-                        const base = { id: w.id, type: w.type };
-                        if (w.type === "joystick") {
-                            const xPort = String(w.xPort ?? w.leftPort ?? "B").trim().toUpperCase();
-                            const yPort = String(w.yPort ?? w.rightPort ?? "C").trim().toUpperCase();
-                            return {
-                                ...base,
-                                xPort,
-                                yPort,
-                                stopAction: w.stopAction ?? "brake",
-                                multiMotor: !!w.multiMotor,
-                                xMotors: parseMotors(w.xMotors, xPort),
-                                yMotors: parseMotors(w.yMotors, yPort)
-                            };
-                        }
-                        if (w.type === "tank") {
-                            return {
-                                ...base,
-                                leftPort: String(w.leftPort ?? "B").trim().toUpperCase(),
-                                rightPort: String(w.rightPort ?? "C").trim().toUpperCase(),
-                                stopAction: w.stopAction ?? "brake"
-                            };
-                        }
-                        if (w.type === "slider") return { ...base, port: w.port ?? "A" };
-                        if (w.type === "button") return {
-                            ...base,
-                            port: w.port ?? "A",
-                            action: w.action ?? "momentary",
-                            degrees: w.degrees ?? 90
-                        };
-                        if (w.type === "sensor") return {
-                            ...base,
-                            port: w.port ?? "1",
-                            mode: w.mode ?? "TOUCH"
-                        };
-                        return { ...w };
-                    });
-                    this.saveWidgets();
-                    return;
+                    this.widgets = parsed.filter(w => w && w.id && w.type);
+                    if (this.widgets.length > 0) return;
                 }
             }
         } catch (_) {}

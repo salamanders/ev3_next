@@ -100,11 +100,11 @@ fn main() {
     if config.mock_mode {
         println!("[WIDGETS] Mock mode active: background updater disabled.");
     } else {
-        updater::start_background_updater(manifest_url, widgets_dir, 10);
+        updater::start_background_updater(manifest_url, widgets_dir, 5);
     }
 
     // Worker pool servicing requests concurrently on ARM/Host.
-    let num_workers = 2;
+    let num_workers = 4;
     let mut handles = Vec::new();
 
     for worker_id in 0..num_workers {

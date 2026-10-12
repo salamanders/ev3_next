@@ -53,35 +53,26 @@ To prevent runaway robots when network connections drop:
 
 ---
 
-## 4. Self-Updating Web Asset Pipeline
+## 4. Web Asset Delivery & Dynamic Widget Updater
 
-The web dashboard updates automatically from the Git repository on boot without requiring SD card re-flashing or binary updates.
+Static assets (`index.html`, `design.html`, `style.css`, `app.js`) are served directly from RAM without disk access or compression overhead. Modular widgets are delivered from disk if present or from embedded RAM baseline.
 
+### Static Asset Serving:
 ```
-[ Power On / Boot ]
+[ HTTP Client Request ]
          │
-         ▼
-[ ev3-update-assets.service ]
+         ├─► Core Pages (/, /run, /design, /style.css, /app.js) ──► Serve directly from RAM
          │
-         ├─► [ Check GitHub API for latest commit SHA ]
-         │       │
-         │       ├─► (No change or offline): Exit cleanly
-         │       │
-         │       └─► (New commit found):
-         │               ├─ Download index.html, style.css, app.js
-         │               ├─ Pre-compress with gzip -9 into /tmp
-         │               ├─ Atomically move to /home/robot/web_assets/
-         │               └─ Restart ev3-web.service
-         ▼
-[ ev3-web-motor Server Start ]
-         │
-         ├─► Load /home/robot/web_assets/*.gz into RAM (~12 KB)
-         │
-         └─► (If missing/corrupted): Restore compile-time embedded baseline
+         └─► Widget Files (/widgets/{widget}/widget.js)
+                 │
+                 ├─► Disk file exists (/home/robot/web_assets/widgets/...) ──► Serve uncompressed file
+                 │
+                 └─► Disk file absent ──► Serve embedded compile-time baseline from RAM
 ```
 
-- **Zero SD Card Wear:** The server loads pre-compressed `.gz` files into RAM once at startup. HTTP requests serve directly from memory with `Content-Encoding: gzip`.
-- **Self-Healing Fallback:** The binary includes baseline assets compiled in via `include_bytes!`. If local files are damaged or missing, the server writes and serves the baseline automatically.
+- **RAM Asset Delivery:** Core web assets are compiled into the binary (`include_bytes!`) and served directly from RAM without disk I/O or gzip overhead.
+- **Single-File Widget Architecture:** Each dynamic widget consists of a single `widget.js` file.
+- **Background Widget Updater:** `src/updater.rs` performs a single non-blocking check on startup with a 5-second timeout. If the network is available, it compares remote widget manifests and downloads updated `widget.js` files atomically to `/home/robot/web_assets/widgets/<name>/`.
 
 ---
 

@@ -128,20 +128,9 @@ impl Motor {
         self.write_attr("speed_sp", &clamped.to_string())
     }
 
-    /// Configures pulse-width modulation limits on the output driver.
-    pub fn set_duty_cycle_sp(&self, duty: i32) -> io::Result<()> {
-        let clamped = duty.clamp(-100, 100);
-        self.write_attr("duty_cycle_sp", &clamped.to_string())
-    }
-
     /// Commits angular step displacement goals into the kernel node.
     pub fn set_position_sp(&self, pos: i32) -> io::Result<()> {
         self.write_attr("position_sp", &pos.to_string())
-    }
-
-    /// Designates active rotation durations for timed kinematic cycles.
-    pub fn set_time_sp(&self, ms: u32) -> io::Result<()> {
-        self.write_attr("time_sp", &ms.to_string())
     }
 
     /// Assigns the terminal deceleration behavior upon motion completion.
@@ -152,16 +141,6 @@ impl Motor {
     /// Dispatches operational directives to trigger driver execution.
     pub fn send_command(&self, cmd: &str) -> io::Result<()> {
         self.write_attr("command", cmd)
-    }
-
-    /// Flips rotational sign conventions across hardware registers.
-    pub fn set_polarity(&self, polarity: &str) -> io::Result<()> {
-        let val = if polarity == "inversed" { "inversed" } else { "normal" };
-        self.write_attr("polarity", val)?;
-        if let Ok(mut st) = self.state.lock() {
-            st.polarity = val.to_string();
-        }
-        Ok(())
     }
 
     // Deserializes signed integer attribute from buffered descriptor.
@@ -305,7 +284,7 @@ mod tests {
 
         // Attribute files for writing
         fs::write(m.join("speed_sp"), "0\n").unwrap();
-        fs::write(m.join("duty_cycle_sp"), "0\n").unwrap();
+        fs::write(m.join("position_sp"), "0\n").unwrap();
         fs::write(m.join("command"), "\n").unwrap();
         fs::write(m.join("polarity"), "normal\n").unwrap();
 
@@ -323,21 +302,15 @@ mod tests {
         let speed_sp_neg = fs::read_to_string(m.join("speed_sp")).unwrap();
         assert_eq!(speed_sp_neg.trim(), "-1000");
 
-        // Clamping duty cycle
-        motor.set_duty_cycle_sp(150).unwrap();
-        let duty_sp = fs::read_to_string(m.join("duty_cycle_sp")).unwrap();
-        assert_eq!(duty_sp.trim(), "100");
+        // Position setpoint write
+        motor.set_position_sp(360).unwrap();
+        let pos_sp = fs::read_to_string(m.join("position_sp")).unwrap();
+        assert_eq!(pos_sp.trim(), "360");
 
         // Command write
         motor.send_command("run-forever").unwrap();
         let cmd = fs::read_to_string(m.join("command")).unwrap();
         assert_eq!(cmd.trim(), "run-forever");
-
-        // Polarity write
-        motor.set_polarity("inversed").unwrap();
-        let pol = fs::read_to_string(m.join("polarity")).unwrap();
-        assert_eq!(pol.trim(), "inversed");
-        assert_eq!(motor.polarity(), "inversed");
 
         let _ = fs::remove_dir_all(&root);
     }

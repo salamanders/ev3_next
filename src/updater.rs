@@ -12,15 +12,13 @@ pub struct WidgetManifest {
     pub widgets: HashMap<String, WidgetEntry>,
 }
 
-/// Metadata entry describing asset files for a single component.
+/// Metadata entry describing a single component.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WidgetEntry {
     #[serde(default)]
     pub version: String,
     #[serde(default)]
     pub timestamp: u64,
-    #[serde(default)]
-    pub files: Vec<String>,
 }
 
 /// Result tally capturing changed packages and transfer diagnostics.
@@ -142,76 +140,38 @@ pub fn check_and_update_widgets(
         let should_update = match modified_manifest.widgets.get(widget_name) {
             Some(local_entry) => {
                 remote_entry.timestamp > local_entry.timestamp
-                    || remote_entry.files.iter().any(|f| {
-                        let plain = widgets_dir.join(widget_name).join(f);
-                        let gz = widgets_dir.join(widget_name).join(format!("{}.gz", f));
-                        let rel = format!("{}/{}", widget_name, f);
+                    || {
+                        let plain = widgets_dir.join(widget_name).join("widget.js");
+                        let rel = format!("{}/widget.js", widget_name);
                         let in_baseline = crate::web::router::BASELINE_WIDGETS.iter().any(|e| e.relative_path == rel);
-                        !plain.is_file() && !gz.is_file() && !in_baseline
-                    })
+                        !plain.is_file() && !in_baseline
+                    }
             }
             None => true,
         };
 
         if should_update {
-            let files = if remote_entry.files.is_empty() {
-                vec!["widget.js".to_string()]
-            } else {
-                remote_entry.files.clone()
-            };
-
-            let mut all_files_valid = true;
-            for file in &files {
-                if !is_safe_component_name(file) {
-                    all_files_valid = false;
-                    result.errors.push(format!("Unsafe file name in widget '{}': '{}'", widget_name, file));
-                    break;
-                }
-            }
-            if !all_files_valid {
-                continue;
-            }
-
             let widget_target_dir = widgets_dir.join(widget_name);
             let _ = std::fs::create_dir_all(&widget_target_dir);
 
-            let mut staged_downloads = Vec::new();
-            let mut widget_download_ok = true;
+            let file_url = format!("{}/{}/widget.js", base_url, widget_name);
+            let final_path = widget_target_dir.join("widget.js");
+            let staged_path = widget_target_dir.join("widget.js.tmp");
 
-            for file in &files {
-                let file_url = format!("{}/{}/{}", base_url, widget_name, file);
-                let final_path = widget_target_dir.join(file);
-                let staged_path = widget_target_dir.join(format!("{}.tmp_stage", file));
-
-                match download_file(&file_url, &staged_path, timeout_secs) {
-                    Ok(()) => {
-                        staged_downloads.push((staged_path, final_path));
-                    }
-                    Err(e) => {
-                        widget_download_ok = false;
-                        result.errors.push(e);
-                        break;
-                    }
-                }
-            }
-
-            if widget_download_ok {
-                for (staged, final_path) in staged_downloads {
-                    if let Err(e) = std::fs::rename(&staged, &final_path) {
+            match download_file(&file_url, &staged_path, timeout_secs) {
+                Ok(()) => {
+                    if let Err(e) = std::fs::rename(&staged_path, &final_path) {
                         result.errors.push(format!("Failed promoting staged file: {}", e));
+                        let _ = std::fs::remove_file(&staged_path);
                     } else {
                         result.files_downloaded += 1;
-                        let gz_companion = PathBuf::from(format!("{}.gz", final_path.display()));
-                        if gz_companion.is_file() {
-                            let _ = std::fs::remove_file(gz_companion);
-                        }
+                        result.updated_count += 1;
+                        modified_manifest.widgets.insert(widget_name.clone(), remote_entry.clone());
                     }
                 }
-                modified_manifest.widgets.insert(widget_name.clone(), remote_entry.clone());
-                result.updated_count += 1;
-            } else {
-                for (staged, _) in staged_downloads {
-                    let _ = std::fs::remove_file(staged);
+                Err(e) => {
+                    result.errors.push(e);
+                    let _ = std::fs::remove_file(&staged_path);
                 }
             }
         }
@@ -239,8 +199,7 @@ pub fn start_background_updater(
         .name("widget-updater".into())
         .spawn(move || {
             let start = std::time::Instant::now();
-            let max_wait = std::time::Duration::from_secs(180);
-            let mut sleep_dur = std::time::Duration::from_secs(2);
+            let max_wait = std::time::Duration::from_secs(60);
             let mut connected = false;
 
             while start.elapsed() < max_wait {
@@ -253,12 +212,11 @@ pub fn start_background_updater(
                 if remaining.is_zero() {
                     break;
                 }
-                std::thread::sleep(sleep_dur.min(remaining));
-                sleep_dur = (sleep_dur * 2).min(std::time::Duration::from_secs(15));
+                std::thread::sleep(std::time::Duration::from_secs(2).min(remaining));
             }
 
             if !connected {
-                println!("[WIDGETS] Offline: no active network after 3 minutes. Serving local widgets.");
+                println!("[WIDGETS] Offline: no active network. Serving local widgets.");
                 return;
             }
 
@@ -294,7 +252,6 @@ mod tests {
         widgets.insert("joystick".into(), WidgetEntry {
             version: "1.2.0".into(),
             timestamp: 1728671111,
-            files: vec!["widget.js".into(), "widget.css".into()],
         });
 
         let manifest = WidgetManifest {
@@ -358,8 +315,7 @@ mod tests {
             "widgets": {
                 "joystick": {
                     "version": "1.0.0",
-                    "timestamp": 5000,
-                    "files": ["widget.js"]
+                    "timestamp": 5000
                 }
             }
         }"#;
@@ -374,8 +330,7 @@ mod tests {
             "widgets": {
                 "joystick": {
                     "version": "0.9.0",
-                    "timestamp": 4000,
-                    "files": ["widget.js"]
+                    "timestamp": 4000
                 }
             }
         }"#;
@@ -425,8 +380,7 @@ mod tests {
             "widgets": {
                 "joystick": {
                     "version": "1.0.0",
-                    "timestamp": 1000,
-                    "files": ["widget.js"]
+                    "timestamp": 1000
                 }
             }
         }"#;
@@ -444,8 +398,7 @@ mod tests {
             "widgets": {
                 "joystick": {
                     "version": "2.0.0",
-                    "timestamp": 2000,
-                    "files": ["widget.js"]
+                    "timestamp": 2000
                 }
             }
         }"#;
@@ -526,12 +479,10 @@ mod tests {
     }
 
     #[test]
-    fn test_transparent_route_serves_gzip_when_present_and_plain_when_not() {
+    fn test_transparent_route_serves_disk_plain_when_present_and_ram_when_not() {
         use std::io::{Read, Write};
         use std::net::TcpStream;
         use std::sync::Arc;
-        use flate2::write::GzEncoder;
-        use flate2::Compression;
         use crate::controller::MotorController;
         use crate::web::Router;
 
@@ -544,20 +495,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_assets_dir);
         std::fs::create_dir_all(&widgets_dir).unwrap();
 
-        // 1. Create a gzipped widget file on disk (widgets/button/widget.js.gz)
-        let button_dir = widgets_dir.join("button");
-        std::fs::create_dir_all(&button_dir).unwrap();
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(b"// gzipped button content").unwrap();
-        let gz_bytes = encoder.finish().unwrap();
-        std::fs::write(button_dir.join("widget.js.gz"), &gz_bytes).unwrap();
-
-        // 2. Create a plain uncompressed widget file on disk (widgets/slider/widget.js)
+        // 1. Create a plain uncompressed widget file on disk (widgets/slider/widget.js)
         let slider_dir = widgets_dir.join("slider");
         std::fs::create_dir_all(&slider_dir).unwrap();
         std::fs::write(slider_dir.join("widget.js"), b"// plain uncompressed slider content").unwrap();
 
-        // 3. Start server
+        // 2. Start server
         let controller = MotorController::new(true, 50);
         let router = Arc::new(Router::new_with_dir(controller, &temp_assets_dir));
         let ev3_server = tiny_http::Server::http("127.0.0.1:0").unwrap();
@@ -574,20 +517,7 @@ mod tests {
             }
         });
 
-        // Test button (should serve gzip)
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", ev3_port)).unwrap();
-            stream.write_all(b"GET /widgets/button/widget.js HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
-            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-            assert!(resp_str.contains("Content-Encoding: gzip"));
-            assert!(resp_str.contains("Cache-Control: no-cache"));
-        }
-
-        // Test slider (should serve plain uncompressed, NO Content-Encoding: gzip)
+        // Test slider (should serve plain uncompressed from disk)
         {
             let mut stream = TcpStream::connect(("127.0.0.1", ev3_port)).unwrap();
             stream.write_all(b"GET /widgets/slider/widget.js HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
@@ -601,12 +531,25 @@ mod tests {
             assert!(resp_str.contains("// plain uncompressed slider content"));
         }
 
+        // Test button (not on disk, should fall back to embedded RAM baseline)
+        {
+            let mut stream = TcpStream::connect(("127.0.0.1", ev3_port)).unwrap();
+            stream.write_all(b"GET /widgets/button/widget.js HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
+            let mut resp = Vec::new();
+            stream.read_to_end(&mut resp).unwrap();
+            let resp_str = String::from_utf8_lossy(&resp);
+
+            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
+            assert!(!resp_str.contains("Content-Encoding: gzip"));
+            assert!(resp_str.contains("Cache-Control: no-cache"));
+        }
+
         ev3_thread.join().unwrap();
         let _ = std::fs::remove_dir_all(&temp_assets_dir);
     }
 
     #[test]
-    fn test_partial_download_failure_rolls_back_and_preserves_existing_files() {
+    fn test_download_failure_preserves_existing_file() {
         use tiny_http::{Response, StatusCode};
 
         let test_id = std::time::SystemTime::now()
@@ -627,14 +570,13 @@ mod tests {
             "widgets": {
                 "joystick": {
                     "version": "1.0.0",
-                    "timestamp": 1000,
-                    "files": ["widget.js"]
+                    "timestamp": 1000
                 }
             }
         }"#;
         std::fs::write(widgets_dir.join("manifest.json"), initial_manifest).unwrap();
 
-        // 2. Remote server provides manifest with 2 files, but fails on second file (widget.css)
+        // 2. Remote server provides manifest with newer timestamp, but fails when serving widget.js
         let remote_server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let remote_port = remote_server.server_addr().to_ip().unwrap().port();
 
@@ -643,8 +585,7 @@ mod tests {
             "widgets": {
                 "joystick": {
                     "version": "2.0.0",
-                    "timestamp": 2000,
-                    "files": ["widget.js", "widget.css"]
+                    "timestamp": 2000
                 }
             }
         }"#;
@@ -657,12 +598,8 @@ mod tests {
                         let res = Response::from_string(remote_manifest.to_string())
                             .with_status_code(StatusCode(200));
                         let _ = req.respond(res);
-                    } else if url.contains("joystick/widget.js") {
-                        let res = Response::from_string("// new v2 joystick that should rollback")
-                            .with_status_code(StatusCode(200));
-                        let _ = req.respond(res);
                     } else {
-                        // Fail on widget.css
+                        // Fail on widget.js
                         let _ = req.respond(Response::empty(StatusCode(500)));
                     }
                 }
@@ -681,7 +618,7 @@ mod tests {
         assert_eq!(content_on_disk, original_content);
 
         // 4. Verify no stray temporary staging files remain
-        assert!(!widgets_dir.join("joystick").join("widget.js.tmp_stage").exists());
+        assert!(!widgets_dir.join("joystick").join("widget.js.tmp").exists());
 
         // 5. Verify local manifest timestamp was NOT bumped
         let local_manifest = load_local_manifest(&widgets_dir).unwrap();
@@ -712,13 +649,7 @@ mod tests {
             "widgets": {
                 "../escaped": {
                     "version": "2.0.0",
-                    "timestamp": 2000,
-                    "files": ["widget.js"]
-                },
-                "evil": {
-                    "version": "2.0.0",
-                    "timestamp": 2000,
-                    "files": ["../../escaped_file.js"]
+                    "timestamp": 2000
                 }
             }
         }"#;
@@ -736,173 +667,14 @@ mod tests {
             .expect("check_and_update_widgets should return Ok with error list");
 
         assert_eq!(res.updated_count, 0);
-        assert_eq!(res.errors.len(), 2);
+        assert_eq!(res.errors.len(), 1);
         assert!(res.errors.iter().any(|e| e.contains("Unsafe widget name rejected")));
-        assert!(res.errors.iter().any(|e| e.contains("Unsafe file name in widget")));
 
         assert!(!temp_dir.join("escaped").exists());
-        assert!(!temp_dir.join("escaped_file.js").exists());
 
         remote_handle.join().unwrap();
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
-    #[test]
-    fn test_updating_plain_file_purges_stale_gzip_companion_and_serves_new_content() {
-        use std::io::{Read, Write};
-        use std::net::TcpStream;
-        use std::sync::Arc;
-        use flate2::write::GzEncoder;
-        use flate2::Compression;
-        use tiny_http::{Response, StatusCode};
-        use crate::controller::MotorController;
-        use crate::web::Router;
-
-        let test_id = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let temp_assets_dir = std::env::temp_dir().join(format!("ev3_test_stale_gz_{}", test_id));
-        let widgets_dir = temp_assets_dir.join("widgets");
-        let _ = std::fs::remove_dir_all(&temp_assets_dir);
-        let button_dir = widgets_dir.join("button");
-        std::fs::create_dir_all(&button_dir).unwrap();
-
-        // 1. Initial stale compressed button asset on disk
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(b"// old stale gzipped button content v1").unwrap();
-        let old_gz_bytes = encoder.finish().unwrap();
-        std::fs::write(button_dir.join("widget.js.gz"), &old_gz_bytes).unwrap();
-
-        let initial_manifest = r#"{
-            "timestamp": 1000,
-            "widgets": {
-                "button": {
-                    "version": "1.0.0",
-                    "timestamp": 1000,
-                    "files": ["widget.js"]
-                }
-            }
-        }"#;
-        std::fs::write(widgets_dir.join("manifest.json"), initial_manifest).unwrap();
-
-        // 2. Remote server offers updated plain uncompressed widget.js
-        let remote_server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let remote_port = remote_server.server_addr().to_ip().unwrap().port();
-
-        let newer_content = "// updated plain button content v2 without gzip";
-        let remote_manifest = r#"{
-            "timestamp": 2000,
-            "widgets": {
-                "button": {
-                    "version": "2.0.0",
-                    "timestamp": 2000,
-                    "files": ["widget.js"]
-                }
-            }
-        }"#;
-
-        let remote_handle = std::thread::spawn(move || {
-            for _ in 0..2 {
-                if let Ok(req) = remote_server.recv() {
-                    let url = req.url().to_string();
-                    if url.contains("manifest.json") {
-                        let res = Response::from_string(remote_manifest.to_string())
-                            .with_status_code(StatusCode(200));
-                        let _ = req.respond(res);
-                    } else if url.contains("button/widget.js") {
-                        let res = Response::from_string(newer_content.to_string())
-                            .with_status_code(StatusCode(200));
-                        let _ = req.respond(res);
-                    }
-                }
-            }
-        });
-
-        let manifest_url = format!("http://127.0.0.1:{}/manifest.json", remote_port);
-        let update_res = check_and_update_widgets(&manifest_url, &widgets_dir, 3).unwrap();
-        assert_eq!(update_res.updated_count, 1);
-
-        // Stale .gz companion should be deleted by updater
-        assert!(!button_dir.join("widget.js.gz").exists());
-        assert_eq!(std::fs::read_to_string(button_dir.join("widget.js")).unwrap(), newer_content);
-
-        // 3. Confirm HTTP server serves newer plain content without Content-Encoding: gzip
-        let controller = MotorController::new(true, 50);
-        let router = Arc::new(Router::new_with_dir(controller, &temp_assets_dir));
-        let ev3_server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let ev3_port = ev3_server.server_addr().to_ip().unwrap().port();
-
-        let router_clone = router.clone();
-        let server_clone = Arc::new(ev3_server);
-        let s_handle = server_clone.clone();
-        let ev3_thread = std::thread::spawn(move || {
-            if let Ok(req) = s_handle.recv() {
-                router_clone.handle_request(req);
-            }
-        });
-
-        let mut stream = TcpStream::connect(("127.0.0.1", ev3_port)).unwrap();
-        stream.write_all(b"GET /widgets/button/widget.js HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
-        let mut resp = Vec::new();
-        stream.read_to_end(&mut resp).unwrap();
-        let resp_str = String::from_utf8_lossy(&resp);
-
-        assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-        assert!(!resp_str.contains("Content-Encoding: gzip"));
-        assert!(resp_str.contains("// updated plain button content v2 without gzip"));
-
-        remote_handle.join().unwrap();
-        ev3_thread.join().unwrap();
-        let _ = std::fs::remove_dir_all(&temp_assets_dir);
-    }
-
-    #[test]
-    fn test_gz_companion_recognized_in_should_update() {
-        let test_id = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let temp_dir = std::env::temp_dir().join(format!("ev3_test_gz_present_{}", test_id));
-        let widgets_dir = temp_dir.join("widgets");
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        let button_dir = widgets_dir.join("button");
-        std::fs::create_dir_all(&button_dir).unwrap();
-
-        // Create only widget.js.gz on disk
-        std::fs::write(button_dir.join("widget.js.gz"), b"gz content").unwrap();
-
-        let initial_manifest = r#"{
-            "timestamp": 1000,
-            "widgets": {
-                "button": {
-                    "version": "1.0.0",
-                    "timestamp": 1000,
-                    "files": ["widget.js"]
-                }
-            }
-        }"#;
-        std::fs::write(widgets_dir.join("manifest.json"), initial_manifest).unwrap();
-
-        // Remote server has same timestamp
-        let remote_server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let remote_port = remote_server.server_addr().to_ip().unwrap().port();
-        let remote_manifest = initial_manifest;
-
-        let remote_handle = std::thread::spawn(move || {
-            if let Ok(req) = remote_server.recv() {
-                let res = tiny_http::Response::from_string(remote_manifest.to_string())
-                    .with_status_code(tiny_http::StatusCode(200));
-                let _ = req.respond(res);
-            }
-        });
-
-        let manifest_url = format!("http://127.0.0.1:{}/manifest.json", remote_port);
-        let res = check_and_update_widgets(&manifest_url, &widgets_dir, 3).unwrap();
-        assert_eq!(res.updated_count, 0);
-        assert_eq!(res.files_downloaded, 0);
-
-        remote_handle.join().unwrap();
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
 }
+

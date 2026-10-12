@@ -183,18 +183,10 @@ mkdir -p "${MOUNT_DIR}/home/robot"
 ln -sf /usr/local/bin/ev3-web-motor "${MOUNT_DIR}/home/robot/ev3-web-motor"
 chown -h 1000:1000 "${MOUNT_DIR}/home/robot/ev3-web-motor" 2>/dev/null || true
 
-# Copy updater script
-cp "${WORKSPACE_DIR}/tools/update-assets.sh" "${MOUNT_DIR}/usr/local/bin/ev3-update-assets.sh"
-chmod 0755 "${MOUNT_DIR}/usr/local/bin/ev3-update-assets.sh"
-chown 0:0 "${MOUNT_DIR}/usr/local/bin/ev3-update-assets.sh"
-
-# Pre-populate /home/robot/web_assets with baseline .gz files compressed fresh from source
-mkdir -p "${MOUNT_DIR}/home/robot/web_assets"
-for asset in index.html style.css app.js; do
-    gzip -9 -c "${WORKSPACE_DIR}/web_assets/${asset}" > "${MOUNT_DIR}/home/robot/web_assets/${asset}.gz"
-done
+# Prepare /home/robot/web_assets/widgets for dynamic widget storage
+mkdir -p "${MOUNT_DIR}/home/robot/web_assets/widgets"
 chmod 0755 "${MOUNT_DIR}/home/robot/web_assets"
-chmod 0644 "${MOUNT_DIR}/home/robot/web_assets"/*
+chmod 0755 "${MOUNT_DIR}/home/robot/web_assets/widgets"
 chown -R 1000:1000 "${MOUNT_DIR}/home/robot/web_assets" 2>/dev/null || true
 
 # Copy and enable ev3-web.service
@@ -204,14 +196,6 @@ chown 0:0 "${MOUNT_DIR}/etc/systemd/system/ev3-web.service"
 
 mkdir -p "${MOUNT_DIR}/etc/systemd/system/multi-user.target.wants"
 ln -sf /etc/systemd/system/ev3-web.service "${MOUNT_DIR}/etc/systemd/system/multi-user.target.wants/ev3-web.service"
-
-# Copy and enable ev3-update-assets.service
-if [[ -f "${WORKSPACE_DIR}/ev3-update-assets.service" ]]; then
-    cp "${WORKSPACE_DIR}/ev3-update-assets.service" "${MOUNT_DIR}/etc/systemd/system/ev3-update-assets.service"
-    chmod 0644 "${MOUNT_DIR}/etc/systemd/system/ev3-update-assets.service"
-    chown 0:0 "${MOUNT_DIR}/etc/systemd/system/ev3-update-assets.service"
-    ln -sf /etc/systemd/system/ev3-update-assets.service "${MOUNT_DIR}/etc/systemd/system/multi-user.target.wants/ev3-update-assets.service"
-fi
 
 # Force default systemd target to multi-user (text console) instead of graphical.target
 ln -sf /lib/systemd/system/multi-user.target "${MOUNT_DIR}/etc/systemd/system/default.target"
@@ -350,21 +334,13 @@ fi
 echo "      Verifying modifications in ext4 root..."
 [[ -f "${MOUNT_DIR}/etc/fake-hwclock.data" ]] || { echo "ERROR: fake-hwclock.data missing"; exit 1; }
 [[ -x "${MOUNT_DIR}/usr/local/bin/ev3-web-motor" ]] || { echo "ERROR: Binary missing or not executable"; exit 1; }
-[[ -x "${MOUNT_DIR}/usr/local/bin/ev3-update-assets.sh" ]] || { echo "ERROR: ev3-update-assets.sh missing or not executable"; exit 1; }
-[[ -f "${MOUNT_DIR}/home/robot/web_assets/index.html.gz" ]] || { echo "ERROR: Baseline index.html.gz missing in web_assets"; exit 1; }
-[[ -f "${MOUNT_DIR}/home/robot/web_assets/style.css.gz" ]] || { echo "ERROR: Baseline style.css.gz missing in web_assets"; exit 1; }
-[[ -f "${MOUNT_DIR}/home/robot/web_assets/app.js.gz" ]] || { echo "ERROR: Baseline app.js.gz missing in web_assets"; exit 1; }
+[[ -d "${MOUNT_DIR}/home/robot/web_assets/widgets" ]] || { echo "ERROR: Baseline web_assets/widgets missing"; exit 1; }
 [[ -f "${MOUNT_DIR}/etc/systemd/system/ev3-web.service" ]] || { echo "ERROR: ev3-web.service missing"; exit 1; }
-[[ -f "${MOUNT_DIR}/etc/systemd/system/ev3-update-assets.service" ]] || { echo "ERROR: ev3-update-assets.service missing"; exit 1; }
 
 # Verify service symlinks are active and point to existing units
 [[ -L "${MOUNT_DIR}/etc/systemd/system/multi-user.target.wants/ev3-web.service" ]] || { echo "ERROR: ev3-web.service symlink missing"; exit 1; }
 SERVICE_TARGET=$(readlink "${MOUNT_DIR}/etc/systemd/system/multi-user.target.wants/ev3-web.service")
 [[ -f "${MOUNT_DIR}${SERVICE_TARGET}" ]] || { echo "ERROR: ev3-web.service symlink target missing: ${SERVICE_TARGET}"; exit 1; }
-
-[[ -L "${MOUNT_DIR}/etc/systemd/system/multi-user.target.wants/ev3-update-assets.service" ]] || { echo "ERROR: ev3-update-assets.service symlink missing"; exit 1; }
-UPDATER_TARGET=$(readlink "${MOUNT_DIR}/etc/systemd/system/multi-user.target.wants/ev3-update-assets.service")
-[[ -f "${MOUNT_DIR}${UPDATER_TARGET}" ]] || { echo "ERROR: ev3-update-assets.service symlink target missing: ${UPDATER_TARGET}"; exit 1; }
 
 # Verify /home/robot/ev3-web-motor symlink points to executable
 [[ -L "${MOUNT_DIR}/home/robot/ev3-web-motor" ]] || { echo "ERROR: /home/robot/ev3-web-motor symlink missing"; exit 1; }

@@ -34,6 +34,8 @@
 | **Phase 20** | Safe Dynamic Widget Updates & Modular Architecture | **COMPLETE**. Modular ES widget modules in `web_assets/widgets/`, unified `WidgetRegistry` in `app.js`, background curl updater with 3-second timeout and active IP detection, manifest rate-limit evasion, transparent `/widgets/*` static delivery (gzip and uncompressed), and end-to-end tests. |
 | **Phase 21** | Modular Widget Updater Fixes | **COMPLETE**. Resolved core updater bugs: bounded 180s network discovery retry, curl `-k` and 10s timeout for boot clock skew, asset updater directory preservation for `widgets/`, mock mode updater bypass, and read-only HTTP GET requests. |
 | **Phase 22** | Hardware Optimization & Codebase Simplification | **COMPLETE**. Removed duplicate DOM resets in emergency stop, removed double-temp download staging, removed dead CSS injector, eliminated per-request filesystem metadata checks, removed redundant `/api/joystick` endpoint, and eliminated boot-time SD card unpack writes. |
+| **Phase 23** | Asset Pipeline Simplification & Uncompressed Delivery | **COMPLETE**. Removed all gzip compression, removed shell updater service, plain RAM/disk delivery, idempotent Wi-Fi check, 4 HTTP workers, 200ms bounded rescan. |
+| **Phase 24** | Five-Area Codebase Simplification & Dead Code Elimination | **COMPLETE**. Direct RAM core asset serving, single-file widget pipeline, controller helper deduplication, generic frontend widget processing, and route alias/dead parameter pruning. |
 
 ---
 
@@ -63,6 +65,8 @@
 23. [Phase 20: Safe Dynamic Widget Updates & Modular Architecture](#23-phase-20-safe-dynamic-widget-updates--modular-architecture)
 24. [Phase 21: Modular Widget Updater Fixes](#24-phase-21-modular-widget-updater-fixes)
 25. [Phase 22: Hardware Optimization & Codebase Simplification](#25-phase-22-hardware-optimization--codebase-simplification)
+26. [Phase 23: Asset Pipeline Simplification & Uncompressed Delivery](#26-phase-23-asset-pipeline-simplification--uncompressed-delivery)
+27. [Phase 24: Five-Area Codebase Simplification & Dead Code Elimination](#27-phase-24-five-area-codebase-simplification--dead-code-elimination)
 
 ---
 
@@ -1180,3 +1184,95 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
 - [x] **Step 22.5: Test & Host Simulation Verification**
   - Verified all 64 unit tests pass cleanly with `cargo test`.
 
+---
+
+## 26. Phase 23: Asset Pipeline Simplification & Uncompressed Delivery
+
+### 26.1 Context & Objectives
+- **Problem:** The system stopped responding after several user interactions. Wi-Fi disconnected during operation, the browser "Back" button stopped responding, and HTTP requests timed out. Investigation showed three primary root causes:
+  1. **Wi-Fi Drop on Re-provisioning:** `src/sysfs/wifi.rs` executed `connmanctl scan wifi` and rewrote `/var/lib/connman/ev3_wifi.config` on every startup, interrupting active wireless associations. Concurrently, the legacy `tools/update-assets.sh` executed `systemctl restart ev3-web.service` on git updates.
+  2. **HTTP Worker Starvation:** `tiny_http` used only 2 worker threads. When `POST /api/rescan` blocked Worker 1 for up to 2.0 seconds waiting on the polling thread condvar, rapid client telemetry requests (`AbortSignal.timeout(2000)`) consumed the remaining worker, resulting in request queuing and frontend disconnects.
+  3. **Compression Complexity:** Static files used build-time gzip compression (`build.rs`, `flate2`), companion `.gz` files on disk, and runtime decompression checks. This added complexity without benefit for small static files (< 50 KB total).
+- **Solution:** Apply a 6-part simplification:
+  1. Remove build-time and runtime gzip compression (`build.rs`, `flate2`, `.gz` companions).
+  2. Serve plain uncompressed web assets directly from RAM baseline embeds or disk overrides in `src/web/router.rs`.
+  3. Simplify `src/updater.rs` to download plain files without `.gz` companions, using a 5-second try-once background check.
+  4. Make Wi-Fi provisioning idempotent in `src/sysfs/wifi.rs` by checking existing configuration match before calling `connmanctl`.
+  5. Prevent HTTP server starvation: increase worker pool to 4 in `src/main.rs`, and bound `controller.rescan()` to 200ms with cached fallback in `src/controller.rs`.
+  6. Remove redundant background shell updater service (`tools/update-assets.sh`, `ev3-update-assets.service`).
+
+### 26.2 Architectural Decision Matrix
+
+| Option / Proposed Change | Status | Technical Rationale & File Links |
+| :--- | :--- | :--- |
+| **Plain Uncompressed Web Assets** | `[IMPLEMENTED]` | Embed plain UTF-8 text into binary; serve without `Content-Encoding: gzip` in [`src/web/router.rs`](src/web/router.rs). Removes `build.rs` and `flate2` dependency. |
+| **Remove Shell Updater Service** | `[IMPLEMENTED]` | Delete [`tools/update-assets.sh`](tools/update-assets.sh) and [`ev3-update-assets.service`](ev3-update-assets.service). Removes background service restarting server and dropping connections. |
+| **5-Second Try-Once Widget Updater** | `[IMPLEMENTED]` | Background updater thread attempts update once with 5-second network timeout in [`src/main.rs`](src/main.rs) and [`src/updater.rs`](src/updater.rs). |
+| **Idempotent Wi-Fi Auto-Provisioning** | `[IMPLEMENTED]` | Compare existing `/var/lib/connman/ev3_wifi.config` against credentials in [`src/sysfs/wifi.rs`](src/sysfs/wifi.rs); skip rewrite and `connmanctl scan wifi` when identical. |
+| **4 HTTP Worker Threads** | `[IMPLEMENTED]` | Increase `tiny_http` worker pool from 2 to 4 threads in [`src/main.rs`](src/main.rs) to prevent request starvation. |
+| **Bounded 200ms Rescan with Cache Fallback** | `[IMPLEMENTED]` | Limit `rescan()` condvar wait to 200ms in [`src/controller.rs`](src/controller.rs) and return cached status immediately on timeout instead of returning 500 error. |
+| **Gzip Companion Compatibility Maintenance** | `[REJECTED]` | Dropping `.gz` companion management completely simplifies the codebase and eliminates file sync bugs. |
+
+### 26.3 Implementation Checklist
+
+- [x] **Step 23.1: Gzip Pipeline and Shell Updater Removal**
+  - Removed `build.rs`, `tools/update-assets.sh`, and `ev3-update-assets.service`.
+  - Removed `[build-dependencies]` and `flate2` from `Cargo.toml`.
+  - Updated `tools/bake-image.sh` to copy plain assets and remove shell updater installation.
+- [x] **Step 23.2: Plain Asset Router Implementation**
+  - Updated `src/web/router.rs` to embed uncompressed baseline assets and serve plain files without `Content-Encoding: gzip`.
+  - Updated all router unit tests to assert plain asset delivery and verify fallback behavior.
+- [x] **Step 23.3: Updater Companion Removal & Bounded Timeout**
+  - Removed `.gz` companion checks, deletions, and tests from `src/updater.rs`.
+  - Configured 5-second timeout in `src/main.rs`.
+- [x] **Step 23.4: Idempotent Wi-Fi Auto-Provisioning**
+  - Added `CONNMAN_CONFIG_PATH` and `is_config_identical()` to `src/sysfs/wifi.rs`.
+  - Added unit test `test_wifi_provision_skips_when_config_identical`.
+- [x] **Step 23.5: HTTP Worker Expansion & Bounded Rescan**
+  - Increased `num_workers` to 4 in `src/main.rs`.
+  - Limited `rescan()` condvar wait to 200ms with cached fallback in `src/controller.rs`.
+- [x] **Step 23.6: Documentation & Specification Alignment**
+  - Updated `PROJECT_PLAN.md`, `README.md`, and `docs/architecture.md`.
+
+---
+
+## 27. Phase 24: Five-Area Codebase Simplification & Dead Code Elimination
+
+### 27.1 Context & Objectives
+- **Problem:** Previous feature additions left redundant route aliases, dead parameter paths (`duty_cycle`, `polarity`, `time_ms`), duplicated motor stop and reset logic, complex multi-file widget staging vectors, and hardcoded per-widget parsing in frontend JavaScript.
+- **Solution:** Implement the user-approved 5-area simplification cleanly and carefully:
+  1. **Core RAM Serving:** Serve core dashboard assets (`/`, `/run`, `/design`, `/style.css`, `/app.js`) directly from compiled-in memory constants (`include_bytes!`) without disk I/O.
+  2. **Single-File Widget Updates:** Standardize on single `widget.js` component files; remove `files` array from catalog; stage temporary download directly to `widget.js.tmp` and atomic rename.
+  3. **Deduplicate Controller Logic:** Extract `mark_motor_stopped` and `stop_all_motors` helpers in `src/controller.rs`; delete redundant `AllPortsStatus`, `get_all_ports_status()`, and `get_port_status()`; return `SystemStatus` from `rescan()`.
+  4. **Generic Frontend Parsing:** Remove 37-line hardcoded per-widget switch in `web_assets/app.js` and use generic filter and default property merging.
+  5. **Route & Command Pruning:** Remove duplicate route aliases and dead commands (`duty_cycle`, `polarity`, `time_ms`, `/api/telemetry`, `/api/emergency-stop`, `POST /api/ports`, `GET /api/ports`, `GET /api/battery`, `GET /api/port/{port}`, `/run.html`, `/design.html`, `/index.html`).
+
+### 27.2 Architectural Decision Matrix
+
+| Option / Proposed Change | Status | Technical Rationale & File Links |
+| :--- | :--- | :--- |
+| **Core RAM Asset Serving** | `[IMPLEMENTED]` | Core web assets are served directly from compile-time memory constants in [`src/web/router.rs`](src/web/router.rs), avoiding disk lookups. |
+| **Single-File Widget Updates** | `[IMPLEMENTED]` | Widgets require only a `widget.js` script in [`src/updater.rs`](src/updater.rs) and [`web_assets/widgets/manifest.json`](web_assets/widgets/manifest.json). |
+| **Controller Helper Deduplication** | `[IMPLEMENTED]` | Extract `mark_motor_stopped` and `stop_all_motors` in [`src/controller.rs`](src/controller.rs), removing redundant code paths. |
+| **Delete Redundant Port Status Structs** | `[IMPLEMENTED]` | Remove `AllPortsStatus`, `get_all_ports_status()`, and `get_port_status()` in [`src/controller.rs`](src/controller.rs); return `SystemStatus` from `rescan()`. |
+| **Generic Frontend Widget Parsing** | `[IMPLEMENTED]` | Replace rigid widget-by-widget parsing with generic property propagation in [`web_assets/app.js`](web_assets/app.js). |
+| **Route Alias & Dead Parameter Pruning** | `[IMPLEMENTED]` | Remove duplicate aliases and unused parameters across [`src/web/router.rs`](src/web/router.rs), [`src/web/handlers.rs`](src/web/handlers.rs), and [`src/sysfs/motor.rs`](src/sysfs/motor.rs). |
+
+### 27.3 Implementation Checklist
+
+- [x] **Step 24.1: Core RAM Asset Serving & Baker Cleanup**
+  - Updated `src/web/router.rs` to serve `BASELINE_*` directly from RAM without disk loading.
+  - Simplified `tools/bake-image.sh` to only create and verify `web_assets/widgets` directory.
+- [x] **Step 24.2: Single-File Widget Updater Pipeline**
+  - Simplified `WidgetEntry` and `check_and_update_widgets` in `src/updater.rs` to download `widget.js.tmp` and atomic rename to `widget.js`.
+  - Removed `"files": ["widget.js"]` from `web_assets/widgets/manifest.json`.
+- [x] **Step 24.3: Controller Stop, Cache & Status Deduplication**
+  - Added `stop_all_motors` and `mark_motor_stopped` helpers in `src/controller.rs`.
+  - Deleted `AllPortsStatus`, `get_all_ports_status()`, and `get_port_status()`; returned `SystemStatus` from `rescan()`.
+- [x] **Step 24.4: Generic Frontend Widget Processing**
+  - Replaced hardcoded widget parsing in `web_assets/app.js` with generic registry iteration while retaining `updateMotorCardStatus()`.
+- [x] **Step 24.5: Route Alias & Dead Parameter Elimination**
+  - Removed unused parameters (`duty_cycle`, `polarity`, `time_ms`) and commands from `src/web/handlers.rs`, `src/sysfs/motor.rs`, `src/sysfs/mock.rs`, and `src/controller.rs`.
+  - Removed route aliases (`/api/telemetry`, `/api/emergency-stop`, `POST /api/ports`, `GET /api/ports`, `GET /api/battery`, `GET /api/port/{port}`, `/run.html`, `/design.html`, `/index.html`) from `src/web/router.rs`.
+- [x] **Step 24.6: Documentation Alignment in Simplified Technical English**
+  - Updated `docs/api.md`, `docs/architecture.md`, `README.md`, and `PROJECT_PLAN.md`.

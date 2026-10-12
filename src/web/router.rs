@@ -4,11 +4,11 @@ use tiny_http::{Header, Method, Request, Response, StatusCode};
 use crate::controller::MotorController;
 use crate::web::handlers::*;
 
-// Embedded Single Page Application Web Assets (pre-gzipped at compile time)
-const BASELINE_HTML_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/index.html.gz"));
-const BASELINE_DESIGN_HTML_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/design.html.gz"));
-const BASELINE_CSS_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/style.css.gz"));
-const BASELINE_JS_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/app.js.gz"));
+// Embedded Single Page Application Web Assets
+const BASELINE_HTML: &[u8] = include_bytes!("../../web_assets/index.html");
+const BASELINE_DESIGN_HTML: &[u8] = include_bytes!("../../web_assets/design.html");
+const BASELINE_CSS: &[u8] = include_bytes!("../../web_assets/style.css");
+const BASELINE_JS: &[u8] = include_bytes!("../../web_assets/app.js");
 
 pub struct BaselineWidget {
     pub relative_path: &'static str,
@@ -44,102 +44,8 @@ pub const BASELINE_WIDGETS: &[BaselineWidget] = &[
 
 pub struct Router {
     controller: Arc<MotorController>,
-    html_gz: Arc<[u8]>,
-    design_html_gz: Arc<[u8]>,
-    css_gz: Arc<[u8]>,
-    js_gz: Arc<[u8]>,
     widgets_dir: std::path::PathBuf,
 }
-
-
-// Inspects compression header tokens and minimal payload bounds.
-fn is_valid_gz(bytes: &[u8]) -> bool {
-    bytes.len() >= 18 && bytes.starts_with(&[0x1f, 0x8b])
-}
-
-struct AssetEntry {
-    name: &'static str,
-    baseline: &'static [u8],
-}
-
-const ASSET_ENTRIES: [AssetEntry; 4] = [
-    AssetEntry { name: "index.html.gz", baseline: BASELINE_HTML_GZ },
-    AssetEntry { name: "design.html.gz", baseline: BASELINE_DESIGN_HTML_GZ },
-    AssetEntry { name: "style.css.gz", baseline: BASELINE_CSS_GZ },
-    AssetEntry { name: "app.js.gz", baseline: BASELINE_JS_GZ },
-];
-
-// Restores embedded client payloads from memory if disk copies fail.
-fn load_web_assets_from(assets_dir: &std::path::Path, is_mock: bool) -> (Arc<[u8]>, Arc<[u8]>, Arc<[u8]>, Arc<[u8]>) {
-    let custom_dir = std::env::var("WEB_ASSETS_DIR").is_ok();
-
-    if is_mock && !custom_dir && !assets_dir.exists() {
-        println!("[ASSETS] Mock mode active: serving baseline embedded web assets from RAM (~18 KB)");
-        return (
-            Arc::from(BASELINE_HTML_GZ),
-            Arc::from(BASELINE_DESIGN_HTML_GZ),
-            Arc::from(BASELINE_CSS_GZ),
-            Arc::from(BASELINE_JS_GZ),
-        );
-    }
-
-    let has_all_four = assets_dir.is_dir() && ASSET_ENTRIES.iter().all(|a| assets_dir.join(a.name).is_file());
-
-    if !has_all_four {
-        println!(
-            "[ASSETS] Self-healing: directory {:?} missing or incomplete. Restoring baseline assets...",
-            assets_dir
-        );
-        let _ = std::fs::create_dir_all(assets_dir);
-        let _ = std::fs::remove_file(assets_dir.join(".version"));
-        for entry in &ASSET_ENTRIES {
-            let p = assets_dir.join(entry.name);
-            if !p.is_file() {
-                if let Err(e) = std::fs::write(&p, entry.baseline) {
-                    eprintln!("[ASSETS WARN] Failed writing {}: {}", entry.name, e);
-                }
-            }
-        }
-    }
-
-    let mut loaded: Vec<Arc<[u8]>> = Vec::with_capacity(4);
-    for entry in &ASSET_ENTRIES {
-        let path = assets_dir.join(entry.name);
-        let bytes = match std::fs::read(&path) {
-            Ok(b) if is_valid_gz(&b) => Arc::from(b.into_boxed_slice()),
-            Ok(corrupted) => {
-                eprintln!(
-                    "[ASSETS WARN] Corrupted {} in {:?} ({} B, magic header invalid). Restoring embedded baseline.",
-                    entry.name, assets_dir, corrupted.len()
-                );
-                let _ = std::fs::write(&path, entry.baseline);
-                let _ = std::fs::remove_file(assets_dir.join(".version"));
-                Arc::from(entry.baseline)
-            }
-            Err(e) => {
-                if !is_mock {
-                    eprintln!(
-                        "[ASSETS WARN] Could not read {} from {:?}: {}. Using embedded baseline.",
-                        entry.name, assets_dir, e
-                    );
-                }
-                Arc::from(entry.baseline)
-            }
-        };
-        loaded.push(bytes);
-    }
-
-    println!(
-        "[ASSETS] Loaded pre-gzipped assets into RAM: index ({} B), design ({} B), CSS ({} B), JS ({} B).",
-        loaded[0].len(),
-        loaded[1].len(),
-        loaded[2].len(),
-        loaded[3].len(),
-    );
-
-    (loaded[0].clone(), loaded[1].clone(), loaded[2].clone(), loaded[3].clone())
-}
-
 
 /// Trims redundant standard network scheme suffixes from origin headers.
 pub(crate) fn strip_default_port(host: &str) -> &str {
@@ -153,26 +59,8 @@ pub(crate) fn strip_default_port(host: &str) -> &str {
     }
 }
 
-// Ensures default modular widget files exist in the specified target path.
-#[cfg(test)]
-pub fn restore_baseline_widgets(widgets_dir: &std::path::Path) {
-    let _ = std::fs::create_dir_all(widgets_dir);
-    for entry in BASELINE_WIDGETS {
-        let p = widgets_dir.join(entry.relative_path);
-        let p_gz = widgets_dir.join(format!("{}.gz", entry.relative_path));
-        if !p.is_file() && !p_gz.is_file() {
-            if let Some(parent) = p.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if let Err(e) = std::fs::write(&p, entry.content) {
-                eprintln!("[WIDGETS WARN] Failed restoring baseline {}: {}", entry.relative_path, e);
-            }
-        }
-    }
-}
-
 impl Router {
-    /// Populates compressed frontend cache and prepares request dispatcher.
+    /// Populates plain frontend cache and prepares request dispatcher.
     pub fn new(controller: Arc<MotorController>) -> Self {
         let is_mock = controller.is_mock();
         let assets_dir: std::path::PathBuf = std::env::var("WEB_ASSETS_DIR")
@@ -189,15 +77,10 @@ impl Router {
 
     /// Initializes router with explicitly configured asset directory path.
     pub fn new_with_dir(controller: Arc<MotorController>, assets_dir: &std::path::Path) -> Self {
-        let is_mock = controller.is_mock();
-        let (html_gz, design_html_gz, css_gz, js_gz) = load_web_assets_from(assets_dir, is_mock);
         let widgets_dir = assets_dir.join("widgets");
+        println!("[ROUTER] Core web assets served directly from RAM; widgets from {:?}", widgets_dir);
         Self {
             controller,
-            html_gz,
-            design_html_gz,
-            css_gz,
-            js_gz,
             widgets_dir,
         }
     }
@@ -238,18 +121,17 @@ impl Router {
 
         match (method, path) {
             // Static Web Assets (supporting GET and HEAD)
-            (Method::Get, "/") | (Method::Get, "/index.html") | (Method::Head, "/") | (Method::Head, "/index.html")
-            | (Method::Get, "/run") | (Method::Get, "/run.html") | (Method::Head, "/run") | (Method::Head, "/run.html") => {
-                self.respond_static_gz(request, Arc::clone(&self.html_gz), "text/html; charset=utf-8");
+            (Method::Get, "/") | (Method::Head, "/") | (Method::Get, "/run") | (Method::Head, "/run") => {
+                self.respond_static_plain_slice(request, BASELINE_HTML, "text/html; charset=utf-8", method == Method::Head);
             }
-            (Method::Get, "/design") | (Method::Get, "/design.html") | (Method::Head, "/design") | (Method::Head, "/design.html") => {
-                self.respond_static_gz(request, Arc::clone(&self.design_html_gz), "text/html; charset=utf-8");
+            (Method::Get, "/design") | (Method::Head, "/design") => {
+                self.respond_static_plain_slice(request, BASELINE_DESIGN_HTML, "text/html; charset=utf-8", method == Method::Head);
             }
             (Method::Get, "/style.css") | (Method::Head, "/style.css") => {
-                self.respond_static_gz(request, Arc::clone(&self.css_gz), "text/css; charset=utf-8");
+                self.respond_static_plain_slice(request, BASELINE_CSS, "text/css; charset=utf-8", method == Method::Head);
             }
             (Method::Get, "/app.js") | (Method::Head, "/app.js") => {
-                self.respond_static_gz(request, Arc::clone(&self.js_gz), "application/javascript; charset=utf-8");
+                self.respond_static_plain_slice(request, BASELINE_JS, "application/javascript; charset=utf-8", method == Method::Head);
             }
             (Method::Get, "/favicon.ico") | (Method::Head, "/favicon.ico") => {
                 let res = Response::empty(StatusCode(204));
@@ -265,15 +147,9 @@ impl Router {
             }
 
             // Telemetry Endpoint (reads in <0.05ms from cache)
-            (Method::Get, "/api/status") | (Method::Get, "/api/telemetry") => {
+            (Method::Get, "/api/status") => {
                 let status = self.controller.get_system_status();
                 self.respond_json(request, StatusCode(200), &ApiResponse::ok(status));
-            }
-
-            // Battery Endpoint
-            (Method::Get, "/api/battery") => {
-                let battery = self.controller.get_battery();
-                self.respond_json(request, StatusCode(200), &ApiResponse::ok(battery));
             }
 
             // Clean System Shutdown (BUG-29)
@@ -294,7 +170,7 @@ impl Router {
             }
 
             // Global Emergency Stop
-            (Method::Post, "/api/emergency-stop") | (Method::Post, "/api/estop") => {
+            (Method::Post, "/api/estop") => {
                 match self.controller.emergency_stop() {
                     Ok(_) => self.respond_json(request, StatusCode(200), &ApiResponse::ok("All motors stopped")),
                     Err(e) => self.respond_json(request, StatusCode(500), &ApiResponse::<()>::err(e)),
@@ -309,9 +185,8 @@ impl Router {
                 }
             }
 
-
-            // Batch Port Commands: POST /api/batch and POST /api/ports.
-            (Method::Post, "/api/batch") | (Method::Post, "/api/ports") => {
+            // Batch Port Commands: POST /api/batch
+            (Method::Post, "/api/batch") => {
                 match self.read_json_body::<BatchCommandPayload>(&mut request) {
                     Ok(batch) => {
                         match self.controller.execute_batch(&batch) {
@@ -323,17 +198,6 @@ impl Router {
                 }
             }
 
-            // All Ports Endpoint (Motors and Sensors)
-            (Method::Get, "/api/ports") => {
-                let status = self.controller.get_all_ports_status();
-                self.respond_json(request, StatusCode(200), &ApiResponse::ok(status));
-            }
-
-            // Single Port Query Endpoint: GET /api/port/{port}
-            (Method::Get, p) if p.starts_with("/api/port/") => {
-                self.handle_port_get(request, p);
-            }
-
             // Unified Port Command Endpoint: POST /api/port/{port}
             (Method::Post, p) if p.starts_with("/api/port/") => {
                 self.handle_port_post(request, p);
@@ -342,20 +206,6 @@ impl Router {
             _ => {
                 self.respond_json(request, StatusCode(404), &ApiResponse::<()>::err("Endpoint not found"));
             }
-        }
-    }
-
-    // Queries individual channel metrics and returns JSON representation.
-    fn handle_port_get(&self, request: Request, path: &str) {
-        let raw_port = path.trim_start_matches("/api/port/");
-        let normalized = match normalize_port_name(raw_port) {
-            Some(p) => p,
-            None => return self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(format!("Invalid port: '{}'", raw_port))),
-        };
-
-        match self.controller.get_port_status(&normalized) {
-            Ok(status) => self.respond_json(request, StatusCode(200), &ApiResponse::ok(status)),
-            Err(e) => self.respond_json(request, StatusCode(404), &ApiResponse::<()>::err(e)),
         }
     }
 
@@ -394,26 +244,7 @@ impl Router {
         serde_json::from_str::<T>(&body).map_err(|e| format!("Invalid JSON payload: {}", e))
     }
 
-    // Streams pre-compressed memory payloads with appropriate HTTP headers.
-    fn respond_static_gz(&self, request: Request, content: Arc<[u8]>, content_type: &str) {
-        let len = content.len();
-        let res = Response::new(
-            StatusCode(200),
-            vec![
-                Header::from_bytes(&b"Content-Type"[..], content_type.as_bytes()).unwrap(),
-                Header::from_bytes(&b"Content-Encoding"[..], &b"gzip"[..]).unwrap(),
-                Header::from_bytes(&b"Cache-Control"[..], &b"no-cache"[..]).unwrap(),
-            ],
-            Cursor::new(content),
-            Some(len),
-            None,
-        );
-        if let Err(e) = request.respond(res) {
-            eprintln!("[HTTP WARN] Failed to send static gzip response: {}", e);
-        }
-    }
-
-    // Resolves and serves widget assets supporting transparent gzip delivery.
+    // Resolves and serves widget assets from disk with RAM baseline fallback.
     fn handle_widget_request(&self, request: Request, full_path: &str, is_head: bool) {
         let subpath = &full_path["/widgets/".len()..];
         if subpath.is_empty() {
@@ -446,22 +277,15 @@ impl Router {
             "application/octet-stream"
         };
 
-        let gz_path = self.widgets_dir.join(format!("{}.gz", subpath));
         let file_path = self.widgets_dir.join(subpath);
 
-        // 1. Prefer pre-gzipped asset on disk if present
-        if let Ok(bytes) = std::fs::read(&gz_path) {
-            self.respond_static_gz_slice(request, &bytes, mime, is_head);
-            return;
-        }
-
-        // 2. Serve plain asset on disk if present
+        // 1. Serve plain asset on disk if present
         if let Ok(bytes) = std::fs::read(&file_path) {
             self.respond_static_plain_slice(request, &bytes, mime, is_head);
             return;
         }
 
-        // 3. Fall back to embedded compile-time baseline widget in RAM
+        // 2. Fall back to embedded compile-time baseline widget in RAM
         if let Some(entry) = BASELINE_WIDGETS.iter().find(|e| e.relative_path == subpath) {
             self.respond_static_plain_slice(request, entry.content, mime, is_head);
             return;
@@ -489,26 +313,6 @@ impl Router {
         }
     }
 
-    // Serves pre-gzipped byte sequences with compression transport headers.
-    fn respond_static_gz_slice(&self, request: Request, content: &[u8], content_type: &str, is_head: bool) {
-        let len = content.len();
-        let body = if is_head { Vec::new() } else { content.to_vec() };
-        let res = Response::new(
-            StatusCode(200),
-            vec![
-                Header::from_bytes(&b"Content-Type"[..], content_type.as_bytes()).unwrap(),
-                Header::from_bytes(&b"Content-Encoding"[..], &b"gzip"[..]).unwrap(),
-                Header::from_bytes(&b"Cache-Control"[..], &b"no-cache"[..]).unwrap(),
-            ],
-            Cursor::new(body),
-            Some(len),
-            None,
-        );
-        if let Err(e) = request.respond(res) {
-            eprintln!("[HTTP WARN] Failed to send static gzip response: {}", e);
-        }
-    }
-
     // Serializes structures into textual wire representations.
     fn respond_json<T: serde::Serialize>(&self, request: Request, status: StatusCode, data: &T) {
         let json_str = serde_json::to_string(data).unwrap_or_else(|_| "{\"success\":false,\"error\":\"JSON serialization error\"}".into());
@@ -531,174 +335,31 @@ impl Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flate2::read::GzDecoder;
-    use std::io::Read;
 
-    // Expands encoded byte slices into UTF-8 text strings.
-    fn decompress_gz(bytes: &[u8]) -> String {
-        let mut decoder = GzDecoder::new(bytes);
-        let mut s = String::new();
-        decoder.read_to_string(&mut s).expect("Failed to decompress gz bytes");
-        s
-    }
-
-    // Encodes arbitrary input byte slices using flate2 stream.
-    fn compress_test(data: &[u8]) -> Vec<u8> {
-        use flate2::write::GzEncoder;
-        use flate2::Compression;
-        use std::io::Write;
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(data).unwrap();
-        encoder.finish().unwrap()
-    }
-
-    // Verifies bundled memory binaries have proper headers plus text content.
+    // Verifies bundled memory binaries have proper text content.
     #[test]
-    fn test_baseline_assets_embedded_and_valid_gzip() {
-        assert!(!BASELINE_HTML_GZ.is_empty());
-        assert!(!BASELINE_CSS_GZ.is_empty());
-        assert!(!BASELINE_JS_GZ.is_empty());
+    fn test_baseline_assets_embedded_and_valid_plain() {
+        assert!(!BASELINE_HTML.is_empty());
+        assert!(!BASELINE_DESIGN_HTML.is_empty());
+        assert!(!BASELINE_CSS.is_empty());
+        assert!(!BASELINE_JS.is_empty());
 
-        // Check magic bytes for gzip: 0x1f, 0x8b
-        assert_eq!(&BASELINE_HTML_GZ[0..2], &[0x1f, 0x8b]);
-        assert_eq!(&BASELINE_CSS_GZ[0..2], &[0x1f, 0x8b]);
-        assert_eq!(&BASELINE_JS_GZ[0..2], &[0x1f, 0x8b]);
-
-        let html = decompress_gz(BASELINE_HTML_GZ);
+        let html = std::str::from_utf8(BASELINE_HTML).unwrap();
         assert!(html.contains("<!DOCTYPE html>") || html.contains("<html"));
 
-        let css = decompress_gz(BASELINE_CSS_GZ);
+        let design = std::str::from_utf8(BASELINE_DESIGN_HTML).unwrap();
+        assert!(design.contains("<!DOCTYPE html>") || design.contains("<html"));
+
+        let css = std::str::from_utf8(BASELINE_CSS).unwrap();
         assert!(css.contains("body") || css.contains("margin"));
 
-        let js = decompress_gz(BASELINE_JS_GZ);
-        assert!(js.contains("function") || js.contains("const") || js.contains("let") || js.contains("document"));
-    }
-
-    // Asserts non-existent filesystem locations are recreated and populated.
-    #[test]
-    fn test_self_healing_missing_directory() {
-        let temp_dir = std::env::temp_dir().join(format!("ev3_test_assets_missing_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let _ = std::fs::remove_dir_all(&temp_dir);
-
-        let (html, _design, css, js) = load_web_assets_from(&temp_dir, false);
-
-        // Verify directory was created and populated
-        assert!(temp_dir.exists());
-        assert!(temp_dir.join("index.html.gz").exists());
-        assert!(temp_dir.join("design.html.gz").exists());
-        assert!(temp_dir.join("style.css.gz").exists());
-        assert!(temp_dir.join("app.js.gz").exists());
-
-        assert_eq!(html.as_ref(), BASELINE_HTML_GZ);
-        assert_eq!(_design.as_ref(), BASELINE_DESIGN_HTML_GZ);
-        assert_eq!(css.as_ref(), BASELINE_CSS_GZ);
-        assert_eq!(js.as_ref(), BASELINE_JS_GZ);
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
-    // Checks truncated bundles and obsolete marker tokens are reconstructed.
-    #[test]
-    fn test_self_healing_corrupted_or_fewer_than_3_files() {
-        let temp_dir = std::env::temp_dir().join(format!("ev3_test_assets_partial_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        std::fs::create_dir_all(&temp_dir).unwrap();
-
-        // Write only 1 partial file and a stale .version
-        std::fs::write(temp_dir.join("index.html.gz"), b"partial").unwrap();
-        std::fs::write(temp_dir.join(".version"), b"stale_sha").unwrap();
-
-        let (html, _design, css, js) = load_web_assets_from(&temp_dir, false);
-
-        // Verify all 4 files are healed to baseline and .version is removed
-        assert_eq!(html.as_ref(), BASELINE_HTML_GZ);
-        assert_eq!(_design.as_ref(), BASELINE_DESIGN_HTML_GZ);
-        assert_eq!(css.as_ref(), BASELINE_CSS_GZ);
-        assert_eq!(js.as_ref(), BASELINE_JS_GZ);
-        assert!(!temp_dir.join(".version").exists());
-
-        let disk_html = std::fs::read(temp_dir.join("index.html.gz")).unwrap();
-        assert_eq!(disk_html, BASELINE_HTML_GZ);
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
-    // Asserts empty payloads trigger recovery while retaining sound items.
-    #[test]
-    fn test_self_healing_corrupted_zero_length_file() {
-        let temp_dir = std::env::temp_dir().join(format!("ev3_test_assets_zero_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        std::fs::create_dir_all(&temp_dir).unwrap();
-
-        let valid_design = compress_test(b"<h1>Design</h1>");
-        let valid_css = compress_test(b"body { color: blue; }");
-        let valid_js = compress_test(b"console.log('test');");
-
-        // 4 files exist, but index.html.gz is 0 bytes (corrupted)
-        std::fs::write(temp_dir.join("index.html.gz"), b"").unwrap();
-        std::fs::write(temp_dir.join("design.html.gz"), &valid_design).unwrap();
-        std::fs::write(temp_dir.join("style.css.gz"), &valid_css).unwrap();
-        std::fs::write(temp_dir.join("app.js.gz"), &valid_js).unwrap();
-        std::fs::write(temp_dir.join(".version"), b"stale_sha_12345").unwrap();
-
-        let (html, design, css, js) = load_web_assets_from(&temp_dir, false);
-
-        // HTML should be restored to baseline, others kept as valid custom
-        assert_eq!(html.as_ref(), BASELINE_HTML_GZ);
-        assert_eq!(design.as_ref(), valid_design.as_slice());
-        assert_eq!(css.as_ref(), valid_css.as_slice());
-        assert_eq!(js.as_ref(), valid_js.as_slice());
-        assert!(!temp_dir.join(".version").exists());
-
-        let disk_html = std::fs::read(temp_dir.join("index.html.gz")).unwrap();
-        assert_eq!(disk_html, BASELINE_HTML_GZ);
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
-    // Ensures valid custom on-disk bundles are preserved without replacement.
-    #[test]
-    fn test_load_existing_updated_assets_without_overwriting() {
-        let temp_dir = std::env::temp_dir().join(format!("ev3_test_assets_custom_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        std::fs::create_dir_all(&temp_dir).unwrap();
-
-        let custom_html = compress_test(b"<h1>Custom App</h1>");
-        let custom_design = compress_test(b"<h1>Custom Design</h1>");
-        let custom_css = compress_test(b"h1 { color: red; }");
-        let custom_js = compress_test(b"console.log('custom');");
-
-        std::fs::write(temp_dir.join("index.html.gz"), &custom_html).unwrap();
-        std::fs::write(temp_dir.join("design.html.gz"), &custom_design).unwrap();
-        std::fs::write(temp_dir.join("style.css.gz"), &custom_css).unwrap();
-        std::fs::write(temp_dir.join("app.js.gz"), &custom_js).unwrap();
-        std::fs::write(temp_dir.join(".version"), b"valid_sha_abcdef").unwrap();
-
-        let (html, design, css, js) = load_web_assets_from(&temp_dir, false);
-
-        assert_eq!(html.as_ref(), custom_html.as_slice());
-        assert_eq!(design.as_ref(), custom_design.as_slice());
-        assert_eq!(css.as_ref(), custom_css.as_slice());
-        assert_eq!(js.as_ref(), custom_js.as_slice());
-        assert!(temp_dir.join(".version").exists());
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
-    // Verifies simulation uses built-in memory buffers if disk path is absent.
-    #[test]
-    fn test_mock_fallback_when_directory_missing() {
-        let non_existent = std::path::PathBuf::from("/non_existent_path_ev3_mock_test");
-        let (html, design, css, js) = load_web_assets_from(&non_existent, true);
-        assert_eq!(html.as_ref(), BASELINE_HTML_GZ);
-        assert_eq!(design.as_ref(), BASELINE_DESIGN_HTML_GZ);
-        assert_eq!(css.as_ref(), BASELINE_CSS_GZ);
-        assert_eq!(js.as_ref(), BASELINE_JS_GZ);
+        let js = std::str::from_utf8(BASELINE_JS).unwrap();
+        assert!(js.contains("function") || js.contains("const") || js.contains("let") || js.contains("class"));
     }
 
     // Exercises network server across primary endpoints and HTTP methods.
     #[test]
-    fn test_http_routes_serve_gzipped_assets_and_headers() {
+    fn test_http_routes_serve_plain_assets_and_headers() {
         use std::io::{Read, Write};
         use std::net::TcpStream;
 
@@ -712,7 +373,7 @@ mod tests {
         let router_clone = router.clone();
         let server_clone = server;
         let thread_handle = std::thread::spawn(move || {
-            for _ in 0..21 {
+            for _ in 0..16 {
                 if let Ok(req) = server_clone.recv() {
                     router_clone.handle_request(req);
                 }
@@ -729,7 +390,7 @@ mod tests {
 
             assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
             assert!(resp_str.contains("Content-Type: text/html; charset=utf-8"));
-            assert!(resp_str.contains("Content-Encoding: gzip"));
+            assert!(!resp_str.contains("Content-Encoding: gzip"));
             assert!(resp_str.contains("Cache-Control: no-cache"));
         }
 
@@ -743,7 +404,7 @@ mod tests {
 
             assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
             assert!(resp_str.contains("Content-Type: text/html; charset=utf-8"));
-            assert!(resp_str.contains("Content-Encoding: gzip"));
+            assert!(!resp_str.contains("Content-Encoding: gzip"));
             assert!(resp_str.contains("Cache-Control: no-cache"));
         }
 
@@ -757,7 +418,7 @@ mod tests {
 
             assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
             assert!(resp_str.contains("Content-Type: text/css; charset=utf-8"));
-            assert!(resp_str.contains("Content-Encoding: gzip"));
+            assert!(!resp_str.contains("Content-Encoding: gzip"));
             assert!(resp_str.contains("Cache-Control: no-cache"));
         }
 
@@ -771,7 +432,7 @@ mod tests {
 
             assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
             assert!(resp_str.contains("Content-Type: application/javascript; charset=utf-8"));
-            assert!(resp_str.contains("Content-Encoding: gzip"));
+            assert!(!resp_str.contains("Content-Encoding: gzip"));
             assert!(resp_str.contains("Cache-Control: no-cache"));
         }
 
@@ -785,7 +446,7 @@ mod tests {
 
             assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
             assert!(resp_str.contains("Content-Type: text/html; charset=utf-8"));
-            assert!(resp_str.contains("Content-Encoding: gzip"));
+            assert!(!resp_str.contains("Content-Encoding: gzip"));
         }
 
         // Test GET /run
@@ -798,7 +459,7 @@ mod tests {
 
             assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
             assert!(resp_str.contains("Content-Type: text/html; charset=utf-8"));
-            assert!(resp_str.contains("Content-Encoding: gzip"));
+            assert!(!resp_str.contains("Content-Encoding: gzip"));
         }
 
         // 5. Test GET /favicon.ico
@@ -849,36 +510,10 @@ mod tests {
             assert!(resp_str.contains("\"success\":true"));
         }
 
-        // 9. Test GET /api/ports
+        // 9. Test POST /api/port/outA
         {
             let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"GET /api/ports HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
-            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-            assert!(resp_str.contains("\"motors\":["));
-            assert!(resp_str.contains("\"sensors\":["));
-        }
-
-        // 10. Test GET /api/port/A
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"GET /api/port/A HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
-            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-            assert!(resp_str.contains("\"port\":\"A\""));
-            assert!(resp_str.contains("\"address\":\"outA\""));
-        }
-
-        // 11. Test POST /api/port/outA with inferred timed run
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            let body = b"{\"speed\": 500, \"time_ms\": 1000}";
+            let body = b"{\"speed\": 500}";
             let req = format!(
                 "POST /api/port/outA HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                 body.len(),
@@ -893,32 +528,7 @@ mod tests {
             assert!(resp_str.contains("\"success\":true"));
         }
 
-        // 12. Test GET /api/port/invalid (400 Bad Request)
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"GET /api/port/invalid HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
-            assert!(resp_str.starts_with("HTTP/1.1 400 Bad Request"));
-            assert!(resp_str.contains("\"success\":false"));
-        }
-
-        // 13. Test GET /api/port/1 (Sensor on input port 1)
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"GET /api/port/1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
-            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-            assert!(resp_str.contains("\"port\":\"1\""));
-            assert!(resp_str.contains("\"driver_name\":\"lego-ev3-touch (mock)\""));
-        }
-
-        // 14. Test POST /api/port/2 (Change sensor mode)
+        // 10. Test POST /api/port/2 (Change sensor mode)
         {
             let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
             let body = b"{\"mode\": \"COL-REFLECT\"}";
@@ -936,20 +546,7 @@ mod tests {
             assert!(resp_str.contains("\"success\":true"));
         }
 
-        // 15. Test GET /api/telemetry (alias for /api/status)
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"GET /api/telemetry HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
-            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-            assert!(resp_str.contains("\"success\":true"));
-            assert!(resp_str.contains("\"motors\":["));
-        }
-
-        // 16. Test POST /api/estop (alias for /api/emergency-stop)
+        // 11. Test POST /api/estop
         {
             let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
             stream.write_all(b"POST /api/estop HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: 0\r\n\r\n").unwrap();
@@ -962,7 +559,7 @@ mod tests {
             assert!(resp_str.contains("All motors stopped"));
         }
 
-        // 17. Test POST /api/batch
+        // 12. Test POST /api/batch
         {
             let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
             let body = b"{\"heartbeat_ms\": 2000, \"commands\": [{\"port\": \"A\", \"speed\": 200}]}";
@@ -980,7 +577,7 @@ mod tests {
             assert!(resp_str.contains("\"success\":true"));
         }
 
-        // 18. Cross-origin POST with port 80 in Host omitted in Origin.
+        // 13. Cross-origin POST with port 80 in Host omitted in Origin.
         {
             let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
             let req = "POST /api/estop HTTP/1.1\r\nHost: localhost:80\r\nOrigin: http://localhost\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
@@ -992,7 +589,7 @@ mod tests {
             assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
         }
 
-        // 19. Test genuine cross-origin POST rejected with 403 Forbidden
+        // 14. Test genuine cross-origin POST rejected with 403 Forbidden
         {
             let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
             let req = "POST /api/estop HTTP/1.1\r\nHost: localhost\r\nOrigin: http://attacker.com\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
@@ -1127,28 +724,5 @@ mod tests {
         }
 
         thread_handle.join().unwrap();
-    }
-
-    #[test]
-    fn test_restore_baseline_widgets_restores_individual_missing_files_when_manifest_exists() {
-        let test_id = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let temp_dir = std::env::temp_dir().join(format!("ev3_test_restore_missing_{}", test_id));
-        let widgets_dir = temp_dir.join("widgets");
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        std::fs::create_dir_all(&widgets_dir).unwrap();
-
-        // Write only manifest.json, omitting joystick/widget.js
-        std::fs::write(widgets_dir.join("manifest.json"), b"{\"timestamp\": 1000}").unwrap();
-        assert!(!widgets_dir.join("joystick").join("widget.js").exists());
-
-        restore_baseline_widgets(&widgets_dir);
-
-        // Missing joystick/widget.js should be restored from embedded baseline
-        assert!(widgets_dir.join("joystick").join("widget.js").exists());
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

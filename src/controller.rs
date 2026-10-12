@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use crate::sysfs::{MockController, Motor, MotorStatus, Sensor};
 use crate::web::handlers::{
-    is_motor_port, is_sensor_port, normalize_port_name, AllPortsStatus, BatchCommandPayload,
+    is_motor_port, is_sensor_port, normalize_port_name, BatchCommandPayload,
     ResolvedPortCommand, SensorStatus, MOTOR_PORTS, SENSOR_PORTS,
 };
 
@@ -359,33 +359,6 @@ impl MotorController {
         }
     }
 
-    /// Resolves telemetry for either input or output channels dynamically.
-    pub fn get_port_status(&self, port: &str) -> Result<serde_json::Value, String> {
-        if is_motor_port(port) {
-            let status = self.get_port_motor_status(port)?;
-            serde_json::to_value(status).map_err(|e| e.to_string())
-        } else if is_sensor_port(port) {
-            self.touch_client_poll();
-            let cache = self.cached_sensors.read().map_err(|e| e.to_string())?;
-            let status = cache
-                .iter()
-                .find(|s| s.port == port)
-                .cloned()
-                .ok_or_else(|| format!("Port '{}' not found", port))?;
-            serde_json::to_value(status).map_err(|e| e.to_string())
-        } else {
-            Err(format!("Port '{}' not found", port))
-        }
-    }
-
-    /// Aggregates combined telemetry across inputs and outputs.
-    pub fn get_all_ports_status(&self) -> AllPortsStatus {
-        self.touch_client_poll();
-        let motors = self.cached_status.read().unwrap().clone();
-        let sensors = self.cached_sensors.read().unwrap().clone();
-        AllPortsStatus { motors, sensors }
-    }
-
     /// Configures the active measurement profile for an input channel.
     pub fn set_sensor_mode(&self, port: &str, mode: &str) -> Result<(), String> {
         self.touch_client_poll();
@@ -422,7 +395,6 @@ impl MotorController {
                     self.set_sensor_mode(port, mode)?;
                     Ok(format!("Sensor on Port {} mode set to {}", port, mode))
                 }
-                _ => Err(format!("Port {} is a sensor and only accepts mode commands", port)),
             }
         } else if is_motor_port(port) {
             match cmd {
@@ -430,17 +402,9 @@ impl MotorController {
                     self.run_forever(port, *speed)?;
                     Ok(format!("Motor on Port {} running forever at speed {}", port, speed))
                 }
-                ResolvedPortCommand::RunTimed { speed, time_ms, stop_action } => {
-                    self.run_timed(port, *speed, *time_ms, Some(stop_action.clone()))?;
-                    Ok(format!("Motor on Port {} running timed ({} ms at speed {})", port, time_ms, speed))
-                }
                 ResolvedPortCommand::RunToRelPos { speed, position_sp, stop_action } => {
                     self.run_to_rel_pos(port, *speed, *position_sp, Some(stop_action.clone()))?;
                     Ok(format!("Motor on Port {} stepping {} counts at speed {}", port, position_sp, speed))
-                }
-                ResolvedPortCommand::RunDirect { duty_cycle } => {
-                    self.run_direct(port, *duty_cycle)?;
-                    Ok(format!("Motor on Port {} direct duty {}%", port, duty_cycle))
                 }
                 ResolvedPortCommand::Stop { stop_action } => {
                     self.stop(port, Some(stop_action.clone()))?;
@@ -449,10 +413,6 @@ impl MotorController {
                 ResolvedPortCommand::Reset => {
                     self.reset(port)?;
                     Ok(format!("Motor on Port {} reset", port))
-                }
-                ResolvedPortCommand::SetPolarity { polarity } => {
-                    self.set_polarity(port, polarity)?;
-                    Ok(format!("Motor on Port {} polarity set to {}", port, polarity))
                 }
                 ResolvedPortCommand::SetMode { .. } => {
                     Err(format!("Port {} is a motor and does not support mode commands", port))
@@ -466,23 +426,6 @@ impl MotorController {
     /// Indicates whether simulated hardware drivers are currently active.
     pub fn is_mock(&self) -> bool {
         matches!(self.backend, HardwareBackend::Mock(_))
-    }
-
-    /// Inverts or normalizes directional rotation on an output channel.
-    pub fn set_polarity(&self, port: &str, polarity: &str) -> Result<(), String> {
-        self.touch_client_poll();
-        let val = if polarity == "inversed" { "inversed" } else { "normal" };
-        match &self.backend {
-            HardwareBackend::Mock(mock) => {
-                mock.set_polarity(port, val);
-                Ok(())
-            }
-            HardwareBackend::Real => {
-                let motor = self.get_real_motor(port)?;
-                motor.set_polarity(val).map_err(|e| e.to_string())?;
-                Ok(())
-            }
-        }
     }
 
     // Directly engages continuous rotation without adjusting timers.
@@ -502,22 +445,6 @@ impl MotorController {
         }
     }
 
-    // Directly commits PWM duty cycle without adjusting timers.
-    fn raw_run_direct(&self, port: &str, duty_cycle: i32) -> Result<(), String> {
-        match &self.backend {
-            HardwareBackend::Mock(mock) => {
-                mock.run_direct(port, duty_cycle);
-                Ok(())
-            }
-            HardwareBackend::Real => {
-                let motor = self.get_real_motor(port)?;
-                motor.set_duty_cycle_sp(duty_cycle).map_err(|e| e.to_string())?;
-                motor.send_command("run-direct").map_err(|e| e.to_string())?;
-                Ok(())
-            }
-        }
-    }
-
     /// Initiates continuous movement on an actuator with watchdog monitoring.
     pub fn run_forever(&self, port: &str, speed: i32) -> Result<(), String> {
         if speed != 0 {
@@ -530,32 +457,6 @@ impl MotorController {
             }
         }
         res
-    }
-
-    /// Activates an actuator for a fixed millisecond duration.
-    pub fn run_timed(
-        &self,
-        port: &str,
-        speed: i32,
-        time_ms: u32,
-        stop_action: Option<String>,
-    ) -> Result<(), String> {
-        self.touch_client_poll();
-        let action = stop_action.unwrap_or_else(|| "brake".into());
-        match &self.backend {
-            HardwareBackend::Mock(mock) => {
-                mock.run_timed(port, speed, time_ms, Some(action));
-                Ok(())
-            }
-            HardwareBackend::Real => {
-                let motor = self.get_real_motor(port)?;
-                motor.set_stop_action(&action).map_err(|e| e.to_string())?;
-                motor.set_speed_sp(speed).map_err(|e| e.to_string())?;
-                motor.set_time_sp(time_ms).map_err(|e| e.to_string())?;
-                motor.send_command("run-timed").map_err(|e| e.to_string())?;
-                Ok(())
-            }
-        }
     }
 
     /// Rotates an actuator by an incremental count offset.
@@ -584,18 +485,18 @@ impl MotorController {
         }
     }
 
-    /// Drives an actuator using raw pulse-width percentage modulation.
-    pub fn run_direct(&self, port: &str, duty_cycle: i32) -> Result<(), String> {
-        if duty_cycle != 0 {
-            self.arm_watchdog(None);
-        }
-        let res = self.raw_run_direct(port, duty_cycle);
-        if duty_cycle == 0 && res.is_ok() && !self.is_any_motor_running() {
-            if let Ok(mut wd) = self.watchdog.lock() {
-                wd.active = false;
+    // Helper to update motor cache when stopped or reset.
+    fn mark_motor_stopped(&self, port: &str) {
+        if let Ok(mut cache) = self.cached_status.write() {
+            if let Some(m) = cache
+                .iter_mut()
+                .find(|m| m.port.eq_ignore_ascii_case(port))
+            {
+                m.speed = 0;
+                m.duty_cycle = 0;
+                m.state.retain(|s| s != "running");
             }
         }
-        res
     }
 
     /// Halts motion on a specified output channel using a braking strategy.
@@ -611,16 +512,7 @@ impl MotorController {
                 let motor = self.get_real_motor(port)?;
                 motor.set_stop_action(&action_str).map_err(|e| e.to_string())?;
                 motor.send_command("stop").map_err(|e| e.to_string())?;
-                if let Ok(mut cache) = self.cached_status.write() {
-                    if let Some(m) = cache
-                        .iter_mut()
-                        .find(|m| m.port.eq_ignore_ascii_case(port))
-                    {
-                        m.speed = 0;
-                        m.duty_cycle = 0;
-                        m.state.retain(|s| s != "running");
-                    }
-                }
+                self.mark_motor_stopped(port);
                 Ok(())
             }
         };
@@ -643,16 +535,7 @@ impl MotorController {
             HardwareBackend::Real => {
                 let motor = self.get_real_motor(port)?;
                 motor.send_command("reset").map_err(|e| e.to_string())?;
-                if let Ok(mut cache) = self.cached_status.write() {
-                    if let Some(m) = cache
-                        .iter_mut()
-                        .find(|m| m.port.eq_ignore_ascii_case(port))
-                    {
-                        m.speed = 0;
-                        m.duty_cycle = 0;
-                        m.state.retain(|s| s != "running");
-                    }
-                }
+                self.mark_motor_stopped(port);
                 Ok(())
             }
         };
@@ -663,6 +546,7 @@ impl MotorController {
         }
         res
     }
+
 
     /// Applies multi-channel instructions with unified safety watchdog.
     pub fn execute_batch(&self, batch: &BatchCommandPayload) -> Result<Vec<String>, String> {
@@ -679,14 +563,10 @@ impl MotorController {
             results.push(msg);
 
             if is_motor_port(&norm_port) {
-                match &resolved {
-                    ResolvedPortCommand::RunForever { speed } if *speed != 0 => {
+                if let ResolvedPortCommand::RunForever { speed } = &resolved {
+                    if *speed != 0 {
                         has_motion = true;
                     }
-                    ResolvedPortCommand::RunDirect { duty_cycle } if *duty_cycle != 0 => {
-                        has_motion = true;
-                    }
-                    _ => {}
                 }
             }
         }
@@ -702,22 +582,25 @@ impl MotorController {
         Ok(results)
     }
 
-    /// Halts all motor channels with coast action to minimize gear stress.
-    pub fn coast_all_motors(&self) -> Result<(), String> {
+    fn stop_all_motors(&self, stop_action: &str) -> Result<(), String> {
         if let Ok(mut wd) = self.watchdog.lock() {
             wd.active = false;
         }
 
         match &self.backend {
             HardwareBackend::Mock(mock) => {
-                mock.coast_all();
+                if stop_action == "coast" {
+                    mock.coast_all();
+                } else {
+                    mock.emergency_stop();
+                }
                 Ok(())
             }
             HardwareBackend::Real => {
                 let mut errors = Vec::new();
                 let motors = self.motors.read().map_err(|e| e.to_string())?;
                 for motor in motors.iter() {
-                    if let Err(e) = motor.set_stop_action("coast") {
+                    if let Err(e) = motor.set_stop_action(stop_action) {
                         errors.push(format!("Port {} stop_action error: {}", motor.port, e));
                     }
                     if let Err(e) = motor.send_command("stop") {
@@ -731,41 +614,20 @@ impl MotorController {
                 }
             }
         }
+    }
+
+    /// Halts all motor channels with coast action to minimize gear stress.
+    pub fn coast_all_motors(&self) -> Result<(), String> {
+        self.stop_all_motors("coast")
     }
 
     /// Immediately brakes all output channels and clears active motions.
     pub fn emergency_stop(&self) -> Result<(), String> {
-        if let Ok(mut wd) = self.watchdog.lock() {
-            wd.active = false;
-        }
-
-        match &self.backend {
-            HardwareBackend::Mock(mock) => {
-                mock.emergency_stop();
-                Ok(())
-            }
-            HardwareBackend::Real => {
-                let mut errors = Vec::new();
-                let motors = self.motors.read().map_err(|e| e.to_string())?;
-                for motor in motors.iter() {
-                    if let Err(e) = motor.set_stop_action("brake") {
-                        errors.push(format!("Port {} stop_action error: {}", motor.port, e));
-                    }
-                    if let Err(e) = motor.send_command("stop") {
-                        errors.push(format!("Port {} stop command error: {}", motor.port, e));
-                    }
-                }
-                if !errors.is_empty() {
-                    Err(errors.join("; "))
-                } else {
-                    Ok(())
-                }
-            }
-        }
+        self.stop_all_motors("brake")
     }
 
     /// Re-enumerates connected peripherals and updates in-memory tables.
-    pub fn rescan(&self) -> Result<AllPortsStatus, String> {
+    pub fn rescan(&self) -> Result<SystemStatus, String> {
         match &self.backend {
             HardwareBackend::Mock(mock) => {
                 let motors = mock.poll_and_get_all_status();
@@ -776,19 +638,14 @@ impl MotorController {
                 if let Ok(mut cache) = self.cached_sensors.write() {
                     *cache = sensors;
                 }
-                Ok(self.get_all_ports_status())
+                Ok(self.get_system_status())
             }
             HardwareBackend::Real => {
                 let (lock, cvar) = &*self.rescan_signal;
                 let mut requested = lock.lock().map_err(|e| e.to_string())?;
                 *requested = true;
-                let result = cvar
-                    .wait_timeout_while(requested, Duration::from_secs(2), |req| *req)
-                    .map_err(|e| e.to_string())?;
-                if result.1.timed_out() {
-                    return Err("Hardware rescan timed out".into());
-                }
-                Ok(self.get_all_ports_status())
+                let _ = cvar.wait_timeout_while(requested, Duration::from_millis(200), |req| *req);
+                Ok(self.get_system_status())
             }
         }
     }
@@ -861,20 +718,14 @@ mod tests {
         assert_eq!(controller.get_mock_stop_action("C"), Some("coast".into()));
     }
 
-    // Validates orientation transitions with power telemetry parsing.
+    // Validates power telemetry parsing.
     #[test]
-    fn test_controller_polarity_and_battery() {
+    fn test_controller_battery() {
         let controller = MotorController::new(true, 15);
         let st = controller.get_system_status();
         assert_eq!(st.battery.voltage_v, 7.8);
         assert_eq!(st.battery.current_a, 0.12);
-
-        controller.set_polarity("A", "inversed").unwrap();
-        thread::sleep(Duration::from_millis(40));
-
-        let st_inv = controller.get_system_status();
-        let a = st_inv.motors.iter().find(|m| m.port == "A").unwrap();
-        assert_eq!(a.polarity, "inversed");
+        assert_eq!(controller.get_battery().voltage_v, 7.8);
     }
 
     // Confirms dropped client communication halts motors with coast.
@@ -915,17 +766,17 @@ mod tests {
         assert_eq!(c.speed, 500);
     }
 
-    // Verifies mixed continuous and direct runs coast after 2 seconds timeout.
+    // Verifies continuous runs coast after 2 seconds timeout.
     #[test]
     fn test_unified_watchdog_coasts_all_motors_after_2_seconds() {
         let controller = MotorController::new(true, 15);
         controller.run_forever("A", 350).unwrap();
-        controller.run_direct("B", 60).unwrap();
+        controller.run_forever("B", 500).unwrap();
         thread::sleep(Duration::from_millis(40));
 
         let s1 = controller.get_system_status();
         assert_eq!(s1.motors.iter().find(|m| m.port == "A").unwrap().speed, 350);
-        assert_eq!(s1.motors.iter().find(|m| m.port == "B").unwrap().speed, 630);
+        assert_eq!(s1.motors.iter().find(|m| m.port == "B").unwrap().speed, 500);
 
         // Sleep >2000ms without client communication
         thread::sleep(Duration::from_millis(2100));

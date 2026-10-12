@@ -112,14 +112,6 @@ impl MockController {
         }
     }
 
-    /// Flips or normalizes simulated rotation direction on a virtual channel.
-    pub fn set_polarity(&self, port: &str, polarity: &str) {
-        let mut m = self.motors.lock().unwrap();
-        if let Some(motor) = m.iter_mut().find(|m| m.port.eq_ignore_ascii_case(port)) {
-            motor.polarity = if polarity == "inversed" { "inversed".into() } else { "normal".into() };
-        }
-    }
-
     /// Spins a simulated actuator continuously at target velocity.
     pub fn run_forever(&self, port: &str, speed: i32) {
         let mut m = self.motors.lock().unwrap();
@@ -130,23 +122,6 @@ impl MockController {
             motor.holding = false;
             motor.target_pos = None;
             motor.time_remaining_ms = None;
-            motor.last_tick = Instant::now();
-        }
-    }
-
-    /// Executes simulated rotation for an allocated millisecond window.
-    pub fn run_timed(&self, port: &str, speed: i32, time_ms: u32, stop_action: Option<String>) {
-        let mut m = self.motors.lock().unwrap();
-        if let Some(motor) = m.iter_mut().find(|m| m.port.eq_ignore_ascii_case(port)) {
-            motor.speed_sp = speed.clamp(-motor.max_speed, motor.max_speed);
-            motor.duty_cycle_sp = (motor.speed_sp * 100) / motor.max_speed;
-            motor.running = true;
-            motor.holding = false;
-            motor.target_pos = None;
-            motor.time_remaining_ms = Some(time_ms);
-            if let Some(action) = stop_action {
-                motor.stop_action = action;
-            }
             motor.last_tick = Instant::now();
         }
     }
@@ -166,20 +141,6 @@ impl MockController {
             if let Some(action) = stop_action {
                 motor.stop_action = action;
             }
-            motor.last_tick = Instant::now();
-        }
-    }
-
-    /// Applies raw pulse-width modulation percentage to simulated coils.
-    pub fn run_direct(&self, port: &str, duty_cycle: i32) {
-        let mut m = self.motors.lock().unwrap();
-        if let Some(motor) = m.iter_mut().find(|m| m.port.eq_ignore_ascii_case(port)) {
-            motor.duty_cycle_sp = duty_cycle.clamp(-100, 100);
-            motor.speed_sp = (motor.max_speed * motor.duty_cycle_sp) / 100;
-            motor.running = duty_cycle != 0;
-            motor.holding = false;
-            motor.target_pos = None;
-            motor.time_remaining_ms = None;
             motor.last_tick = Instant::now();
         }
     }
@@ -221,8 +182,7 @@ impl MockController {
         }
     }
 
-    /// Instantly brakes all simulated output channels and engages holding.
-    pub fn emergency_stop(&self) {
+    fn stop_all(&self, stop_action: &str, holding: bool) {
         let mut m = self.motors.lock().unwrap();
         for motor in m.iter_mut() {
             motor.running = false;
@@ -230,23 +190,19 @@ impl MockController {
             motor.duty_cycle_sp = 0;
             motor.target_pos = None;
             motor.time_remaining_ms = None;
-            motor.holding = true;
-            motor.stop_action = "hold".into();
+            motor.holding = holding;
+            motor.stop_action = stop_action.into();
         }
+    }
+
+    /// Instantly brakes all simulated output channels and engages holding.
+    pub fn emergency_stop(&self) {
+        self.stop_all("hold", true);
     }
 
     /// Halts all simulated actuators using the coast stop action.
     pub fn coast_all(&self) {
-        let mut m = self.motors.lock().unwrap();
-        for motor in m.iter_mut() {
-            motor.running = false;
-            motor.speed_sp = 0;
-            motor.duty_cycle_sp = 0;
-            motor.target_pos = None;
-            motor.time_remaining_ms = None;
-            motor.holding = false;
-            motor.stop_action = "coast".into();
-        }
+        self.stop_all("coast", false);
     }
 
     /// Checks whether any simulated actuator is actively rotating.
@@ -402,18 +358,6 @@ mod tests {
     use super::*;
     use std::thread;
     use std::time::Duration;
-
-    // Confirms directional inversion updates reflected hardware flags.
-    #[test]
-    fn test_mock_polarity() {
-        let mock = MockController::new();
-        let statuses = mock.poll_and_get_all_status();
-        assert_eq!(statuses[0].polarity, "normal");
-
-        mock.set_polarity("A", "inversed");
-        let statuses_inv = mock.poll_and_get_all_status();
-        assert_eq!(statuses_inv[0].polarity, "inversed");
-    }
 
     // Verifies zeroed telemetry registers upon fresh subsystem boot.
     #[test]

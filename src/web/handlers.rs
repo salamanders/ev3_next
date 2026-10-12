@@ -1,18 +1,10 @@
 use serde::{Deserialize, Serialize};
-use crate::sysfs::MotorStatus;
-
-
-
-
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PortCommandPayload {
     pub command: Option<String>,
     pub speed: Option<i32>,
     pub degrees: Option<i32>,
-    pub time_ms: Option<u32>,
-    pub duty_cycle: Option<i32>,
     pub stop_action: Option<String>,
-    pub polarity: Option<String>,
     pub mode: Option<String>,
 }
 
@@ -32,12 +24,9 @@ pub struct BatchCommandPayload {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResolvedPortCommand {
     RunForever { speed: i32 },
-    RunTimed { speed: i32, time_ms: u32, stop_action: String },
     RunToRelPos { speed: i32, position_sp: i32, stop_action: String },
-    RunDirect { duty_cycle: i32 },
     Stop { stop_action: String },
     Reset,
-    SetPolarity { polarity: String },
     SetMode { mode: String },
 }
 
@@ -63,23 +52,6 @@ impl PortCommandPayload {
                         stop_action: stop_act,
                     });
                 }
-                "run-timed" => {
-                    let sp = self.speed.unwrap_or(max_speed / 2).clamp(-max_speed, max_speed);
-                    let ms = self.time_ms.unwrap_or(1000);
-                    return Ok(ResolvedPortCommand::RunTimed {
-                        speed: sp,
-                        time_ms: ms,
-                        stop_action: stop_act,
-                    });
-                }
-                "run-direct" => {
-                    let duty = self.duty_cycle.unwrap_or(50).clamp(-100, 100);
-                    return Ok(ResolvedPortCommand::RunDirect { duty_cycle: duty });
-                }
-                "polarity" => {
-                    let pol = self.polarity.clone().unwrap_or_else(|| "normal".into());
-                    return Ok(ResolvedPortCommand::SetPolarity { polarity: pol });
-                }
                 "mode" => {
                     if let Some(ref m) = self.mode {
                         return Ok(ResolvedPortCommand::SetMode { mode: m.clone() });
@@ -91,9 +63,6 @@ impl PortCommandPayload {
         }
 
         // Inferred commands when 'command' is omitted
-        if let Some(ref pol) = self.polarity {
-            return Ok(ResolvedPortCommand::SetPolarity { polarity: pol.clone() });
-        }
         if let Some(ref m) = self.mode {
             return Ok(ResolvedPortCommand::SetMode { mode: m.clone() });
         }
@@ -104,17 +73,6 @@ impl PortCommandPayload {
                 position_sp: deg,
                 stop_action: stop_act,
             });
-        }
-        if let Some(ms) = self.time_ms {
-            let sp = self.speed.unwrap_or(max_speed / 2).clamp(-max_speed, max_speed);
-            return Ok(ResolvedPortCommand::RunTimed {
-                speed: sp,
-                time_ms: ms,
-                stop_action: stop_act,
-            });
-        }
-        if let Some(duty) = self.duty_cycle {
-            return Ok(ResolvedPortCommand::RunDirect { duty_cycle: duty.clamp(-100, 100) });
         }
         if let Some(sp) = self.speed {
             if sp == 0 {
@@ -193,12 +151,6 @@ pub fn normalize_port_name(port: &str) -> Option<String> {
 
 pub use crate::sysfs::SensorStatus;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AllPortsStatus {
-    pub motors: Vec<MotorStatus>,
-    pub sensors: Vec<SensorStatus>,
-}
-
 #[derive(Debug, Serialize)]
 pub struct ApiResponse<T: Serialize> {
     pub success: bool,
@@ -268,35 +220,17 @@ mod tests {
             }
         );
 
-        // 3. Inferred RunDirect from duty_cycle
-        let payload3: PortCommandPayload = serde_json::from_str(r#"{"duty_cycle": 75}"#).unwrap();
+        // 3. Inferred Stop from speed 0
+        let payload3: PortCommandPayload = serde_json::from_str(r#"{"speed": 0}"#).unwrap();
         assert_eq!(
             payload3.resolve(1050).unwrap(),
-            ResolvedPortCommand::RunDirect { duty_cycle: 75 }
-        );
-
-        // 4. Inferred Stop from speed 0
-        let payload4: PortCommandPayload = serde_json::from_str(r#"{"speed": 0}"#).unwrap();
-        assert_eq!(
-            payload4.resolve(1050).unwrap(),
             ResolvedPortCommand::Stop { stop_action: "brake".into() }
         );
 
-        // 5. Explicit run-timed command
-        let payload5: PortCommandPayload = serde_json::from_str(r#"{"command": "run-timed", "speed": 400, "time_ms": 1500}"#).unwrap();
+        // 4. Inferred SetMode for sensors
+        let payload4: PortCommandPayload = serde_json::from_str(r#"{"mode": "COL-COLOR"}"#).unwrap();
         assert_eq!(
-            payload5.resolve(1050).unwrap(),
-            ResolvedPortCommand::RunTimed {
-                speed: 400,
-                time_ms: 1500,
-                stop_action: "brake".into()
-            }
-        );
-
-        // 6. Inferred SetMode for sensors
-        let payload6: PortCommandPayload = serde_json::from_str(r#"{"mode": "COL-COLOR"}"#).unwrap();
-        assert_eq!(
-            payload6.resolve(1050).unwrap(),
+            payload4.resolve(1050).unwrap(),
             ResolvedPortCommand::SetMode { mode: "COL-COLOR".into() }
         );
     }

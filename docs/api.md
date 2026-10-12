@@ -4,33 +4,24 @@ The EV3 Web Motor Control server exposes a JSON REST API for controlling motors,
 
 ---
 
-## 1. Unified Port API (`/api/port`)
+## 1. Unified Port API (`POST /api/port/{port}`)
 
-The unified port endpoint handles all motors (ports `A`–`D`) and sensors (ports `1`–`4`) using a single interface. Port names are case-insensitive and accept short (`A`, `1`) or long (`outA`, `in1`) identifiers.
+The unified port endpoint controls motors (ports `A`–`D`) and sensors (ports `1`–`4`) using a single interface. Port names are case-insensitive and accept short (`A`, `1`) or long (`outA`, `in1`) identifiers.
 
 ### Endpoints
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `GET` | `/api/ports` | Returns status and telemetry for all 8 ports from in-memory cache. |
-| `GET` | `/api/port/{port}` | Returns telemetry for a single port from in-memory cache. |
 | `POST` | `/api/port/{port}` | Executes motor movement or sets sensor mode. |
-| `POST` | `/api/batch` | Dispatches multi-port commands in a single atomic request with optional heartbeat watchdog. |
-| `POST` | `/api/ports` | Alias for `POST /api/batch`. |
 
 ### Payload Attributes (`POST /api/port/{port}`)
 
-The endpoint accepts raw sysfs keys and convenience aliases:
-
 | Key | Aliases | Type | Description |
 | :--- | :--- | :--- | :--- |
-| `command` | — | String | Motor command (`run-forever`, `run-timed`, `run-to-rel-pos`, `run-direct`, `stop`, `reset`). |
-| `speed_sp` | `speed` | Integer | Target velocity in encoder ticks/second (-1560 to +1560). |
-| `time_sp` | `duration_s`, `time_ms` | Float / Int | Duration for timed runs (seconds or milliseconds). |
-| `position_sp` | `degrees`, `angle` | Integer | Relative rotation angle in degrees. |
-| `duty_cycle_sp`| `duty` | Integer | Direct PWM duty cycle (-100 to +100). |
-| `stop_action` | `stop_mode` | String | Stop behavior (`coast`, `brake`, `hold`). |
-| `polarity` | — | String | Motor polarity (`normal`, `inversed`). |
+| `command` | — | String | Motor command (`run-forever`, `run-to-rel-pos`, `step`, `stop`, `reset`, `mode`). |
+| `speed` | `speed_sp` | Integer | Target velocity in encoder ticks/second (-1560 to +1560). |
+| `degrees` | `position_sp`, `angle` | Integer | Relative rotation angle in degrees or counts. |
+| `stop_action` | `stop_mode` | String | Stop behavior (`coast`, `brake`, `hold`). Default is `brake`. |
 | `mode` | — | String | Sensor operating mode (e.g., `TOUCH`, `COL-COLOR`, `US-DIST-CM`, `GYRO-ANG`). |
 
 ### Examples
@@ -42,18 +33,18 @@ curl -X POST http://<ip>/api/port/A \
   -d '{"speed": 700}'
 ```
 
-**Timed Move (2.5 seconds):**
-```bash
-curl -X POST http://<ip>/api/port/B \
-  -H "Content-Type: application/json" \
-  -d '{"speed": 500, "duration_s": 2.5, "stop_action": "brake"}'
-```
-
 **Relative Angle Turn (90 degrees):**
 ```bash
 curl -X POST http://<ip>/api/port/D \
   -H "Content-Type: application/json" \
   -d '{"speed": 400, "degrees": 90, "stop_action": "hold"}'
+```
+
+**Halt Motor:**
+```bash
+curl -X POST http://<ip>/api/port/A \
+  -H "Content-Type: application/json" \
+  -d '{"command": "stop", "stop_action": "coast"}'
 ```
 
 **Set Sensor Mode:**
@@ -65,7 +56,7 @@ curl -X POST http://<ip>/api/port/3 \
 
 ---
 
-## 2. Batch Port Control (`POST /api/batch`, `POST /api/ports`)
+## 2. Batch Port Control (`POST /api/batch`)
 
 The batch endpoint executes commands across multiple ports in a single atomic HTTP request. It removes network round-trip skew between coordinated motors and allows client widgets to control arbitrary combinations of motors without server-side Rust changes.
 
@@ -74,14 +65,13 @@ The batch endpoint executes commands across multiple ports in a single atomic HT
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
 | `POST` | `/api/batch` | Dispatches multi-port commands with an optional heartbeat safety watchdog. |
-| `POST` | `/api/ports` | Alias for `POST /api/batch`. |
 
 ### Payload Structure
 
 | Key | Type | Required | Description |
 | :--- | :--- | :--- | :--- |
-| `heartbeat_ms` | Integer | No | Watchdog timeout in milliseconds (clamped between `100` and `5000`). If omitted, no heartbeat timeout is set. |
-| `commands` | Array of Objects | Yes | List of port commands to execute sequentially in the batch. |
+| `heartbeat_ms` | Integer | No | Watchdog timeout in milliseconds (clamped between `100` and `5000`). If omitted, no custom heartbeat timeout is set. |
+| `commands` | Array of Objects | Yes | List of port commands to execute in the batch. |
 
 #### Command Object Attributes (`commands[]`)
 
@@ -90,13 +80,10 @@ Each object in the `commands` array specifies a target port and the motor or sen
 | Key | Aliases | Type | Description |
 | :--- | :--- | :--- | :--- |
 | `port` | — | String | **Required.** Port identifier (case-insensitive: `A`–`D`, `1`–`4`, `outA`–`outD`, `in1`–`in4`). |
-| `speed_sp` | `speed` | Integer | Target velocity in encoder ticks/second (-1560 to +1560). |
-| `time_sp` | `duration_s`, `time_ms` | Float / Int | Duration for timed run (seconds or milliseconds). |
-| `position_sp` | `degrees`, `angle` | Integer | Relative rotation angle in degrees. |
-| `duty_cycle_sp`| `duty` | Integer | Direct PWM duty cycle (-100 to +100). |
-| `stop_action` | `stop_mode` | String | Stop behavior (`coast`, `brake`, `hold`). |
-| `polarity` | — | String | Motor polarity (`normal`, `inversed`). |
-| `command` | — | String | Explicit sysfs command (`run-forever`, `run-timed`, `run-to-rel-pos`, `run-direct`, `stop`, `reset`). |
+| `speed` | `speed_sp` | Integer | Target velocity in encoder ticks/second (-1560 to +1560). |
+| `degrees` | `position_sp`, `angle` | Integer | Relative rotation angle in degrees or counts. |
+| `stop_action` | `stop_mode` | String | Stop behavior (`coast`, `brake`, `hold`). Default is `brake`. |
+| `command` | — | String | Motor command (`run-forever`, `run-to-rel-pos`, `step`, `stop`, `reset`, `mode`). |
 | `mode` | — | String | Sensor mode (for input ports `1`–`4`). |
 
 ### Safety Watchdog Behavior
@@ -136,18 +123,6 @@ curl -X POST http://<ip>/api/batch \
   }'
 ```
 
-**Timed Coordinated Movement:**
-```bash
-curl -X POST http://<ip>/api/batch \
-  -H "Content-Type: application/json" \
-  -d '{
-    "commands": [
-      { "port": "A", "speed": 500, "duration_s": 1.5, "stop_action": "brake" },
-      { "port": "B", "speed": -500, "duration_s": 1.5, "stop_action": "brake" }
-    ]
-  }'
-```
-
 ### Response Format
 
 **Success Response (`200 OK`):**
@@ -175,20 +150,17 @@ curl -X POST http://<ip>/api/batch \
 
 | Method | Endpoint | Payload | Description |
 | :--- | :--- | :--- | :--- |
-| `POST` | `/api/rescan` | None | Triggers immediate hardware discovery on all 8 ports. |
-| `POST` | `/api/estop` | None | **Emergency Stop:** Stops all motors immediately with brake action and sets LEDs to red. |
-| `POST` | `/api/emergency-stop` | None | Alias for `/api/estop`. |
+| `POST` | `/api/rescan` | None | Triggers immediate hardware discovery on all 8 ports and returns updated system status. |
+| `POST` | `/api/estop` | None | **Emergency Stop:** Stops all motors immediately with brake action. |
 | `POST` | `/api/shutdown` | None | Safely powers off the Linux operating system on the EV3 brick. |
 
 ---
 
-## 4. Telemetry Endpoints
+## 4. Telemetry Endpoint
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
 | `GET` | `/api/status` | Returns system telemetry (motors, sensors, battery) from in-memory cache. |
-| `GET` | `/api/telemetry` | Alias for `/api/status`. |
-| `GET` | `/api/battery` | Returns battery voltage (`V`) and current (`A`). |
 
 ### Envelope Format
 
@@ -200,13 +172,45 @@ All responses use this standard JSON structure:
 }
 ```
 
-### Sample Response (`GET /api/battery`):
+### Sample Response (`GET /api/status`):
 ```json
 {
   "success": true,
   "data": {
-    "voltage_v": 7.8,
-    "current_a": 0.12
+    "motors": [
+      {
+        "port": "A",
+        "name": "motor0",
+        "driver_name": "lego-ev3-l-motor",
+        "address": "outA",
+        "speed": 0,
+        "position": 120,
+        "max_speed": 1050,
+        "duty_cycle": 0,
+        "state": [],
+        "polarity": "normal",
+        "stop_action": "brake",
+        "connected": true
+      }
+    ],
+    "sensors": [
+      {
+        "port": "1",
+        "name": "sensor0",
+        "driver_name": "lego-ev3-touch",
+        "address": "in1",
+        "mode": "TOUCH",
+        "modes": ["TOUCH"],
+        "units": "",
+        "decimals": 0,
+        "value0": 0.0,
+        "connected": true
+      }
+    ],
+    "battery": {
+      "voltage_v": 7.8,
+      "current_a": 0.12
+    }
   }
 }
 ```
@@ -215,12 +219,13 @@ All responses use this standard JSON structure:
 
 ## 5. Modular Widget Endpoints (`/widgets/*`)
 
-The HTTP server delivers dynamic widget components directly from local storage with transparent compression and cache busting:
+The HTTP server delivers dynamic widget components directly from local storage or embedded compile-time RAM:
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
 | `GET` / `HEAD` | `/widgets/manifest.json` | Catalog of available widgets, version strings, and timestamps. |
 | `GET` / `HEAD` | `/widgets/{widget}/widget.js` | Modular native ES component implementation. |
 
-- **Compression:** Serves `.gz` if present on disk; otherwise serves uncompressed files directly.
+- **Plain Delivery:** Serves uncompressed files directly from disk if present; otherwise serves embedded baseline widgets from RAM.
+- **Single-File Architecture:** Each modular widget consists of a single `widget.js` file.
 - **Cache Policy:** Emits `Cache-Control: no-cache` headers on all `/widgets/*` responses.

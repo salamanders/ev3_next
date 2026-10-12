@@ -25,6 +25,9 @@ impl WifiManager {
         "/home/robot/wifi.txt",
     ];
 
+    /// Path to persistent ConnMan Wi-Fi configuration file.
+    pub const CONNMAN_CONFIG_PATH: &'static str = "/var/lib/connman/ev3_wifi.config";
+
     /// Discovers setup text files across candidate system storage paths.
     pub fn find_wifi_credentials() -> Result<Option<WifiCredentials>, WifiError> {
         for path_str in Self::CANDIDATE_PATHS {
@@ -58,6 +61,15 @@ impl WifiManager {
         Some((ssid, pass))
     }
 
+    /// Checks if existing network configuration matches discovered credentials.
+    pub fn is_config_identical(config_path: &Path, ssid: &str, pass: &str) -> bool {
+        if let Ok(existing) = fs::read_to_string(config_path) {
+            existing == Self::format_connman_config(ssid, pass)
+        } else {
+            false
+        }
+    }
+
     /// Configures network daemon when setup instructions are discovered.
     pub fn auto_provision(mock_mode: bool) -> WifiProvisionResult {
         let (path, ssid, pass) = match Self::find_wifi_credentials() {
@@ -71,9 +83,18 @@ impl WifiManager {
             return WifiProvisionResult::Provisioned { ssid, path };
         }
 
+        let config_path = Path::new(Self::CONNMAN_CONFIG_PATH);
+        if Self::is_config_identical(config_path, &ssid, &pass) {
+            println!(
+                "[WIFI] ConnMan config already provisioned and matches credentials for SSID '{}'",
+                ssid
+            );
+            return WifiProvisionResult::Provisioned { ssid, path };
+        }
+
         match Self::write_connman_config(&ssid, &pass) {
             Ok(()) => {
-                println!("[WIFI] Wrote /var/lib/connman/ev3_wifi.config for SSID '{}'", ssid);
+                println!("[WIFI] Wrote {} for SSID '{}'", Self::CONNMAN_CONFIG_PATH, ssid);
 
                 // Enable wifi and scan
                 if let Err(e) = Command::new("connmanctl").args(["enable", "wifi"]).status() {
@@ -102,21 +123,22 @@ impl WifiManager {
 
     /// Persists network settings to daemon storage with restricted chmod.
     pub fn write_connman_config(ssid: &str, pass: &str) -> std::io::Result<()> {
-        let config_dir = Path::new("/var/lib/connman");
-        if !config_dir.exists() {
-            fs::create_dir_all(config_dir)?;
+        let config_path = Path::new(Self::CONNMAN_CONFIG_PATH);
+        if let Some(parent) = config_path.parent() {
+            if !parent.exists() {
+                fs::create_dir_all(parent)?;
+            }
         }
 
-        let config_path = config_dir.join("ev3_wifi.config");
         let content = Self::format_connman_config(ssid, pass);
 
-        fs::write(&config_path, content)?;
+        fs::write(config_path, content)?;
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let perms = fs::Permissions::from_mode(0o600);
-            fs::set_permissions(&config_path, perms)?;
+            fs::set_permissions(config_path, perms)?;
         }
 
         Ok(())
@@ -170,5 +192,23 @@ mod tests {
         assert!(config.contains("Passphrase = Password123"));
         assert!(config.contains("IPv4 = dhcp"));
         assert!(config.contains("AutoConnect = true"));
+    }
+
+    // Verifies that identical configuration files are detected and different ones are rejected.
+    #[test]
+    fn test_wifi_provision_skips_when_config_identical() {
+        let temp_dir = std::env::temp_dir();
+        let test_file = temp_dir.join("test_connman_ev3_wifi.config");
+        let content = WifiManager::format_connman_config("HomeNet", "SuperSecretPass");
+        fs::write(&test_file, content).unwrap();
+
+        assert!(WifiManager::is_config_identical(&test_file, "HomeNet", "SuperSecretPass"));
+        assert!(!WifiManager::is_config_identical(&test_file, "HomeNet", "WrongPass123"));
+        assert!(!WifiManager::is_config_identical(&test_file, "OtherNet", "SuperSecretPass"));
+
+        let nonexistent = temp_dir.join("nonexistent_connman.config");
+        assert!(!WifiManager::is_config_identical(&nonexistent, "HomeNet", "SuperSecretPass"));
+
+        let _ = fs::remove_file(test_file);
     }
 }
