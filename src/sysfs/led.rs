@@ -1,15 +1,23 @@
+//! # Linux LED Driver Interface
+//!
+//! This module controls the two multi-color status LEDs surrounding the screen buttons on the EV3 brick.
+//! It writes brightness values to Linux sysfs files under `/sys/class/leds/led{0,1}:{red,green}:brick-status/brightness`.
+//!
+//! Status LEDs indicate system state (amber for starting, green for ready, red for error).
+//! Isolating LED control in `led.rs` keeps hardware notification logic independent of motor and sensor logic.
+
 use std::fs;
 use std::path::Path;
 
+/// Color options for the brick status LEDs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum LedColor {
-    Off,
     Green,
     Red,
     Amber,
 }
 
+/// Controller managing left and right status LEDs on the EV3 brick.
 pub struct LedController {
     mock_mode: bool,
 }
@@ -20,14 +28,22 @@ impl LedController {
     const RIGHT_RED: &'static str = "/sys/class/leds/led1:red:brick-status/brightness";
     const RIGHT_GREEN: &'static str = "/sys/class/leds/led1:green:brick-status/brightness";
 
-    /// Instantiates status indicator interface with simulation settings.
+    /// Creates an LED controller with simulation mode support.
+    ///
+    /// Initializes the controller struct. When `mock_mode` is true, sysfs writes are logged to console.
+    ///
+    /// Called during server initialization in `main.rs` before hardware network binds.
     pub fn new(mock_mode: bool) -> Self {
         Self { mock_mode }
     }
 
-    /// Adjusts dual optical elements on brick chassis.
-    #[allow(dead_code)]
-    pub fn set(&self, left: LedColor, right: LedColor) {
+    /// Sets colors on both left and right brick LEDs.
+    ///
+    /// Converts `LedColor` values into red and green brightness integers (0 or 255).
+    /// Writes brightness values to the left and right sysfs brightness files.
+    ///
+    /// Shared helper called by `set_starting`, `set_ready`, and `set_error`.
+    fn set(&self, left: LedColor, right: LedColor) {
         if self.mock_mode {
             println!("[LED] Status updated: Left={:?}, Right={:?}", left, right);
             return;
@@ -42,46 +58,62 @@ impl LedController {
         Self::write_sysfs(Self::RIGHT_GREEN, right_g);
     }
 
-    /// Signals boot initialization sequence using amber illumination.
+    /// Sets both LEDs to amber to signal system boot initialization.
+    ///
+    /// Turns on both red and green LED channels (255, 255) to mix an amber color.
+    ///
+    /// Called at the start of `main.rs` while network configuration and hardware discovery run.
     pub fn set_starting(&self) {
         self.set(LedColor::Amber, LedColor::Amber);
     }
 
-    /// Illuminates green to confirm operational server availability.
+    /// Sets both LEDs to green to signal that the server is ready.
+    ///
+    /// Turns on the green LED channels (0, 255) and turns off the red channels.
+    ///
+    /// Called in `main.rs` when the HTTP server binds and starts listening.
     pub fn set_ready(&self) {
         self.set(LedColor::Green, LedColor::Green);
     }
 
-    /// Illuminates crimson to indicate critical runtime or bind faults.
+    /// Sets both LEDs to red to indicate a runtime error or bind failure.
+    ///
+    /// Turns on the red LED channels (255, 0) and turns off the green channels.
+    ///
+    /// Called in `main.rs` when server socket creation or initialization fails.
     pub fn set_error(&self) {
         self.set(LedColor::Red, LedColor::Red);
     }
 
-    /// Extinguishes all chassis optical indicators.
-    #[allow(dead_code)]
-    pub fn set_off(&self) {
-        self.set(LedColor::Off, LedColor::Off);
-    }
-
-    // Translates high-level chromatic state into dual brightness levels.
+    /// Converts an LED color enum into red and green brightness values (0..255).
+    ///
+    /// Returns `(red, green)` intensity pairs:
+    /// Green is `(0, 255)`, Red is `(255, 0)`, Amber is `(255, 255)`.
+    ///
+    /// Pure mapping function separating color definitions from sysfs file writes.
     fn color_to_values(color: LedColor) -> (u8, u8) {
         match color {
-            LedColor::Off => (0, 0),
             LedColor::Green => (0, 255),
             LedColor::Red => (255, 0),
             LedColor::Amber => (255, 255),
         }
     }
 
-    // Disables kernel triggers before updating intensity levels.
+    /// Writes brightness level to a Linux sysfs file after clearing active triggers.
+    ///
+    /// 1. Checks if the file path exists on disk (skips safely on non-EV3 host systems).
+    /// 2. If a neighbor `trigger` file exists, writes "none\n" to disable kernel blink triggers.
+    /// 3. Writes the numeric brightness value (e.g. "255\n") to the brightness attribute file.
+    ///
+    /// Shared by all LED writes. ev3dev assigns default kernel triggers
+    /// (such as heartbeat) to LEDs. Direct writes fail or get overwritten unless `trigger` is set to `none`.
     fn write_sysfs(path_str: &str, value: u8) {
         let path = Path::new(path_str);
         if !path.exists() {
-            // Path does not exist on non-EV3 hardware or simulation host
             return;
         }
 
-        // Clears kernel trigger so direct brightness writes work (BUG-42).
+        // Clears kernel trigger so direct brightness writes work reliably.
         let trigger_path = path.with_file_name("trigger");
         if trigger_path.exists() {
             if let Err(e) = fs::write(&trigger_path, "none\n") {
@@ -100,26 +132,21 @@ impl LedController {
 mod tests {
     use super::*;
 
-    // Validates numeric intensity mappings across chromatic enum variants.
     #[test]
     fn test_led_color_values() {
-        assert_eq!(LedController::color_to_values(LedColor::Off), (0, 0));
         assert_eq!(LedController::color_to_values(LedColor::Green), (0, 255));
         assert_eq!(LedController::color_to_values(LedColor::Red), (255, 0));
         assert_eq!(LedController::color_to_values(LedColor::Amber), (255, 255));
     }
 
-    // Verifies virtual state transitions execute safely without filesystem.
     #[test]
     fn test_mock_led_controller() {
         let leds = LedController::new(true);
         leds.set_starting();
         leds.set_ready();
         leds.set_error();
-        leds.set_off();
     }
 
-    // Confirms kernel unbind directives precede hardware level mutation.
     #[test]
     fn test_write_sysfs_clears_trigger_and_sets_brightness() {
         let temp_dir = std::env::temp_dir().join(format!("test_ev3_led_{}", std::process::id()));

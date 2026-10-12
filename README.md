@@ -56,8 +56,7 @@ ev3_next/
 ├── docs/*                   # Documentation guides and screenshots
 ├── tools/                   # Appliance automation scripts (bake, flash)
 ├── src/                     # Rust application source (sysfs, controller, router)
-├── web_assets/              # Web dashboard source (HTML, CSS, JavaScript)
-└── archive/                 # Historical documents and legacy USB deploy scripts
+└── web_assets/              # Web dashboard source (HTML, CSS, JavaScript)
 ```
 
 ---

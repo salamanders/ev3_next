@@ -1,3 +1,13 @@
+//! # Zero-Dependency Command Line Configuration
+//!
+//! This module parses command line options for the `ev3-web-motor` executable.
+//! It configures the bind host address, port, mock simulation mode, and background polling interval.
+//!
+//! Using a zero-dependency CLI parser saves approximately 400 KB of binary size
+//! compared to heavyweight libraries such as `clap`, preserving memory and flash space on the 64 MB EV3.
+//! Isolating configuration parsing in `config.rs` allows easy unit testing and clean decoupling from server startup.
+
+/// Runtime configuration parsed from command line flags.
 pub struct Config {
     pub host: String,
     pub port: u16,
@@ -6,13 +16,25 @@ pub struct Config {
 }
 
 impl Config {
-    /// Gathers process environment flags before delegating downstream.
+    /// Gathers process command line arguments and delegates to parser.
+    ///
+    /// Collects `std::env::args()` into a string vector and passes them to `parse_from`.
+    ///
+    /// Production entry point called at the start of `main()`.
     pub fn parse_from_args() -> Self {
         let args: Vec<String> = std::env::args().collect();
         Self::parse_from(&args)
     }
 
-    /// Resolves CLI tokens with fallback defaults and environment detection.
+    /// Parses command line tokens into structured configuration settings.
+    ///
+    /// 1. Iterates over argument strings, matching `--host`, `-p`/`--port`, `-m`/`--mock`, and `--poll-interval`.
+    /// 2. Automatically enables `mock_mode` if `/sys/class/tacho-motor` does not exist on disk.
+    /// 3. Defaults port to 8080 when running in mock simulation mode, or port 80 on physical hardware (Rule 13).
+    /// 4. Clamps the background telemetry polling interval between 10 ms and 1000 ms.
+    ///
+    /// Allows unit tests to verify flag combinations with arbitrary argument slices
+    /// without mutating global process environment state.
     pub fn parse_from(args: &[String]) -> Self {
         let mut host = "0.0.0.0".to_string();
         let mut port: u16 = 80;
@@ -66,13 +88,13 @@ impl Config {
             i += 1;
         }
 
-        // Auto-detect mock mode if on non-Linux or sysfs path does not exist
+        // Auto-detect mock mode if on non-Linux system or sysfs path does not exist
         if !mock_mode && !std::path::Path::new("/sys/class/tacho-motor").exists() {
             println!("[INFO] Sysfs path /sys/class/tacho-motor not detected. Defaulting to MOCK mode.");
             mock_mode = true;
         }
 
-        // Defaults to 8080 for mock development, 80 for hardware.
+        // Fixed Port Rule (Rule 13): Defaults to 8080 for mock development, 80 for hardware.
         if !port_explicit {
             port = if mock_mode { 8080 } else { 80 };
         }
@@ -90,7 +112,6 @@ impl Config {
 mod tests {
     use super::*;
 
-    // Ensures out-of-range sleep durations stay within safe limits.
     #[test]
     fn test_config_poll_interval_clamping() {
         let args = vec![
@@ -110,7 +131,6 @@ mod tests {
         assert_eq!(cfg_high.poll_interval_ms, 1000, "Poll interval 5000 must be clamped to 1000ms");
     }
 
-    // Asserts simulation flags correctly reassign communication sockets.
     #[test]
     fn test_config_mock_mode_and_port() {
         let args = vec![

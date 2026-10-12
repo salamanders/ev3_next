@@ -11,12 +11,8 @@ Instructions for AGENT development.
    Never specify alternative or random port numbers.
    Do not deploy code to the physical EV3 brick until host simulation tests pass.
 
-5. **Zero SD-Card Swapping Rule:**
-   Flash the MicroSD card only one time during initial setup.
-   Deploy all application updates through the Mini-USB cable over SSH/SCP using Linux tools (`scp` / `ssh` / `deploy.sh`).
-
 6. **CPU & Memory Limits (300 MHz / 64 MB RAM):**
-   - Keep application memory usage below 5 MB RAM RSS.
+   - Keep application memory usage low.
    - Do not open or read sysfs files on the HTTP request thread.
    - Always use the background telemetry polling thread to update in-memory caches.
    - Always cross-compile release builds with `opt-level = "z"`, `lto = true`, and `strip = true`.
@@ -38,8 +34,8 @@ Instructions for AGENT development.
     - Always verify that external links and asset names are live and correct before documenting them.
 
 11. **GitHub Issue & Bug Tracking Rule:**
-    - Always use GitHub Issues for tracking bugs, hardware investigations, and remediation moving forward.
-    - Do not create or maintain local markdown bug tracker documents. Closed historical bugs are preserved in `archive/BUGS.md`.
+    - Always use GitHub Issues for tracking bugs, hardware investigations, and remediation.
+    - Do not create or maintain local markdown bug tracker documents. Historical bug summaries are preserved in `PROJECT_PLAN.md`.
 
 12. **Privacy & Personal Information Protection Rule:**
     - Never commit or push personal information, usernames, network names, or credentials to any remote Git repository (such as GitHub).
@@ -53,8 +49,10 @@ Instructions for AGENT development.
     - Always use port `80` on the physical EV3 brick (`http://ev3dev.local/`).
 
 14. **No One-Off Inline Script Rule:**
-    - Never execute inline scripts (`python3 -c`, `node -e`, or temporary scripts) to inspect logs, transcripts, or data.
-    - Inline scripts require manual user approval and block autonomous execution.
+    - Never execute inline scripts (`python3 -c`, `node -e`, or temporary scripts) to inspect logs, transcripts, or data. Inline scripts require manual user approval and block autonomous execution.
     - Always use standard tools (`grep`, `sed`, `awk`, `jq`, `view_file`) or existing project commands instead.
 
-
+15. **Code Commenting & Consolidation Rule:**
+    - Before documenting a file or function, verify that it needs to exist separately. Merge or inline single-caller wrappers and delete dead code.
+    - Every file header and function comment must explain in plain Simplified Technical English: (a) what the code does in concrete terms, and (b) why it is a separate file or function (for example, shared by multiple callers, hardware performance limit, thread boundary, or unit-test seam).
+    - Write these explanations as natural paragraphs. Do not repeat literal boilerplate headings such as `"What it does:"` or `"Why it is a separate function:"` in every comment.

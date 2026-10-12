@@ -2,21 +2,30 @@
 # ==============================================================================
 # bake-image.sh: Pre-Bake Standalone EV3 Web Motor Appliance Image
 # ==============================================================================
+#   Downloads the official ev3dev-stretch disk image once, mounts its ext4 root
+#   partition via loopback, injects the compiled ev3-web-motor binary, systemd
+#   service, and Wi-Fi credentials, and creates a block map (.bmap) for fast SD
+#   card flashing.
+#
+#   Allows building and inspecting the disk image (or creating a compressed
+#   .img.xz release artifact with --xz) without a physical MicroSD card plugged
+#   in. Note: flash-image.sh calls this script automatically by default.
+#
 # Usage:
 #   sudo ./tools/bake-image.sh [options]
 #
 # Options:
-#   -s, --ssid <SSID>        Pre-configure default Wi-Fi network name
-#   -p, --password <PASS>    Pre-configure Wi-Fi passphrase (8-63 chars)
+#   -s, --ssid <SSID>        Pre-configure default Wi-Fi network name (overrides wifi.txt)
+#   -p, --password <PASS>    Pre-configure Wi-Fi passphrase (8-63 chars, overrides wifi.txt)
 #   -b, --binary <PATH>      Path to custom ev3-web-motor binary
+#   --xz                     Also compress output into ev3-web-motor-ready.img.xz for releases
+#   -f, --flash [DEVICE]     Flash to MicroSD card immediately after baking (auto-detects SD card)
+#   -y, --yes                Skip confirmation prompt when used with --flash
 #   -h, --help               Show this help message
 #
-# Examples:
-#   # Bake image with pre-configured Wi-Fi (boots directly to Ready URL):
-#   sudo ./tools/bake-image.sh --ssid "<SSID>" --password "<PASSWORD>"
-#
-#   # Bake image without pre-configured Wi-Fi (uses on-brick setup):
-#   sudo ./tools/bake-image.sh
+# Wi-Fi Auto-Discovery:
+#   If --ssid is not passed and ./wifi.txt exists in the repository root, line 1
+#   is used as the SSID and line 2 is used as the passphrase.
 # ==============================================================================
 
 set -euo pipefail
@@ -27,10 +36,17 @@ WORKSPACE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BINARY_PATH="${WORKSPACE_DIR}/target/armv5te-unknown-linux-musleabi/release/ev3-web-motor"
 SERVICE_FILE="${WORKSPACE_DIR}/ev3-web.service"
 BUILD_DIR="${WORKSPACE_DIR}/build_image"
+RAW_IMG_FILE="${BUILD_DIR}/ev3dev.img"
+BMAP_FILE="${BUILD_DIR}/ev3dev.img.bmap"
 OUTPUT_IMG_XZ="${WORKSPACE_DIR}/ev3-web-motor-ready.img.xz"
+LOCAL_WIFI_TXT="${WORKSPACE_DIR}/wifi.txt"
 
 WIFI_SSID=""
 WIFI_PASS=""
+BUILD_XZ=false
+DO_FLASH=false
+FLASH_DEV=""
+FLASH_YES=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -47,8 +63,25 @@ while [[ $# -gt 0 ]]; do
             BINARY_PATH="$2"
             shift 2
             ;;
+        --xz)
+            BUILD_XZ=true
+            shift
+            ;;
+        -f|--flash)
+            DO_FLASH=true
+            if [[ $# -gt 1 && "$2" != -* ]]; then
+                FLASH_DEV="$2"
+                shift 2
+            else
+                shift
+            fi
+            ;;
+        -y|--yes)
+            FLASH_YES=true
+            shift
+            ;;
         -h|--help)
-            sed -n '2,19p' "$0" | sed 's/^# \?//'
+            sed -n '2,29p' "$0" | sed 's/^# \?//'
             exit 0
             ;;
         *)
@@ -59,9 +92,15 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Auto-load Wi-Fi credentials from workspace ./wifi.txt if --ssid was not passed
+if [[ -z "${WIFI_SSID}" && -f "${LOCAL_WIFI_TXT}" ]]; then
+    WIFI_SSID="$(sed -n '1p' "${LOCAL_WIFI_TXT}" | tr -d '\r')"
+    WIFI_PASS="$(sed -n '2p' "${LOCAL_WIFI_TXT}" | tr -d '\r')"
+    echo "Loaded Wi-Fi credentials from ${LOCAL_WIFI_TXT} (SSID: '${WIFI_SSID}')."
+fi
+
 BASE_ZIP_URL="https://github.com/ev3dev/ev3dev/releases/download/ev3dev-stretch-2020-04-10/ev3dev-stretch-ev3-generic-2020-04-10.zip"
 BASE_ZIP_FILE="${BUILD_DIR}/ev3dev-stretch-ev3-generic-2020-04-10.zip"
-RAW_IMG_FILE="${BUILD_DIR}/ev3dev.img"
 MOUNT_DIR="${BUILD_DIR}/mnt_root"
 
 echo "============================================================"
@@ -69,6 +108,8 @@ echo "   EV3 Web Motor Control - Appliance Disk Image Baker       "
 echo "============================================================"
 if [[ -n "${WIFI_SSID}" ]]; then
     echo " Pre-Baked Wi-Fi SSID: '${WIFI_SSID}'"
+else
+    echo " Pre-Baked Wi-Fi SSID: (none - create ./wifi.txt or pass --ssid)"
 fi
 echo "============================================================"
 
@@ -184,9 +225,8 @@ ln -sf /usr/local/bin/ev3-web-motor "${MOUNT_DIR}/home/robot/ev3-web-motor"
 chown -h 1000:1000 "${MOUNT_DIR}/home/robot/ev3-web-motor" 2>/dev/null || true
 
 # Prepare /home/robot/web_assets/widgets for dynamic widget storage
-mkdir -p "${MOUNT_DIR}/home/robot/web_assets/widgets"
-chmod 0755 "${MOUNT_DIR}/home/robot/web_assets"
-chmod 0755 "${MOUNT_DIR}/home/robot/web_assets/widgets"
+mkdir -p "${MOUNT_DIR}/home/robot/web_assets/widgets" "${MOUNT_DIR}/var/lib/ev3-web/widgets"
+chmod 0755 "${MOUNT_DIR}/home/robot/web_assets" "${MOUNT_DIR}/home/robot/web_assets/widgets"
 chown -R 1000:1000 "${MOUNT_DIR}/home/robot/web_assets" 2>/dev/null || true
 
 # Copy and enable ev3-web.service
@@ -244,7 +284,7 @@ fi
 chmod 0600 "${CONNMAN_SETTINGS}"
 chown 0:0 "${CONNMAN_SETTINGS}"
 
-# Pre-configure ConnMan Wi-Fi if provided
+# Pre-configure ConnMan Wi-Fi if provided (matches WifiManager::format_connman_config in src/sysfs/wifi.rs)
 if [[ -n "${WIFI_SSID}" ]]; then
     echo "      Pre-configuring ConnMan Wi-Fi for SSID: '${WIFI_SSID}'..."
     cat <<EOF > "${MOUNT_DIR}/var/lib/connman/ev3_wifi.config"
@@ -380,31 +420,44 @@ sync
 echo "      Unmounting root filesystem..."
 umount "${MOUNT_DIR}" || umount -l "${MOUNT_DIR}"
 
-# 6. Compress into .img.xz
-echo "[6/6] Compressing disk image with xz (multi-threaded)..."
-TMP_OUTPUT_XZ="${OUTPUT_IMG_XZ}.tmp.$$"
-rm -f "${TMP_OUTPUT_XZ}"
-xz -9 -T0 -c "${RAW_IMG_FILE}" > "${TMP_OUTPUT_XZ}"
-mv -f "${TMP_OUTPUT_XZ}" "${OUTPUT_IMG_XZ}"
-unset TMP_OUTPUT_XZ
+# 7. Generate bmap file (skips unallocated blocks during flash) and optionally compress .xz
+if command -v bmaptool >/dev/null 2>&1; then
+    echo "[6/6] Generating block map (.bmap) for fast flashing..."
+    rm -f "${BMAP_FILE}"
+    bmaptool create -o "${BMAP_FILE}" "${RAW_IMG_FILE}"
+else
+    echo "[6/6] Skipping .bmap generation (install 'bmap-tools' for 2-3x faster SD flashing)."
+    rm -f "${BMAP_FILE}"
+fi
 
-IMAGE_SIZE=$(du -h "${OUTPUT_IMG_XZ}" | awk '{print $1}')
+if [[ "${BUILD_XZ}" == "true" ]]; then
+    echo "      Compressing release disk image with xz (multi-threaded)..."
+    TMP_OUTPUT_XZ="${OUTPUT_IMG_XZ}.tmp.$$"
+    rm -f "${TMP_OUTPUT_XZ}"
+    xz -9 -T0 -c "${RAW_IMG_FILE}" > "${TMP_OUTPUT_XZ}"
+    mv -f "${TMP_OUTPUT_XZ}" "${OUTPUT_IMG_XZ}"
+    unset TMP_OUTPUT_XZ
+fi
+
+IMAGE_SIZE=$(du -h "${RAW_IMG_FILE}" | awk '{print $1}')
 echo ""
 echo "============================================================"
-echo " SUCCESS! Appliance image ready: ${OUTPUT_IMG_XZ} (${IMAGE_SIZE})"
-echo "============================================================"
-echo " Next steps:"
-echo " 1. Flash to MicroSD card and verify:"
-echo "    sudo ./tools/flash-image.sh /dev/sdX"
-echo "    (or: xzcat ${OUTPUT_IMG_XZ} | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync && sudo sync)"
-echo " 2. Insert card into EV3 and boot."
-if [[ -n "${WIFI_SSID}" ]]; then
-    echo " 3. Wi-Fi will connect automatically to '${WIFI_SSID}'."
-else
-    echo " 3. Connect to Wi-Fi using wifi.txt or connmanctl."
+echo " SUCCESS! Raw appliance image ready: ${RAW_IMG_FILE} (${IMAGE_SIZE})"
+if [[ -f "${BMAP_FILE}" ]]; then
+    echo " Block map ready:                    ${BMAP_FILE}"
 fi
-echo " 4. Open http://<ip>/ in your browser."
+if [[ "${BUILD_XZ}" == "true" ]]; then
+    echo " Compressed release archive ready:   ${OUTPUT_IMG_XZ}"
+fi
 echo "============================================================"
 
 # Disarm cleanup trap on successful completion
 trap - EXIT
+
+if [[ "${DO_FLASH}" == "true" ]]; then
+    FLASH_ARGS=(--no-bake)
+    [[ "${FLASH_YES}" == "true" ]] && FLASH_ARGS+=(-y)
+    [[ -n "${FLASH_DEV}" ]] && FLASH_ARGS+=("${FLASH_DEV}")
+    exec "${SCRIPT_DIR}/flash-image.sh" "${FLASH_ARGS[@]}"
+fi
+

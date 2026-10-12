@@ -1,3 +1,13 @@
+//! # Sysfs Subsystem Root
+//!
+//! This module manages Linux sysfs hardware interfaces under `/sys/class` on the EV3 brick.
+//! It controls tacho motors, Lego sensors, status LEDs, the framebuffer display console, and Wi-Fi provisioning.
+//!
+//! In Rust, `mod.rs` serves as the entry point for the `sysfs` module directory.
+//! This file declares all hardware child modules and provides shared low-level sysfs helpers.
+//! Storing shared file handle caching and port address parsers here prevents code duplication
+//! between `motor.rs` and `sensor.rs`, and prevents hardware drivers from importing from the web layer.
+
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
@@ -8,15 +18,72 @@ pub mod mock;
 pub mod led;
 pub mod display;
 pub mod wifi;
+
 pub use motor::{Motor, MotorStatus};
 pub use sensor::{Sensor, SensorStatus};
 pub use mock::MockController;
-#[allow(unused_imports)]
 pub use led::{LedColor, LedController};
 pub use display::DisplayController;
 pub use wifi::{WifiManager, WifiProvisionResult};
 
-// Reuses open descriptors to sample sysfs nodes without file re-opening.
+/// Matches Linux kernel sysfs address text against port patterns.
+///
+/// Cleans the input address string and checks for candidate prefix or suffix tokens.
+/// Returns the matching canonical port name (for example, "A" or "1").
+///
+/// Shared by `parse_motor_address` and `parse_sensor_address` to avoid duplicating string matching logic.
+fn parse_channel_address(address: &str, patterns: &[(&str, &str, &'static str)]) -> Option<&'static str> {
+    let clean = address.trim().to_ascii_uppercase();
+    patterns.iter().find_map(|&(prefix, suffix, port)| {
+        if clean.contains(prefix) || clean.ends_with(suffix) {
+            Some(port)
+        } else {
+            None
+        }
+    })
+}
+
+/// Extracts motor port letter ("A", "B", "C", "D") from kernel sysfs address text.
+///
+/// Parses strings like "ev3-ports:outA" or "outB" from `/sys/class/tacho-motor/motorN/address`.
+///
+/// Called during motor hardware discovery in `Motor::find_all_in`.
+/// Moving this parser from `web/handlers.rs` into `sysfs` keeps hardware driver discovery independent of the web server.
+pub fn parse_motor_address(address: &str) -> Option<&'static str> {
+    parse_channel_address(address, &[
+        ("OUTA", ":A", "A"),
+        ("OUTB", ":B", "B"),
+        ("OUTC", ":C", "C"),
+        ("OUTD", ":D", "D"),
+    ])
+}
+
+/// Extracts sensor port number ("1", "2", "3", "4") from kernel sysfs address text.
+///
+/// Parses strings like "ev3-ports:in1" or "in2" from `/sys/class/lego-sensor/sensorN/address`.
+///
+/// Called during sensor hardware discovery in `Sensor::find_all_in`.
+/// Moving this parser from `web/handlers.rs` into `sysfs` keeps hardware driver discovery independent of the web server.
+pub fn parse_sensor_address(address: &str) -> Option<&'static str> {
+    parse_channel_address(address, &[
+        ("IN1", ":1", "1"),
+        ("IN2", ":2", "2"),
+        ("IN3", ":3", "3"),
+        ("IN4", ":4", "4"),
+    ])
+}
+
+/// Reads a Linux sysfs attribute using a cached file descriptor.
+///
+/// 1. Opens the target sysfs file on the first call and stores the open `File` handle in `file_opt`.
+/// 2. On every call, rewinds the file cursor to byte 0 using `seek(SeekFrom::Start(0))`.
+/// 3. Reads updated kernel attribute contents into the provided stack buffer without re-opening the file.
+/// 4. If `seek` or `read` fails or returns 0 bytes (for example, when a motor or sensor cable is unplugged),
+///    it clears `file_opt` to `None` and returns an error.
+///
+/// Shared by both `Motor::read_status` (`motor.rs`) and `Sensor::read_status` (`sensor.rs`).
+/// Reusing open file handles avoids running `open()` and `close()` kernel syscalls 20 times per second
+/// per port on the 300 MHz ARM9 processor, saving substantial CPU time.
 pub(crate) fn read_sysfs_cached(
     file_opt: &mut Option<File>,
     path: &Path,
@@ -48,3 +115,27 @@ pub(crate) fn read_sysfs_cached(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_motor_address() {
+        assert_eq!(parse_motor_address("ev3-ports:outA"), Some("A"));
+        assert_eq!(parse_motor_address("outB"), Some("B"));
+        assert_eq!(parse_motor_address("OUTC"), Some("C"));
+        assert_eq!(parse_motor_address("ev3-ports:outD"), Some("D"));
+        assert_eq!(parse_motor_address("outE"), None);
+        assert_eq!(parse_motor_address("in1"), None);
+    }
+
+    #[test]
+    fn test_parse_sensor_address() {
+        assert_eq!(parse_sensor_address("ev3-ports:in1"), Some("1"));
+        assert_eq!(parse_sensor_address("in2"), Some("2"));
+        assert_eq!(parse_sensor_address("IN3"), Some("3"));
+        assert_eq!(parse_sensor_address("ev3-ports:in4"), Some("4"));
+        assert_eq!(parse_sensor_address("in5"), None);
+        assert_eq!(parse_sensor_address("outA"), None);
+    }
+}

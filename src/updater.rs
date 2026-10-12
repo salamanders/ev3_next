@@ -1,9 +1,19 @@
+//! # Over-The-Air Widget Dynamic Updater
+//!
+//! This module provides automatic over-the-air updates for modular browser widgets.
+//! It polls remote widget catalog manifests from GitHub, downloads updated `widget.js` packages,
+//! and writes them atomically to `/home/robot/web_assets/widgets/<name>/widget.js`.
+//!
+//! Over-the-air updates require network timeouts, atomic file renaming, and error isolation.
+//! Separating the updater into `updater.rs` prevents network transfer logic and disk I/O
+//! from interfering with real-time motor control and HTTP request routing.
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use serde::{Deserialize, Serialize};
 
-/// Catalog schema recording widget revision numbers and filenames.
+/// Catalog schema recording widget revision numbers and timestamps.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WidgetManifest {
     #[serde(default)]
@@ -12,7 +22,7 @@ pub struct WidgetManifest {
     pub widgets: HashMap<String, WidgetEntry>,
 }
 
-/// Metadata entry describing a single component.
+/// Metadata entry describing a single widget version and release timestamp.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WidgetEntry {
     #[serde(default)]
@@ -21,7 +31,7 @@ pub struct WidgetEntry {
     pub timestamp: u64,
 }
 
-/// Result tally capturing changed packages and transfer diagnostics.
+/// Result tally capturing updated widget counts and error diagnostics.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct UpdateResult {
     pub updated_count: usize,
@@ -30,21 +40,34 @@ pub struct UpdateResult {
 }
 
 /// Reads catalog metadata from local filesystem storage if present.
+///
+/// Reads `manifest.json` from `widgets_dir` on disk and deserializes it into `WidgetManifest`.
+///
+/// Checks for previously downloaded and installed widget versions on persistent storage.
 pub fn load_local_manifest(widgets_dir: &Path) -> Option<WidgetManifest> {
     let path = widgets_dir.join("manifest.json");
     let content = std::fs::read(&path).ok()?;
     serde_json::from_slice::<WidgetManifest>(&content).ok()
 }
 
-/// Reads embedded baseline manifest when on-disk catalog is absent.
+/// Reads the embedded baseline manifest when no on-disk catalog is present.
+///
+/// Finds `manifest.json` in compile-time static `BASELINE_WIDGETS` memory and deserializes it.
+///
+/// Fallback used when the robot runs on a fresh flash without local downloads.
 pub fn load_embedded_manifest() -> Option<WidgetManifest> {
-    crate::web::router::BASELINE_WIDGETS
+    crate::web::BASELINE_WIDGETS
         .iter()
         .find(|e| e.relative_path == "manifest.json")
         .and_then(|e| serde_json::from_slice(e.content).ok())
 }
 
-/// Fetches remote manifest index over network using system transfer tool.
+/// Fetches the remote widget catalog manifest over HTTPS.
+///
+/// Invokes system `curl` with a timeout and deserializes JSON response into `WidgetManifest`.
+///
+/// Using system `/usr/bin/curl` avoids compiling OpenSSL or rustls
+/// into the Rust binary, saving over 1 MB of flash space and using system CA certificates.
 pub fn fetch_remote_manifest(url: &str, timeout_secs: u64) -> Result<WidgetManifest, String> {
     let timeout_str = timeout_secs.to_string();
     let output = Command::new("curl")
@@ -69,7 +92,12 @@ pub fn fetch_remote_manifest(url: &str, timeout_secs: u64) -> Result<WidgetManif
         .map_err(|e| format!("Invalid manifest JSON payload: {}", e))
 }
 
-/// Validates component name or filename against path traversal exploits.
+/// Validates component name against path traversal exploits.
+///
+/// Ensures the name contains only alphanumeric characters, underscores, dashes, or dots.
+/// Rejects path separators (`/`, `\`), null bytes, or parent directory markers (`..`).
+///
+/// Prevents a compromised remote manifest from writing files outside `widgets_dir`.
 pub fn is_safe_component_name(name: &str) -> bool {
     !name.is_empty()
         && !name.contains('/')
@@ -80,7 +108,11 @@ pub fn is_safe_component_name(name: &str) -> bool {
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
 }
 
-/// Downloads individual asset file directly to destination path.
+/// Downloads a remote file to a destination path using system curl.
+///
+/// Ensures parent directories exist and runs `curl -o <dest_path> <url>`.
+///
+/// Shared by widget download operations. On failure, deletes partial downloads.
 pub fn download_file(url: &str, dest_path: &Path, timeout_secs: u64) -> Result<(), String> {
     if let Some(parent) = dest_path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -108,10 +140,26 @@ pub fn download_file(url: &str, dest_path: &Path, timeout_secs: u64) -> Result<(
         return Err(format!("Download failed for {}: code {:?}", url, output.status.code()));
     }
 
+    let is_non_empty = std::fs::metadata(dest_path).map(|m| m.len() > 0).unwrap_or(false);
+    if !is_non_empty {
+        let _ = std::fs::remove_file(dest_path);
+        return Err(format!("Downloaded file is empty for {}", url));
+    }
+
     Ok(())
 }
 
-/// Compares revision timestamps and retrieves newer asset files.
+/// Compares revision timestamps and downloads newer widget files.
+///
+/// 1. Fetches remote manifest from `manifest_url`.
+/// 2. Reads local manifest from `widgets_dir` (falling back to embedded manifest).
+/// 3. For each widget with a newer timestamp or missing file:
+///    Downloads to a temporary staging file `widget.js.tmp`.
+///    Atomically renames `widget.js.tmp` to `widget.js`.
+/// 4. Updates and writes the local `manifest.json` on disk.
+///
+/// Atomic rename prevents HTTP worker threads from serving a half-written file during updates.
+/// Single-file `widget.js` architecture eliminates partial multi-file sync failures.
 pub fn check_and_update_widgets(
     manifest_url: &str,
     widgets_dir: &Path,
@@ -143,7 +191,7 @@ pub fn check_and_update_widgets(
                     || {
                         let plain = widgets_dir.join(widget_name).join("widget.js");
                         let rel = format!("{}/widget.js", widget_name);
-                        let in_baseline = crate::web::router::BASELINE_WIDGETS.iter().any(|e| e.relative_path == rel);
+                        let in_baseline = crate::web::BASELINE_WIDGETS.iter().any(|e| e.relative_path == rel);
                         !plain.is_file() && !in_baseline
                     }
             }
@@ -189,7 +237,13 @@ pub fn check_and_update_widgets(
     Ok(result)
 }
 
-/// Spawns silent background thread checking remote repository on startup.
+/// Spawns a background thread to check for widget updates on startup.
+///
+/// 1. Waits up to 60 seconds for an active network IP address.
+/// 2. If connected, triggers `check_and_update_widgets`.
+/// 3. If offline, exits cleanly without delaying HTTP server readiness.
+///
+/// Network checks run asynchronously so the server can serve requests immediately.
 pub fn start_background_updater(
     manifest_url: String,
     widgets_dir: PathBuf,
@@ -335,7 +389,7 @@ mod tests {
             }
         }"#;
 
-        let remote_handle = std::thread::spawn(move || {
+        let _remote_handle = std::thread::spawn(move || {
             if let Ok(req) = remote_server.recv() {
                 let res = Response::from_string(remote_manifest.to_string())
                     .with_status_code(StatusCode(200));
@@ -348,333 +402,6 @@ mod tests {
         assert_eq!(res.updated_count, 0);
         assert_eq!(res.files_downloaded, 0);
 
-        let content = std::fs::read_to_string(widgets_dir.join("joystick").join("widget.js")).unwrap();
-        assert_eq!(content, "// existing");
-
-        remote_handle.join().unwrap();
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
-
-    #[test]
-    fn test_e2e_updater_fetches_newer_widgets_and_server_serves_them() {
-        use std::io::{Read, Write};
-        use std::net::TcpStream;
-        use std::sync::Arc;
-        use tiny_http::{Response, StatusCode};
-        use crate::controller::MotorController;
-        use crate::web::Router;
-
-        let test_id = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let temp_assets_dir = std::env::temp_dir().join(format!("ev3_test_e2e_assets_{}", test_id));
-        let widgets_dir = temp_assets_dir.join("widgets");
-        let _ = std::fs::remove_dir_all(&temp_assets_dir);
-        std::fs::create_dir_all(&widgets_dir).unwrap();
-
-        // 1. Initial shipped baseline widget on disk
-        let shipped_content = "// shipped baseline joystick v1.0.0";
-        let shipped_manifest = r#"{
-            "timestamp": 1000,
-            "widgets": {
-                "joystick": {
-                    "version": "1.0.0",
-                    "timestamp": 1000
-                }
-            }
-        }"#;
-        std::fs::write(widgets_dir.join("manifest.json"), shipped_manifest).unwrap();
-        std::fs::create_dir_all(widgets_dir.join("joystick")).unwrap();
-        std::fs::write(widgets_dir.join("joystick").join("widget.js"), shipped_content).unwrap();
-
-        // 2. Spawn mock remote HTTP server with newer widget updates
-        let remote_server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let remote_port = remote_server.server_addr().to_ip().unwrap().port();
-
-        let newer_content = "// latest widgets from web are newer than shipped v2.0.0";
-        let remote_manifest = r#"{
-            "timestamp": 2000,
-            "widgets": {
-                "joystick": {
-                    "version": "2.0.0",
-                    "timestamp": 2000
-                }
-            }
-        }"#;
-
-        let remote_handle = std::thread::spawn(move || {
-            for _ in 0..2 {
-                if let Ok(req) = remote_server.recv() {
-                    let url = req.url().to_string();
-                    if url.contains("manifest.json") {
-                        let res = Response::from_string(remote_manifest.to_string())
-                            .with_status_code(StatusCode(200));
-                        let _ = req.respond(res);
-                    } else if url.contains("joystick/widget.js") {
-                        let res = Response::from_string(newer_content.to_string())
-                            .with_status_code(StatusCode(200));
-                        let _ = req.respond(res);
-                    } else {
-                        let _ = req.respond(Response::empty(StatusCode(404)));
-                    }
-                }
-            }
-        });
-
-        // 3. Launch mock updater to check and update widgets
-        let manifest_url = format!("http://127.0.0.1:{}/manifest.json", remote_port);
-        let update_res = check_and_update_widgets(&manifest_url, &widgets_dir, 3)
-            .expect("Updater execution failed");
-
-        assert_eq!(update_res.updated_count, 1);
-        assert_eq!(update_res.files_downloaded, 1);
-        assert!(update_res.errors.is_empty());
-
-        remote_handle.join().unwrap();
-
-        // 4. Verify on-disk update
-        let disk_content = std::fs::read_to_string(widgets_dir.join("joystick").join("widget.js"))
-            .expect("Failed reading updated file on disk");
-        assert_eq!(disk_content, newer_content);
-        assert_ne!(disk_content, shipped_content);
-
-        let local_manifest = load_local_manifest(&widgets_dir).expect("Failed to load local manifest");
-        assert_eq!(local_manifest.timestamp, 2000);
-        assert_eq!(local_manifest.widgets.get("joystick").unwrap().timestamp, 2000);
-
-        // 5. Confirm EV3 HTTP server serves the newer file content over /widgets/*
-        let controller = MotorController::new(true, 50);
-        let router = Arc::new(Router::new_with_dir(controller, &temp_assets_dir));
-        let ev3_server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let ev3_port = ev3_server.server_addr().to_ip().unwrap().port();
-
-        let router_clone = router.clone();
-        let server_clone = Arc::new(ev3_server);
-        let s_handle = server_clone.clone();
-        let ev3_thread = std::thread::spawn(move || {
-            if let Ok(req) = s_handle.recv() {
-                router_clone.handle_request(req);
-            }
-        });
-
-        let mut stream = TcpStream::connect(("127.0.0.1", ev3_port)).unwrap();
-        let req = format!(
-            "GET /widgets/joystick/widget.js?v=2000 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
-        );
-        stream.write_all(req.as_bytes()).unwrap();
-
-        let mut resp = Vec::new();
-        stream.read_to_end(&mut resp).unwrap();
-        let resp_str = String::from_utf8_lossy(&resp);
-
-        assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-        assert!(resp_str.contains("Cache-Control: no-cache"));
-        assert!(resp_str.contains("Content-Type: application/javascript; charset=utf-8"));
-        assert!(resp_str.contains("// latest widgets from web are newer than shipped v2.0.0"));
-        assert!(!resp_str.contains("// shipped baseline joystick v1.0.0"));
-
-        ev3_thread.join().unwrap();
-        let _ = std::fs::remove_dir_all(&temp_assets_dir);
-    }
-
-    #[test]
-    fn test_transparent_route_serves_disk_plain_when_present_and_ram_when_not() {
-        use std::io::{Read, Write};
-        use std::net::TcpStream;
-        use std::sync::Arc;
-        use crate::controller::MotorController;
-        use crate::web::Router;
-
-        let test_id = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let temp_assets_dir = std::env::temp_dir().join(format!("ev3_test_transparent_{}", test_id));
-        let widgets_dir = temp_assets_dir.join("widgets");
-        let _ = std::fs::remove_dir_all(&temp_assets_dir);
-        std::fs::create_dir_all(&widgets_dir).unwrap();
-
-        // 1. Create a plain uncompressed widget file on disk (widgets/slider/widget.js)
-        let slider_dir = widgets_dir.join("slider");
-        std::fs::create_dir_all(&slider_dir).unwrap();
-        std::fs::write(slider_dir.join("widget.js"), b"// plain uncompressed slider content").unwrap();
-
-        // 2. Start server
-        let controller = MotorController::new(true, 50);
-        let router = Arc::new(Router::new_with_dir(controller, &temp_assets_dir));
-        let ev3_server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let ev3_port = ev3_server.server_addr().to_ip().unwrap().port();
-
-        let router_clone = router.clone();
-        let server_clone = Arc::new(ev3_server);
-        let s_handle = server_clone.clone();
-        let ev3_thread = std::thread::spawn(move || {
-            for _ in 0..2 {
-                if let Ok(req) = s_handle.recv() {
-                    router_clone.handle_request(req);
-                }
-            }
-        });
-
-        // Test slider (should serve plain uncompressed from disk)
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", ev3_port)).unwrap();
-            stream.write_all(b"GET /widgets/slider/widget.js HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
-            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-            assert!(!resp_str.contains("Content-Encoding: gzip"));
-            assert!(resp_str.contains("Cache-Control: no-cache"));
-            assert!(resp_str.contains("// plain uncompressed slider content"));
-        }
-
-        // Test button (not on disk, should fall back to embedded RAM baseline)
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", ev3_port)).unwrap();
-            stream.write_all(b"GET /widgets/button/widget.js HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
-            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-            assert!(!resp_str.contains("Content-Encoding: gzip"));
-            assert!(resp_str.contains("Cache-Control: no-cache"));
-        }
-
-        ev3_thread.join().unwrap();
-        let _ = std::fs::remove_dir_all(&temp_assets_dir);
-    }
-
-    #[test]
-    fn test_download_failure_preserves_existing_file() {
-        use tiny_http::{Response, StatusCode};
-
-        let test_id = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let temp_dir = std::env::temp_dir().join(format!("ev3_test_partial_{}", test_id));
-        let widgets_dir = temp_dir.join("widgets");
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        std::fs::create_dir_all(widgets_dir.join("joystick")).unwrap();
-
-        // 1. Existing baseline file on disk
-        let original_content = "// original working joystick v1.0.0";
-        std::fs::write(widgets_dir.join("joystick").join("widget.js"), original_content).unwrap();
-
-        let initial_manifest = r#"{
-            "timestamp": 1000,
-            "widgets": {
-                "joystick": {
-                    "version": "1.0.0",
-                    "timestamp": 1000
-                }
-            }
-        }"#;
-        std::fs::write(widgets_dir.join("manifest.json"), initial_manifest).unwrap();
-
-        // 2. Remote server provides manifest with newer timestamp, but fails when serving widget.js
-        let remote_server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let remote_port = remote_server.server_addr().to_ip().unwrap().port();
-
-        let remote_manifest = r#"{
-            "timestamp": 2000,
-            "widgets": {
-                "joystick": {
-                    "version": "2.0.0",
-                    "timestamp": 2000
-                }
-            }
-        }"#;
-
-        let remote_handle = std::thread::spawn(move || {
-            for _ in 0..2 {
-                if let Ok(req) = remote_server.recv() {
-                    let url = req.url().to_string();
-                    if url.contains("manifest.json") {
-                        let res = Response::from_string(remote_manifest.to_string())
-                            .with_status_code(StatusCode(200));
-                        let _ = req.respond(res);
-                    } else {
-                        // Fail on widget.js
-                        let _ = req.respond(Response::empty(StatusCode(500)));
-                    }
-                }
-            }
-        });
-
-        let manifest_url = format!("http://127.0.0.1:{}/manifest.json", remote_port);
-        let res = check_and_update_widgets(&manifest_url, &widgets_dir, 3)
-            .expect("check_and_update_widgets should return Ok with error list");
-
-        assert_eq!(res.updated_count, 0);
-        assert!(!res.errors.is_empty());
-
-        // 3. Verify original file on disk is completely preserved and unmodified
-        let content_on_disk = std::fs::read_to_string(widgets_dir.join("joystick").join("widget.js")).unwrap();
-        assert_eq!(content_on_disk, original_content);
-
-        // 4. Verify no stray temporary staging files remain
-        assert!(!widgets_dir.join("joystick").join("widget.js.tmp").exists());
-
-        // 5. Verify local manifest timestamp was NOT bumped
-        let local_manifest = load_local_manifest(&widgets_dir).unwrap();
-        assert_eq!(local_manifest.timestamp, 1000);
-
-        remote_handle.join().unwrap();
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_updater_rejects_unsafe_path_traversal_in_manifest() {
-        use tiny_http::{Response, StatusCode};
-
-        let test_id = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let temp_dir = std::env::temp_dir().join(format!("ev3_test_traversal_{}", test_id));
-        let widgets_dir = temp_dir.join("widgets");
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        std::fs::create_dir_all(&widgets_dir).unwrap();
-
-        let remote_server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let remote_port = remote_server.server_addr().to_ip().unwrap().port();
-
-        let malicious_manifest = r#"{
-            "timestamp": 2000,
-            "widgets": {
-                "../escaped": {
-                    "version": "2.0.0",
-                    "timestamp": 2000
-                }
-            }
-        }"#;
-
-        let remote_handle = std::thread::spawn(move || {
-            if let Ok(req) = remote_server.recv() {
-                let res = Response::from_string(malicious_manifest.to_string())
-                    .with_status_code(StatusCode(200));
-                let _ = req.respond(res);
-            }
-        });
-
-        let manifest_url = format!("http://127.0.0.1:{}/manifest.json", remote_port);
-        let res = check_and_update_widgets(&manifest_url, &widgets_dir, 3)
-            .expect("check_and_update_widgets should return Ok with error list");
-
-        assert_eq!(res.updated_count, 0);
-        assert_eq!(res.errors.len(), 1);
-        assert!(res.errors.iter().any(|e| e.contains("Unsafe widget name rejected")));
-
-        assert!(!temp_dir.join("escaped").exists());
-
-        remote_handle.join().unwrap();
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
 }
-

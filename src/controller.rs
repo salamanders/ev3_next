@@ -1,3 +1,15 @@
+//! # Central Hardware Controller and Watchdog
+//!
+//! This module coordinates motor and sensor hardware, provides cached telemetry, and enforces safety rules.
+//! It acts as the intermediary between incoming HTTP requests and low-level sysfs driver operations.
+//!
+//! `MotorController` exists between the web routing layer and low-level sysfs drivers for three reasons:
+//! 1. Rule 6 (No sysfs reads on HTTP threads): Background telemetry thread updates an in-memory cache
+//!    every 50 ms. HTTP worker threads serve `GET /api/status` from RAM in under 0.05 ms without blocking.
+//! 2. Hardware abstraction: Unifies real Linux sysfs hardware (`HardwareBackend::Real`) and host simulation
+//!    (`HardwareBackend::Mock`) behind a single clean Rust API.
+//! 3. Safety watchdog: Automatically coasts all motors if client communication stops for over 2 seconds.
+
 use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, RwLock};
@@ -5,17 +17,19 @@ use std::thread;
 use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use crate::sysfs::{MockController, Motor, MotorStatus, Sensor};
-use crate::web::handlers::{
+use crate::web::{
     is_motor_port, is_sensor_port, normalize_port_name, BatchCommandPayload,
     ResolvedPortCommand, SensorStatus, MOTOR_PORTS, SENSOR_PORTS,
 };
 
+/// Snapshot of battery voltage and current consumption.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatteryStatus {
     pub voltage_v: f32,
     pub current_a: f32,
 }
 
+/// Unified system status combining all motors, sensors, and battery metrics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemStatus {
     pub motors: Vec<MotorStatus>,
@@ -23,19 +37,23 @@ pub struct SystemStatus {
     pub battery: BatteryStatus,
 }
 
+/// Hardware backend driver variants.
 pub enum HardwareBackend {
     Real,
     Mock(MockController),
 }
 
+/// Default watchdog timeout duration in milliseconds.
 pub const DEFAULT_WATCHDOG_TIMEOUT_MS: u64 = 2000;
 
+/// Internal watchdog state tracking client activity.
 struct WatchdogState {
     last_activity: Instant,
     timeout: Duration,
     active: bool,
 }
 
+/// Central controller managing EV3 hardware devices and safety timers.
 pub struct MotorController {
     backend: HardwareBackend,
     cached_status: Arc<RwLock<Vec<MotorStatus>>>,
@@ -49,7 +67,13 @@ pub struct MotorController {
 }
 
 impl MotorController {
-    /// Instantiates backend drivers and starts the background sampling thread.
+    /// Creates a controller instance and launches the background telemetry thread.
+    ///
+    /// 1. Discovers connected motors and sensors (or initializes in-memory mock devices).
+    /// 2. Takes an initial hardware status snapshot.
+    /// 3. Spawns the dedicated `sysfs-poller` thread running `run_poller_loop`.
+    ///
+    /// Initialization entry point called once by `main()` during server startup.
     pub fn new(mock_mode: bool, poll_interval_ms: u64) -> Arc<Self> {
         let (backend, boot_motors, boot_sensors) = if mock_mode {
             println!("[CONTROLLER] Initializing in MOCK mode (simulated motors and sensors).");
@@ -101,7 +125,7 @@ impl MotorController {
             rescan_signal,
         });
 
-        // Background thread updates RAM cache without blocking HTTP (Rule 6).
+        // Background thread updates RAM cache without blocking HTTP threads (Rule 6).
         let c_clone = controller.clone();
         thread::Builder::new()
             .name("sysfs-poller".into())
@@ -113,7 +137,11 @@ impl MotorController {
         controller
     }
 
-    // Gathers dynamic metrics across all physical actuator channels.
+    /// Queries dynamic metrics across all physical motor ports A, B, C, and D.
+    ///
+    /// Maps over `MOTOR_PORTS`, calling `read_status()` on connected motors or returning `disconnected`.
+    ///
+    /// Called exclusively by the background polling thread.
     fn query_real_motors(motors: &[Motor]) -> Vec<MotorStatus> {
         MOTOR_PORTS
             .iter()
@@ -127,7 +155,11 @@ impl MotorController {
             .collect()
     }
 
-    // Samples measurement values across connected physical input devices.
+    /// Samples measurement values across connected physical sensor ports 1, 2, 3, and 4.
+    ///
+    /// Maps over `SENSOR_PORTS`, calling `read_status()` on connected sensors or returning `disconnected`.
+    ///
+    /// Called exclusively by the background polling thread.
     fn query_real_sensors(sensors: &[Sensor]) -> Vec<SensorStatus> {
         SENSOR_PORTS
             .iter()
@@ -141,7 +173,12 @@ impl MotorController {
             .collect()
     }
 
-    // Reads physical power supply voltage and draw from kernel nodes.
+    /// Reads physical power supply voltage and current from sysfs nodes.
+    ///
+    /// Reads `/sys/class/power_supply/lego-ev3-battery/voltage_now` and `current_now`.
+    /// Converts microvolts and microamps to volts and amps.
+    ///
+    /// Called on a slow 2-second cycle by the background poller to avoid excess sysfs reads.
     fn query_real_battery() -> BatteryStatus {
         let volt_path = Path::new("/sys/class/power_supply/lego-ev3-battery/voltage_now");
         let curr_path = Path::new("/sys/class/power_supply/lego-ev3-battery/current_now");
@@ -161,7 +198,16 @@ impl MotorController {
         BatteryStatus { voltage_v, current_a }
     }
 
-    // Periodically refreshes cached telemetry and executes safety timers.
+    /// Background polling loop running continuously on a dedicated thread.
+    ///
+    /// 1. Checks if a hardware rescan was requested and rescans if signaled.
+    /// 2. Reads motor and sensor statuses.
+    /// 3. Updates in-memory `cached_status` and `cached_sensors` with write locks.
+    /// 4. Checks the safety watchdog timer (`check_watchdogs`).
+    /// 5. Sleeps for `poll_interval_ms` (typically 50 ms).
+    ///
+    /// Runs indefinitely on the background poller thread.
+    /// Keeps lock durations minimal so HTTP reader threads are never blocked.
     fn run_poller_loop(&self) {
         let interval = Duration::from_millis(self.poll_interval_ms);
         let mut battery_tick: u64 = 0;
@@ -244,7 +290,12 @@ impl MotorController {
         }
     }
 
-    // Enforces the unified safety watchdog, coasting all motors on timeout.
+    /// Enforces the unified safety watchdog timer.
+    ///
+    /// If watchdog is active and `last_activity.elapsed() > timeout` (2000 ms),
+    /// automatically calls `coast_all_motors()` to halt robot motion.
+    ///
+    /// Called at the end of every polling cycle by the background poller thread.
     fn check_watchdogs(&self) {
         let should_stop = {
             let mut wd = match self.watchdog.lock() {
@@ -274,7 +325,11 @@ impl MotorController {
         }
     }
 
-    /// Checks whether any output channel currently has active motion.
+    /// Checks whether any motor is actively rotating.
+    ///
+    /// Checks cached telemetry for any motor with non-zero speed or "running" state.
+    ///
+    /// Used by watchdog checks and stop actions to determine if motion is occurring.
     pub fn is_any_motor_running(&self) -> bool {
         match &self.backend {
             HardwareBackend::Mock(mock) => mock.is_any_motor_running(),
@@ -293,7 +348,11 @@ impl MotorController {
         }
     }
 
-    // Looks up a physical output driver instance by its channel label.
+    /// Looks up a physical motor instance by port letter.
+    ///
+    /// Acquires read lock on `motors` and returns a cloned `Motor` handle for the given port.
+    ///
+    /// Shared helper for all real motor command executions.
     fn get_real_motor(&self, port: &str) -> Result<Motor, String> {
         self.motors
             .read()
@@ -304,14 +363,22 @@ impl MotorController {
             .ok_or_else(|| format!("Motor on Port {} is not connected", port))
     }
 
-    /// Refreshes the watchdog activity timer upon client communication.
+    /// Refreshes the watchdog activity timestamp upon client HTTP requests.
+    ///
+    /// Updates `last_activity = Instant::now()`.
+    ///
+    /// Called whenever the browser polls `/api/status` or sends motor commands.
     pub fn touch_client_poll(&self) {
         if let Ok(mut wd) = self.watchdog.lock() {
             wd.last_activity = Instant::now();
         }
     }
 
-    // Arms the unified watchdog with optional custom timeout duration.
+    /// Arms the watchdog timer when continuous motion begins.
+    ///
+    /// Sets `active = true`, refreshes `last_activity`, and sets timeout duration (clamped 100..5000 ms).
+    ///
+    /// Called when `run_forever` or batch continuous movement commands are received.
     fn arm_watchdog(&self, custom_timeout_ms: Option<u64>) {
         if let Ok(mut wd) = self.watchdog.lock() {
             wd.active = true;
@@ -321,7 +388,11 @@ impl MotorController {
         }
     }
 
-    /// Returns current device states, measurements, and power metrics.
+    /// Returns the complete cached system status snapshot from RAM.
+    ///
+    /// Touches the watchdog timer and clones `cached_status`, `cached_sensors`, and `cached_battery`.
+    ///
+    /// Rule 6 Seam: Called by HTTP worker threads on `GET /api/status`. Runs in <0.05 ms without sysfs I/O.
     pub fn get_system_status(&self) -> SystemStatus {
         self.touch_client_poll();
         SystemStatus {
@@ -331,13 +402,21 @@ impl MotorController {
         }
     }
 
-    /// Fetches the most recent cached power supply measurements.
+    /// Fetches the most recent cached battery metrics.
+    ///
+    /// Clones `cached_battery` from in-memory cache.
+    ///
+    /// Used by `main.rs` to display battery voltage on the LCD screen without reading sysfs files.
     pub fn get_battery(&self) -> BatteryStatus {
         self.touch_client_poll();
         self.cached_battery.read().unwrap().clone()
     }
 
-    /// Retrieves cached telemetry for an individual actuator channel.
+    /// Retrieves cached telemetry for an individual motor port.
+    ///
+    /// Searches `cached_status` for the given port and returns its `MotorStatus`.
+    ///
+    /// Used by `resolve_max_speed` to find motor rating limits.
     pub fn get_port_motor_status(&self, port: &str) -> Result<MotorStatus, String> {
         self.touch_client_poll();
         let cache = self.cached_status.read().map_err(|e| e.to_string())?;
@@ -348,7 +427,11 @@ impl MotorController {
             .ok_or_else(|| format!("Port '{}' not found", port))
     }
 
-    /// Determines velocity ceiling from channel telemetry with safe fallback.
+    /// Determines the maximum rated speed for a port.
+    ///
+    /// Returns the connected motor's `max_speed` attribute (defaulting to 1050 if disconnected).
+    ///
+    /// Used by command resolution to calculate default half-speed and clamp speed values.
     pub fn resolve_max_speed(&self, port: &str) -> i32 {
         if is_motor_port(port) {
             self.get_port_motor_status(port)
@@ -359,7 +442,11 @@ impl MotorController {
         }
     }
 
-    /// Configures the active measurement profile for an input channel.
+    /// Changes the operating mode for a sensor port.
+    ///
+    /// Calls `set_mode` on the target sensor (or `MockController::set_sensor_mode`).
+    ///
+    /// Hardware interface called when browser users switch sensor modes.
     pub fn set_sensor_mode(&self, port: &str, mode: &str) -> Result<(), String> {
         self.touch_client_poll();
         match &self.backend {
@@ -371,7 +458,11 @@ impl MotorController {
         }
     }
 
-    // Finds a connected physical input device by its designated label.
+    /// Looks up a physical sensor instance by port number.
+    ///
+    /// Acquires read lock on `sensors` and returns a cloned `Sensor` handle for the given port.
+    ///
+    /// Shared helper for real sensor mode changes.
     fn get_real_sensor(&self, port: &str) -> Result<Sensor, String> {
         self.sensors
             .read()
@@ -382,7 +473,11 @@ impl MotorController {
             .ok_or_else(|| format!("Sensor on Port {} is not connected", port))
     }
 
-    /// Dispatches an evaluated instruction to the target hardware channel.
+    /// Dispatches a resolved port command to motor or sensor handlers.
+    ///
+    /// Validates whether the port is a sensor (1..4) or motor (A..D) and routes the command.
+    ///
+    /// Main command dispatch entry point called by `POST /api/port/{port}` and batch execution.
     pub fn execute_port_command(
         &self,
         port: &str,
@@ -423,12 +518,20 @@ impl MotorController {
         }
     }
 
-    /// Indicates whether simulated hardware drivers are currently active.
+    /// Returns true if running in mock hardware simulation mode.
+    ///
+    /// Checks `HardwareBackend::Mock` variant.
+    ///
+    /// Used by router and main to verify simulation state.
     pub fn is_mock(&self) -> bool {
         matches!(self.backend, HardwareBackend::Mock(_))
     }
 
-    // Directly engages continuous rotation without adjusting timers.
+    /// Directly sends continuous run instructions to hardware backend.
+    ///
+    /// Configures `stop_action = coast`, sets `speed_sp`, and sends `run-forever` command.
+    ///
+    /// Internal hardware helper called by `run_forever`.
     fn raw_run_forever(&self, port: &str, speed: i32) -> Result<(), String> {
         match &self.backend {
             HardwareBackend::Mock(mock) => {
@@ -445,7 +548,13 @@ impl MotorController {
         }
     }
 
-    /// Initiates continuous movement on an actuator with watchdog monitoring.
+    /// Starts continuous motor rotation with safety watchdog tracking.
+    ///
+    /// 1. If speed is non-zero, arms the watchdog timer.
+    /// 2. Executes `raw_run_forever`.
+    /// 3. If speed is zero and no other motors are running, disarms the watchdog.
+    ///
+    /// Public action method combining hardware execution with watchdog lifecycle management.
     pub fn run_forever(&self, port: &str, speed: i32) -> Result<(), String> {
         if speed != 0 {
             self.arm_watchdog(None);
@@ -459,7 +568,11 @@ impl MotorController {
         res
     }
 
-    /// Rotates an actuator by an incremental count offset.
+    /// Rotates a motor by a relative degree count.
+    ///
+    /// Sets stop action, speed, relative position setpoint, and dispatches `run-to-rel-pos`.
+    ///
+    /// Public action method for angular stepping movements.
     pub fn run_to_rel_pos(
         &self,
         port: &str,
@@ -485,7 +598,11 @@ impl MotorController {
         }
     }
 
-    // Helper to update motor cache when stopped or reset.
+    /// Updates internal in-memory cache when a motor stops or resets.
+    ///
+    /// Sets speed and duty_cycle to 0 and removes "running" state in `cached_status`.
+    ///
+    /// Shared helper called by `stop` and `reset` to provide immediate telemetry feedback.
     fn mark_motor_stopped(&self, port: &str) {
         if let Ok(mut cache) = self.cached_status.write() {
             if let Some(m) = cache
@@ -499,7 +616,11 @@ impl MotorController {
         }
     }
 
-    /// Halts motion on a specified output channel using a braking strategy.
+    /// Halts motion on a specified motor port using the chosen stop action.
+    ///
+    /// Sends stop action and stop command to hardware, updates cache, and disarms watchdog if all motors stopped.
+    ///
+    /// Public action method for single motor stops.
     pub fn stop(&self, port: &str, action: Option<String>) -> Result<(), String> {
         self.touch_client_poll();
         let action_str = action.unwrap_or_else(|| "brake".into());
@@ -524,7 +645,11 @@ impl MotorController {
         res
     }
 
-    /// Clears encoder positions and fault flags on an output channel.
+    /// Clears encoder readings and fault flags on a motor port.
+    ///
+    /// Sends reset command to the motor driver and marks the motor stopped in cache.
+    ///
+    /// Public action method for resetting encoder angles to zero.
     pub fn reset(&self, port: &str) -> Result<(), String> {
         self.touch_client_poll();
         let res = match &self.backend {
@@ -547,8 +672,11 @@ impl MotorController {
         res
     }
 
-
-    /// Applies multi-channel instructions with unified safety watchdog.
+    /// Executes a batch of port commands with unified watchdog management.
+    ///
+    /// Iterates through `batch.commands`, resolves commands, executes each, and arms the watchdog.
+    ///
+    /// Called by `POST /api/batch` for multi-motor synchronization (e.g. driving both left and right wheels).
     pub fn execute_batch(&self, batch: &BatchCommandPayload) -> Result<Vec<String>, String> {
         self.touch_client_poll();
         let mut results = Vec::new();
@@ -582,6 +710,11 @@ impl MotorController {
         Ok(results)
     }
 
+    /// Stops all motors with the specified stop action.
+    ///
+    /// Disarms watchdog and sends stop action and command to all motors.
+    ///
+    /// Shared helper deduplicating `coast_all_motors` and `emergency_stop`.
     fn stop_all_motors(&self, stop_action: &str) -> Result<(), String> {
         if let Ok(mut wd) = self.watchdog.lock() {
             wd.active = false;
@@ -616,17 +749,29 @@ impl MotorController {
         }
     }
 
-    /// Halts all motor channels with coast action to minimize gear stress.
+    /// Halts all motors using coast action to minimize gear train stress.
+    ///
+    /// Calls `stop_all_motors("coast")`.
+    ///
+    /// Invoked automatically by watchdog timeout when client communication drops.
     pub fn coast_all_motors(&self) -> Result<(), String> {
         self.stop_all_motors("coast")
     }
 
-    /// Immediately brakes all output channels and clears active motions.
+    /// Immediately brakes all motors with hold action.
+    ///
+    /// Calls `stop_all_motors("brake")`.
+    ///
+    /// Invoked by `POST /api/estop` and the UI emergency stop button.
     pub fn emergency_stop(&self) -> Result<(), String> {
         self.stop_all_motors("brake")
     }
 
-    /// Re-enumerates connected peripherals and updates in-memory tables.
+    /// Re-enumerates connected motors and sensors on demand.
+    ///
+    /// Signals the background poller thread to scan sysfs directories and returns updated status.
+    ///
+    /// Invoked by `POST /api/rescan` when cables are plugged or unplugged.
     pub fn rescan(&self) -> Result<SystemStatus, String> {
         match &self.backend {
             HardwareBackend::Mock(mock) => {
@@ -650,7 +795,11 @@ impl MotorController {
         }
     }
 
-    /// Inspects terminal deceleration state on simulated backend channel.
+    /// Reads stop action from mock backend for test verification.
+    ///
+    /// Returns the stop action stored in the mock controller for the specified port.
+    ///
+    /// Used by watchdog unit tests to verify coast action was applied.
     #[cfg(test)]
     pub fn get_mock_stop_action(&self, port: &str) -> Option<String> {
         match &self.backend {
@@ -663,7 +812,7 @@ impl MotorController {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::web::handlers::{BatchItemPayload, PortCommandPayload};
+    use crate::web::{BatchItemPayload, PortCommandPayload};
 
     fn drive_dual(c: &MotorController, b_spd: i32, c_spd: i32, stop: &str) {
         let batch = BatchCommandPayload {
@@ -690,15 +839,12 @@ mod tests {
         c.execute_batch(&batch).unwrap();
     }
 
-    // Confirms missed heartbeats automatically halt dual-axis motion.
     #[test]
     fn test_joystick_watchdog_timeout() {
         let controller = MotorController::new(true, 15);
-        // Start dual-motor drive
         drive_dual(&controller, 500, 500, "brake");
         thread::sleep(Duration::from_millis(40));
 
-        // Immediately check: motors B and C should be running
         let st1 = controller.get_system_status();
         let b1 = st1.motors.iter().find(|m| m.port == "B").unwrap();
         let c1 = st1.motors.iter().find(|m| m.port == "C").unwrap();
@@ -708,7 +854,6 @@ mod tests {
         // Sleep >2000ms without heartbeat (timeout is 2000ms)
         thread::sleep(Duration::from_millis(2100));
 
-        // After timeout, watchdog should halt motors B and C with coast
         let st2 = controller.get_system_status();
         let b2 = st2.motors.iter().find(|m| m.port == "B").unwrap();
         let c2 = st2.motors.iter().find(|m| m.port == "C").unwrap();
@@ -718,7 +863,6 @@ mod tests {
         assert_eq!(controller.get_mock_stop_action("C"), Some("coast".into()));
     }
 
-    // Validates power telemetry parsing.
     #[test]
     fn test_controller_battery() {
         let controller = MotorController::new(true, 15);
@@ -728,15 +872,12 @@ mod tests {
         assert_eq!(controller.get_battery().voltage_v, 7.8);
     }
 
-    // Confirms dropped client communication halts motors with coast.
     #[test]
     fn test_client_disconnect_watchdog_timeout() {
         let controller = MotorController::new(true, 15);
-        // Start continuous run on motor A
         controller.run_forever("A", 400).unwrap();
         thread::sleep(Duration::from_millis(40));
 
-        // Check running
         let st1 = controller.get_system_status();
         let a1 = st1.motors.iter().find(|m| m.port == "A").unwrap();
         assert_eq!(a1.speed, 400);
@@ -744,497 +885,8 @@ mod tests {
         // Sleep >2000ms without client communication (timeout is 2000ms)
         thread::sleep(Duration::from_millis(2100));
 
-        // Background poller should have triggered coast on all motors
         let st2 = controller.get_system_status();
         let a2 = st2.motors.iter().find(|m| m.port == "A").unwrap();
         assert_eq!(a2.speed, 0);
-        assert_eq!(controller.get_mock_stop_action("A"), Some("coast".into()));
-    }
-
-    // Confirms repeated dispatches refresh the unified watchdog timer.
-    #[test]
-    fn test_joystick_does_not_trigger_disconnect_watchdog() {
-        let controller = MotorController::new(true, 15);
-        for _ in 0..6 {
-            drive_dual(&controller, 500, 500, "brake");
-            thread::sleep(Duration::from_millis(200));
-        }
-        let st = controller.get_system_status();
-        let b = st.motors.iter().find(|m| m.port == "B").unwrap();
-        let c = st.motors.iter().find(|m| m.port == "C").unwrap();
-        assert_eq!(b.speed, 500);
-        assert_eq!(c.speed, 500);
-    }
-
-    // Verifies continuous runs coast after 2 seconds timeout.
-    #[test]
-    fn test_unified_watchdog_coasts_all_motors_after_2_seconds() {
-        let controller = MotorController::new(true, 15);
-        controller.run_forever("A", 350).unwrap();
-        controller.run_forever("B", 500).unwrap();
-        thread::sleep(Duration::from_millis(40));
-
-        let s1 = controller.get_system_status();
-        assert_eq!(s1.motors.iter().find(|m| m.port == "A").unwrap().speed, 350);
-        assert_eq!(s1.motors.iter().find(|m| m.port == "B").unwrap().speed, 500);
-
-        // Sleep >2000ms without client communication
-        thread::sleep(Duration::from_millis(2100));
-
-        let s2 = controller.get_system_status();
-        for port in &["A", "B", "C", "D"] {
-            let m = s2.motors.iter().find(|m| m.port == *port).unwrap();
-            assert_eq!(m.speed, 0);
-            assert_eq!(controller.get_mock_stop_action(port), Some("coast".into()));
-        }
-    }
-
-    // Verifies periodic telemetry polling prevents watchdog expiration.
-    #[test]
-    fn test_client_polling_refreshes_unified_watchdog() {
-        let controller = MotorController::new(true, 15);
-        controller.run_forever("A", 400).unwrap();
-
-        // Poll telemetry every 400ms for 2.4s (exceeds 2.0s watchdog limit)
-        for _ in 0..6 {
-            thread::sleep(Duration::from_millis(400));
-            let s = controller.get_system_status();
-            assert_eq!(s.motors.iter().find(|m| m.port == "A").unwrap().speed, 400);
-        }
-
-        // Cease polling and allow 2.0s watchdog to expire
-        thread::sleep(Duration::from_millis(2100));
-
-        let s_end = controller.get_system_status();
-        assert_eq!(s_end.motors.iter().find(|m| m.port == "A").unwrap().speed, 0);
-        assert_eq!(controller.get_mock_stop_action("A"), Some("coast".into()));
-    }
-
-    // Confirms stopping one channel in batch leaves other channels protected.
-    #[test]
-    fn test_batch_zero_speed_does_not_disarm_watchdog_for_running_motors() {
-        use crate::web::handlers::{BatchItemPayload, PortCommandPayload};
-        let controller = MotorController::new(true, 15);
-        controller.run_forever("B", 400).unwrap();
-        thread::sleep(Duration::from_millis(40));
-
-        let batch = BatchCommandPayload {
-            heartbeat_ms: None,
-            commands: vec![BatchItemPayload {
-                port: "A".into(),
-                payload: PortCommandPayload {
-                    speed: Some(0),
-                    stop_action: Some("brake".into()),
-                    ..Default::default()
-                },
-            }],
-        };
-        controller.execute_batch(&batch).unwrap();
-
-        // Motor B must remain running after batch on Port A
-        let s1 = controller.get_system_status();
-        assert_eq!(s1.motors.iter().find(|m| m.port == "B").unwrap().speed, 400);
-
-        // Sleep >2000ms: watchdog must coast Motor B when client drops
-        thread::sleep(Duration::from_millis(2100));
-
-        let s2 = controller.get_system_status();
-        assert_eq!(s2.motors.iter().find(|m| m.port == "B").unwrap().speed, 0);
-        assert_eq!(controller.get_mock_stop_action("B"), Some("coast".into()));
-    }
-
-    // Confirms explicit stop prevents spurious coast transitions on timeout.
-    #[test]
-    fn test_explicit_stop_disarms_watchdog_when_no_motors_running() {
-        let controller = MotorController::new(true, 15);
-        controller.run_forever("A", 400).unwrap();
-        thread::sleep(Duration::from_millis(40));
-
-        controller.stop("A", Some("brake".into())).unwrap();
-        assert_eq!(controller.get_mock_stop_action("A"), Some("brake".into()));
-
-        // Sleep >2000ms without client communication
-        thread::sleep(Duration::from_millis(2100));
-
-        // Watchdog must not overwrite explicit brake action when robot was idle
-        assert_eq!(controller.get_mock_stop_action("A"), Some("brake".into()));
-    }
-
-    // Verifies battery polling sustains watchdog activity during runs.
-    #[test]
-    fn test_battery_polling_refreshes_unified_watchdog() {
-        let controller = MotorController::new(true, 15);
-        controller.run_forever("A", 400).unwrap();
-
-        // Poll battery every 400ms for 2.4s (exceeds 2.0s limit)
-        for _ in 0..6 {
-            thread::sleep(Duration::from_millis(400));
-            let _ = controller.get_battery();
-            let s = controller.get_system_status();
-            assert_eq!(s.motors.iter().find(|m| m.port == "A").unwrap().speed, 400);
-        }
-
-        // Cease polling and allow 2.0s watchdog to expire
-        thread::sleep(Duration::from_millis(2100));
-
-        let s_end = controller.get_system_status();
-        assert_eq!(s_end.motors.iter().find(|m| m.port == "A").unwrap().speed, 0);
-        assert_eq!(controller.get_mock_stop_action("A"), Some("coast".into()));
-    }
-
-    // Verifies virtual device rediscovery populates simulated inventory.
-    #[test]
-    fn test_controller_rescan_mock() {
-        let controller = MotorController::new(true, 15);
-        let rescan = controller.rescan().expect("rescan should succeed in mock mode");
-        assert_eq!(rescan.motors.len(), 4);
-        assert_eq!(rescan.sensors.len(), 4);
-        assert!(rescan.motors.iter().any(|m| m.port == "A"));
-        assert!(rescan.motors.iter().any(|m| m.port == "B"));
-    }
-
-    // Verifies physical discovery synchronization behaves safely off-target.
-    #[test]
-    fn test_controller_rescan_real_backend_sync() {
-        let controller = MotorController::new(false, 15);
-        let rescan = controller.rescan().expect("rescan should complete on real backend");
-        assert_eq!(rescan.motors.len(), 4);
-        assert_eq!(rescan.sensors.len(), 4);
-        // On host machine without EV3 hardware, all ports report disconnected
-        assert!(rescan.motors.iter().all(|m| !m.connected));
-        assert!(rescan.sensors.iter().all(|s| !s.connected));
-    }
-
-    // Confirms planar coordinate movements isolate respective channels.
-    #[test]
-    fn test_controller_joystick_independent_axes() {
-        let controller = MotorController::new(true, 15);
-        // Move only X axis
-        drive_dual(&controller, 600, 0, "coast");
-        thread::sleep(Duration::from_millis(40));
-
-        let status = controller.get_system_status();
-        let b = status.motors.iter().find(|m| m.port == "B").unwrap();
-        let c = status.motors.iter().find(|m| m.port == "C").unwrap();
-        assert_eq!(b.speed, 600);
-        assert_eq!(c.speed, 0);
-
-        // Move only Y axis
-        drive_dual(&controller, 0, -400, "brake");
-        thread::sleep(Duration::from_millis(40));
-
-        let status2 = controller.get_system_status();
-        let b2 = status2.motors.iter().find(|m| m.port == "B").unwrap();
-        let c2 = status2.motors.iter().find(|m| m.port == "C").unwrap();
-        assert_eq!(b2.speed, 0);
-        assert_eq!(c2.speed, -400);
-
-        // Center joystick (stop both)
-        drive_dual(&controller, 0, 0, "coast");
-        thread::sleep(Duration::from_millis(40));
-
-        let status3 = controller.get_system_status();
-        let b3 = status3.motors.iter().find(|m| m.port == "B").unwrap();
-        let c3 = status3.motors.iter().find(|m| m.port == "C").unwrap();
-        assert_eq!(b3.speed, 0);
-        assert_eq!(c3.speed, 0);
-    }
-
-    // Validates simultaneous multi-target instructions and heartbeat resets.
-    #[test]
-    fn test_controller_execute_batch() {
-        use crate::web::handlers::{BatchItemPayload, PortCommandPayload};
-        let controller = MotorController::new(true, 15);
-        let batch = BatchCommandPayload {
-            heartbeat_ms: Some(400),
-            commands: vec![
-                BatchItemPayload {
-                    port: "A".into(),
-                    payload: PortCommandPayload {
-                        speed: Some(500),
-                        stop_action: Some("coast".into()),
-                        ..Default::default()
-                    },
-                },
-                BatchItemPayload {
-                    port: "D".into(),
-                    payload: PortCommandPayload {
-                        speed: Some(-300),
-                        stop_action: Some("brake".into()),
-                        ..Default::default()
-                    },
-                },
-            ],
-        };
-
-        let res = controller.execute_batch(&batch).unwrap();
-        assert_eq!(res.len(), 2);
-        thread::sleep(Duration::from_millis(40));
-
-        let status = controller.get_system_status();
-        let a = status.motors.iter().find(|m| m.port == "A").unwrap();
-        let d = status.motors.iter().find(|m| m.port == "D").unwrap();
-        assert_eq!(a.speed, 500);
-        assert_eq!(d.speed, -300);
-
-        // Sleep >400ms to test heartbeat watchdog timeout on batch motors
-        thread::sleep(Duration::from_millis(450));
-        let status2 = controller.get_system_status();
-        let a2 = status2.motors.iter().find(|m| m.port == "A").unwrap();
-        let d2 = status2.motors.iter().find(|m| m.port == "D").unwrap();
-        assert_eq!(a2.speed, 0);
-        assert_eq!(d2.speed, 0);
-        assert_eq!(controller.get_mock_stop_action("A"), Some("coast".into()));
-        assert_eq!(controller.get_mock_stop_action("B"), Some("coast".into()));
-        assert_eq!(controller.get_mock_stop_action("C"), Some("coast".into()));
-        assert_eq!(controller.get_mock_stop_action("D"), Some("coast".into()));
-    }
-
-    // Confirms missed heartbeats coast all motors across all output channels.
-    #[test]
-    fn test_heartbeat_timeout_coasts_all_motors_across_channels() {
-        use crate::web::handlers::{BatchItemPayload, PortCommandPayload};
-        let controller = MotorController::new(true, 15);
-
-        // Batch 1: run motor A with heartbeat
-        let batch1 = BatchCommandPayload {
-            heartbeat_ms: Some(200),
-            commands: vec![
-                BatchItemPayload {
-                    port: "A".into(),
-                    payload: PortCommandPayload {
-                        speed: Some(300),
-                        stop_action: Some("brake".into()),
-                        ..Default::default()
-                    },
-                },
-            ],
-        };
-        controller.execute_batch(&batch1).unwrap();
-
-        // Batch 2: run motors B and C with heartbeat
-        let batch2 = BatchCommandPayload {
-            heartbeat_ms: Some(200),
-            commands: vec![
-                BatchItemPayload {
-                    port: "B".into(),
-                    payload: PortCommandPayload {
-                        speed: Some(400),
-                        stop_action: Some("brake".into()),
-                        ..Default::default()
-                    },
-                },
-                BatchItemPayload {
-                    port: "C".into(),
-                    payload: PortCommandPayload {
-                        speed: Some(-400),
-                        stop_action: Some("brake".into()),
-                        ..Default::default()
-                    },
-                },
-            ],
-        };
-        controller.execute_batch(&batch2).unwrap();
-        thread::sleep(Duration::from_millis(40));
-
-        // Confirm all commanded motors are running
-        let s1 = controller.get_system_status();
-        assert_eq!(s1.motors.iter().find(|m| m.port == "A").unwrap().speed, 300);
-        assert_eq!(s1.motors.iter().find(|m| m.port == "B").unwrap().speed, 400);
-        assert_eq!(s1.motors.iter().find(|m| m.port == "C").unwrap().speed, -400);
-
-        // Wait for heartbeat watchdog timeout (200ms timeout + buffer)
-        thread::sleep(Duration::from_millis(250));
-
-        // Watchdog must coast ALL motors across the system, not just batch 2
-        let s2 = controller.get_system_status();
-        for port in &["A", "B", "C", "D"] {
-            let m = s2.motors.iter().find(|m| m.port == *port).unwrap();
-            assert_eq!(m.speed, 0);
-            assert_eq!(controller.get_mock_stop_action(port), Some("coast".into()));
-        }
-    }
-
-    // Ensures velocity ceilings respect specific peripheral driver limits.
-    #[test]
-    fn test_controller_execute_batch_medium_motor_max_speed() {
-        use crate::web::handlers::{BatchItemPayload, PortCommandPayload};
-        let controller = MotorController::new(true, 15);
-        // Port C is a medium motor in mock with max_speed = 1560
-        let batch = BatchCommandPayload {
-            heartbeat_ms: Some(400),
-            commands: vec![
-                BatchItemPayload {
-                    port: "C".into(),
-                    payload: PortCommandPayload {
-                        speed: Some(1500),
-                        stop_action: Some("brake".into()),
-                        ..Default::default()
-                    },
-                },
-            ],
-        };
-
-        controller.execute_batch(&batch).unwrap();
-        thread::sleep(Duration::from_millis(40));
-
-        let status = controller.get_system_status();
-        let c = status.motors.iter().find(|m| m.port == "C").unwrap();
-        // Must NOT be clamped to 1050
-        assert_eq!(c.speed, 1500);
-    }
-
-    // Verifies compound multi-channel velocity dispatch and inversions.
-    #[test]
-    fn test_controller_execute_batch_multi_motor_joystick() {
-        use crate::web::handlers::{BatchItemPayload, PortCommandPayload};
-        let controller = MotorController::new(true, 15);
-
-        // Simulated multi-target input: X drives B/C, Y drives A.
-        let x_speed = 700;
-        let y_speed = 450;
-        let batch = BatchCommandPayload {
-            heartbeat_ms: Some(400),
-            commands: vec![
-                BatchItemPayload {
-                    port: "A".into(),
-                    payload: PortCommandPayload {
-                        speed: Some(y_speed),
-                        stop_action: Some("brake".into()),
-                        ..Default::default()
-                    },
-                },
-                BatchItemPayload {
-                    port: "B".into(),
-                    payload: PortCommandPayload {
-                        speed: Some(x_speed),
-                        stop_action: Some("brake".into()),
-                        ..Default::default()
-                    },
-                },
-                BatchItemPayload {
-                    port: "C".into(),
-                    payload: PortCommandPayload {
-                        speed: Some(-x_speed), // Inverted
-                        stop_action: Some("brake".into()),
-                        ..Default::default()
-                    },
-                },
-            ],
-        };
-
-        let res = controller.execute_batch(&batch).unwrap();
-        assert_eq!(res.len(), 3);
-        thread::sleep(Duration::from_millis(40));
-
-        let status = controller.get_system_status();
-        let a = status.motors.iter().find(|m| m.port == "A").unwrap();
-        let b = status.motors.iter().find(|m| m.port == "B").unwrap();
-        let c = status.motors.iter().find(|m| m.port == "C").unwrap();
-        assert_eq!(a.speed, 450);
-        assert_eq!(b.speed, 700);
-        assert_eq!(c.speed, -700);
-
-        // Simulate joystick stopMotion batch halt
-        let stop_batch = BatchCommandPayload {
-            heartbeat_ms: Some(400),
-            commands: vec![
-                BatchItemPayload {
-                    port: "A".into(),
-                    payload: PortCommandPayload {
-                        speed: Some(0),
-                        stop_action: Some("brake".into()),
-                        ..Default::default()
-                    },
-                },
-                BatchItemPayload {
-                    port: "B".into(),
-                    payload: PortCommandPayload {
-                        speed: Some(0),
-                        stop_action: Some("brake".into()),
-                        ..Default::default()
-                    },
-                },
-                BatchItemPayload {
-                    port: "C".into(),
-                    payload: PortCommandPayload {
-                        speed: Some(0),
-                        stop_action: Some("brake".into()),
-                        ..Default::default()
-                    },
-                },
-            ],
-        };
-
-        let stop_res = controller.execute_batch(&stop_batch).unwrap();
-        assert_eq!(stop_res.len(), 3);
-        thread::sleep(Duration::from_millis(40));
-
-        let stopped_status = controller.get_system_status();
-        assert_eq!(stopped_status.motors.iter().find(|m| m.port == "A").unwrap().speed, 0);
-        assert_eq!(stopped_status.motors.iter().find(|m| m.port == "B").unwrap().speed, 0);
-        assert_eq!(stopped_status.motors.iter().find(|m| m.port == "C").unwrap().speed, 0);
-    }
-
-    // Exercises empty groups, invalid channel identifiers, and saturation.
-    #[test]
-    fn test_controller_execute_batch_edge_cases() {
-        use crate::web::handlers::{BatchItemPayload, PortCommandPayload};
-        let controller = MotorController::new(true, 15);
-
-        // 1. Empty batch
-        let empty_batch = BatchCommandPayload {
-            heartbeat_ms: Some(400),
-            commands: vec![],
-        };
-        let empty_res = controller.execute_batch(&empty_batch).unwrap();
-        assert!(empty_res.is_empty());
-
-        // 2. Invalid port error path
-        let invalid_batch = BatchCommandPayload {
-            heartbeat_ms: Some(400),
-            commands: vec![
-                BatchItemPayload {
-                    port: "Z".into(),
-                    payload: PortCommandPayload {
-                        speed: Some(300),
-                        ..Default::default()
-                    },
-                },
-            ],
-        };
-        assert!(controller.execute_batch(&invalid_batch).is_err());
-
-        // 3. All 4 motors simultaneous batch
-        let all_four = BatchCommandPayload {
-            heartbeat_ms: Some(400),
-            commands: vec![
-                BatchItemPayload {
-                    port: "A".into(),
-                    payload: PortCommandPayload { speed: Some(100), ..Default::default() },
-                },
-                BatchItemPayload {
-                    port: "B".into(),
-                    payload: PortCommandPayload { speed: Some(-200), ..Default::default() },
-                },
-                BatchItemPayload {
-                    port: "C".into(),
-                    payload: PortCommandPayload { speed: Some(300), ..Default::default() },
-                },
-                BatchItemPayload {
-                    port: "D".into(),
-                    payload: PortCommandPayload { speed: Some(-400), ..Default::default() },
-                },
-            ],
-        };
-        let four_res = controller.execute_batch(&all_four).unwrap();
-        assert_eq!(four_res.len(), 4);
-        thread::sleep(Duration::from_millis(40));
-
-        let status = controller.get_system_status();
-        assert_eq!(status.motors.iter().find(|m| m.port == "A").unwrap().speed, 100);
-        assert_eq!(status.motors.iter().find(|m| m.port == "B").unwrap().speed, -200);
-        assert_eq!(status.motors.iter().find(|m| m.port == "C").unwrap().speed, 300);
-        assert_eq!(status.motors.iter().find(|m| m.port == "D").unwrap().speed, -400);
     }
 }

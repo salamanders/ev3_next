@@ -284,9 +284,12 @@ $RECYCLE.BIN/
 *.lnk
 
 # Disk images & appliance build artifacts (may contain sensitive Wi-Fi credentials)
+wifi.txt
+ev3-web-motor-ready.img
 ev3-web-motor-ready.img.xz
 *.img
 *.img.xz
+*.bmap
 *.img.tmp*
 *.img.xz.tmp*
 build_image/

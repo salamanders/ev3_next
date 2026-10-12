@@ -102,20 +102,31 @@ exit
 
 ---
 
-## 5. Deployment Scripts (Zero SD-Card Swapping)
+## 5. Deployment Over Network (Zero SD-Card Swapping)
 
-Deploy updates over the USB network without removing the MicroSD card:
+Deploy updates over the network without removing the MicroSD card:
 
-- **Linux / macOS:**
-  ```bash
-  ./archive/deploy.sh 192.168.2.2
-  ```
-- **Windows PowerShell:**
-  ```powershell
-  .\archive\deploy.ps1 -TargetIp 192.168.2.2
-  ```
+1. Cross-compile the binary for ARMv5te:
+   ```bash
+   cargo build --target armv5te-unknown-linux-musleabi --release
+   ```
 
-The deployment script cross-compiles the binary, transfers the file to `/tmp/ev3-web-motor.new`, performs an atomic replace, and restarts `ev3-web.service`.
+2. Copy the binary to the staging directory on the EV3 brick:
+   ```bash
+   scp target/armv5te-unknown-linux-musleabi/release/ev3-web-motor robot@192.168.2.2:/tmp/ev3-web-motor.new
+   ```
+
+3. Atomically replace the installed binary and restart the service on the EV3:
+   ```bash
+   ssh robot@192.168.2.2 "sudo mv /tmp/ev3-web-motor.new /usr/local/bin/ev3-web-motor && sudo chmod +x /usr/local/bin/ev3-web-motor && sudo systemctl restart ev3-web.service"
+   ```
+
+4. Verify that the service is active:
+   ```bash
+   ssh robot@192.168.2.2 "systemctl is-active --quiet ev3-web.service"
+   ```
+
+Alternatively, bake an appliance disk image using `tools/bake-image.sh` and flash the card using `tools/flash-image.sh`.
 
 ---
 

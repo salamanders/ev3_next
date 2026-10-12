@@ -1,12 +1,37 @@
-// Pure boundary arithmetic and multi-channel velocity setpoint calculation.
+/**
+ * # 2D Joystick Widget Module
+ *
+ * This modular widget renders an interactive 2D analog joystick for robot steering and drive control.
+ * It maps X and Y pointer coordinates to motor speed vectors, supporting both single-motor and multi-motor axes.
+ *
+ * Implements the modular widget interface (`createDefault`, `renderDesign`, `attachDesign`, `renderRun`, `initRun`).
+ * Dynamically loaded by `WidgetRegistry` on demand from `/widgets/joystick/widget.js`.
+ */
+
+// Helper clamping a numeric value within minimum and maximum bounds.
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 
+/**
+ * Returns an array of unique motor port letters used by the joystick widget.
+ *
+ * Collects ports from `xPort`/`yPort` or iterates through `xMotors` and `yMotors` arrays.
+ *
+ * Shared by stop command generation and port query helpers.
+ */
 function getJoystickPorts(w) {
     return !w.multiMotor
         ? [w.xPort, w.yPort]
         : [...new Set([...(w.xMotors ?? []).map(m => m.port), ...(w.yMotors ?? []).map(m => m.port)])];
 }
 
+/**
+ * Converts normalized joystick coordinates (-1.0 to 1.0) into batch motor speed commands.
+ *
+ * Multiplies `normX` and `normY` by `maxSpeed` and formats commands for all assigned motors.
+ * Supports individual motor inversion flags.
+ *
+ * Pure calculation function testable without DOM or network dependencies.
+ */
 function calculateJoystickCommands(w, normX, normY, maxSpeed = 1000) {
     const stopAction = w.stopAction || "brake";
     const xSpeed = clamp(Math.round(normX * maxSpeed), -maxSpeed, maxSpeed);
@@ -27,11 +52,25 @@ function calculateJoystickCommands(w, normX, normY, maxSpeed = 1000) {
     return [...mapMotors(w.xMotors, xSpeed), ...mapMotors(w.yMotors, ySpeed)];
 }
 
+/**
+ * Generates batch zero-speed stop commands for all assigned joystick motors.
+ *
+ * Maps ports from `getJoystickPorts` to `{ port, speed: 0, stop_action }`.
+ *
+ * Called when the joystick knob is released or when motion ceases.
+ */
 function getJoystickStopCommands(w) {
     const stopAction = w.stopAction || "brake";
     return getJoystickPorts(w).map(port => ({ port, speed: 0, stop_action: stopAction }));
 }
 
+/**
+ * Formats the badge string displaying active joystick ports in the card header.
+ *
+ * Returns strings like `X: B | Y: C` or lists active multi-motor ports with inversion signs.
+ *
+ * Used by `getPortBadge` for header card labeling.
+ */
 function formatPortBadge(w) {
     if (!w.multiMotor) {
         return `X: ${w.xPort} | Y: ${w.yPort}`;
@@ -48,7 +87,13 @@ export default {
     label: "2D Joystick",
     sizeClass: "run-card-2x2",
 
-    // Seeds initial layout schema when adding a new directional control.
+    /**
+     * Creates default configuration schema when adding a joystick widget.
+     *
+     * Returns an object assigning port B to X axis, port C to Y axis, and brake stop action.
+     *
+     * Factory function called by `EV3App::addWidget`.
+     */
     createDefault(id) {
         return {
             id,
@@ -62,11 +107,24 @@ export default {
         };
     },
 
+    /**
+     * Returns port badge string for the widget card header.
+     *
+     * Delegates to `formatPortBadge(w)`.
+     *
+     * Displays configured motor ports in the card header.
+     */
     getPortBadge(w) {
         return formatPortBadge(w);
     },
 
-    // Generates configuration markup for single and multi-actuator layouts.
+    /**
+     * Formats HTML markup for the widget settings card in Design View.
+     *
+     * Renders controls for multi-motor toggle, port dropdowns, per-port inversion, and release stop action.
+     *
+     * Provides visual layout configuration in Design View.
+     */
     renderDesign(w, ctx) {
         const motorCols = ["A", "B", "C", "D"];
         const axes = [
@@ -133,7 +191,13 @@ export default {
         `;
     },
 
-    // Attaches listeners for channel assignments and inversion options.
+    /**
+     * Attaches change event listeners to design inputs.
+     *
+     * Binds multi-motor toggle, axis assignments, and inversion checkboxes to update widget configuration.
+     *
+     * Wires interactivity on newly rendered configuration cards.
+     */
     attachDesign(w, cardElement, ctx) {
         cardElement.querySelector(".field-stop-action")?.addEventListener("change", (e) => {
             ctx.updateWidget(w.id, { stopAction: e.target.value });
@@ -220,7 +284,13 @@ export default {
         });
     },
 
-    // Generates circular touch pad markup with crosshairs and readouts.
+    /**
+     * Formats HTML markup for the 2D joystick touch pad in Run View.
+     *
+     * Generates a circular boundary with crosshairs, movable knob handle, and live percentage readout.
+     *
+     * Renders the interactive touch control pad for Run View.
+     */
     renderRun(w) {
         return `
             <div class="joystick-container">
@@ -234,7 +304,16 @@ export default {
         `;
     },
 
-    // Captures pointer coordinates and dispatches differential vectors.
+    /**
+     * Attaches pointer drag handlers to the joystick knob.
+     *
+     * 1. Captures pointer events on the joystick boundary circle.
+     * 2. Calculates clamped displacement from circle center.
+     * 3. Sends throttled `/api/batch` motor commands at 15 Hz (66 ms interval).
+     * 4. On release, snaps knob back to center and sends batch stop command.
+     *
+     * Implements responsive touch and mouse dragging physics.
+     */
     initRun(w, cardElement, ctx) {
         const boundary = cardElement.querySelector(`#joy-boundary-${w.id}`);
         const knob = cardElement.querySelector(`#joy-knob-${w.id}`);
@@ -305,7 +384,13 @@ export default {
         boundary.addEventListener("pointercancel", stopMotion);
     },
 
-    // Centers visual elements and resets display percentages on safety stop.
+    /**
+     * Resets joystick knob position and readout when an emergency stop occurs.
+     *
+     * Snaps knob back to center (0, 0) and resets readout text to "X: 0% | Y: 0%".
+     *
+     * Lifecycle hook invoked by `EV3App::emergencyStop`.
+     */
     onEmergencyStop(w, cardElement) {
         const knob = cardElement.querySelector(`#joy-knob-${w.id}`);
         if (knob) {

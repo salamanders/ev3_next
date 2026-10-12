@@ -1,26 +1,33 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# flash-image.sh: Command-Line Flash & Verification Tool for MicroSD Cards
+# flash-image.sh: One-Step Bake, Flash & Verification Tool for MicroSD Cards
 # ==============================================================================
+#   Bakes the EV3 appliance disk image (calling bake-image.sh automatically so
+#   ./wifi.txt and the latest ev3-web-motor binary are always included),
+#   auto-detects the removable USB MicroSD card if no device path is given,
+#   writes only allocated blocks using bmaptool (or dd as a fallback) directly
+#   from the uncompressed build_image/ev3dev.img without wasting time on xz
+#   compression, and verifies the flashed card.
+#
 # Usage:
-#   sudo ./tools/flash-image.sh [options] <TARGET_DEVICE> [IMAGE_PATH]
+#   sudo ./tools/flash-image.sh [options] [TARGET_DEVICE] [IMAGE_PATH]
 #
 # Options:
-#   -v, --verify-only    Skip flashing; only verify an existing card
+#   -s, --ssid <SSID>    Wi-Fi network name (forwarded to bake-image.sh; overrides wifi.txt)
+#   -p, --password <PW>  Wi-Fi passphrase (forwarded to bake-image.sh; overrides wifi.txt)
+#   --no-bake            Skip running bake-image.sh before flashing
+#   -v, --verify-only    Skip baking and flashing; only verify an existing card
 #   -y, --yes            Skip confirmation prompt (for non-interactive use)
 #   --allow-internal     Allow flashing non-removable internal drives (RM=0)
 #   --allow-large-disk   Allow flashing drives larger than 64 GB
 #   -h, --help           Show this help message
 #
 # Examples:
-#   # Flash appliance image to /dev/sdX and verify (prompts for confirmation):
-#   sudo ./tools/flash-image.sh /dev/sdX
+#   # One-command bake + auto-detect SD card + fast flash (reads ./wifi.txt automatically):
+#   sudo ./tools/flash-image.sh -y
 #
-#   # Flash specific image file with automatic confirmation:
-#   sudo ./tools/flash-image.sh -y /dev/sdX ./ev3-web-motor-ready.img.xz
-#
-#   # Verify an already written MicroSD card without re-flashing:
-#   sudo ./tools/flash-image.sh --verify-only /dev/sdX
+#   # Specify target SD card explicitly:
+#   sudo ./tools/flash-image.sh -y /dev/sdc
 # ==============================================================================
 
 set -euo pipefail
@@ -28,19 +35,35 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-DEFAULT_IMAGE="${WORKSPACE_DIR}/ev3-web-motor-ready.img.xz"
+DEFAULT_IMAGE="${WORKSPACE_DIR}/build_image/ev3dev.img"
+DEFAULT_BMAP="${WORKSPACE_DIR}/build_image/ev3dev.img.bmap"
 VERIFY_ONLY=false
+NO_BAKE=false
 ASSUME_YES=false
 ALLOW_INTERNAL=false
 ALLOW_LARGE_DISK=false
 TARGET_DEV=""
 IMAGE_PATH=""
+BAKE_ARGS=()
 
 # Parse options
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        -s|--ssid)
+            BAKE_ARGS+=(--ssid "$2")
+            shift 2
+            ;;
+        -p|--password)
+            BAKE_ARGS+=(--password "$2")
+            shift 2
+            ;;
+        --no-bake)
+            NO_BAKE=true
+            shift
+            ;;
         -v|--verify-only)
             VERIFY_ONLY=true
+            NO_BAKE=true
             shift
             ;;
         -y|--yes)
@@ -56,7 +79,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         -h|--help)
-            sed -n '2,24p' "$0" | sed 's/^# \?//'
+            sed -n '2,30p' "$0" | sed 's/^# \?//'
             exit 0
             ;;
         -*)
@@ -78,26 +101,59 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ -z "${TARGET_DEV}" ]]; then
-    echo "ERROR: Target block device required (for example: /dev/sdX or /dev/mmcblk0)."
-    echo "Usage: sudo ./tools/flash-image.sh [options] <TARGET_DEVICE> [IMAGE_PATH]"
-    exit 1
-fi
-
-if [[ -z "${IMAGE_PATH}" ]]; then
-    IMAGE_PATH="${DEFAULT_IMAGE}"
-fi
-
 # 1. Root check
 if [[ $EUID -ne 0 ]]; then
     echo "ERROR: This script must be run as root (or via sudo)."
     exit 1
 fi
 
+# 2. Run bake-image.sh automatically unless --no-bake, --verify-only, or custom IMAGE_PATH is set
+if [[ "${NO_BAKE}" != "true" && -z "${IMAGE_PATH}" ]]; then
+    if [[ ${#BAKE_ARGS[@]} -gt 0 ]]; then
+        "${SCRIPT_DIR}/bake-image.sh" "${BAKE_ARGS[@]}"
+    else
+        "${SCRIPT_DIR}/bake-image.sh"
+    fi
+    echo ""
+fi
+
+if [[ -z "${IMAGE_PATH}" ]]; then
+    IMAGE_PATH="${DEFAULT_IMAGE}"
+fi
+
+# 3. Auto-detect single removable MicroSD card if TARGET_DEV was not passed
+if [[ -z "${TARGET_DEV}" ]]; then
+    CANDIDATES=()
+    while IFS= read -r line; do
+        [[ -z "${line}" ]] && continue
+        c_dev="$(awk '{print $1}' <<<"${line}")"
+        c_type="$(awk '{print $2}' <<<"${line}")"
+        c_rm="$(awk '{print $3}' <<<"${line}")"
+        c_size="$(awk '{print $4}' <<<"${line}")"
+        # Match whole disks (TYPE=disk) marked removable (RM=1) between 2 GB and 64 GiB
+        if [[ "${c_type}" == "disk" && "${c_rm}" == "1" && "${c_size}" -ge 2000000000 && "${c_size}" -le 68719476736 ]]; then
+            CANDIDATES+=("${c_dev}")
+        fi
+    done < <(lsblk -dnpo NAME,TYPE,RM,SIZE -b 2>/dev/null || true)
+
+    if [[ ${#CANDIDATES[@]} -eq 1 ]]; then
+        TARGET_DEV="${CANDIDATES[0]}"
+        echo "Auto-detected removable MicroSD card: ${TARGET_DEV}"
+    elif [[ ${#CANDIDATES[@]} -eq 0 ]]; then
+        echo "ERROR: No removable MicroSD card (RM=1, 2GB-64GB) auto-detected."
+        echo "Plug in your MicroSD card or pass the device explicitly (for example: sudo ./tools/flash-image.sh /dev/sdc)."
+        exit 1
+    else
+        echo "ERROR: Multiple removable drives detected: ${CANDIDATES[*]}"
+        echo "Please specify which drive to flash (for example: sudo ./tools/flash-image.sh ${CANDIDATES[0]})."
+        exit 1
+    fi
+fi
+
 TARGET_DEV="$(readlink -f "${TARGET_DEV}")"
 TARGET_REAL="${TARGET_DEV}"
 
-# 2. Block device validation
+# 4. Block device validation
 if [[ ! -b "${TARGET_DEV}" ]]; then
     echo "ERROR: '${TARGET_DEV}' is not a valid block device."
     echo "Use 'lsblk' to identify your target MicroSD card device."
@@ -300,10 +356,17 @@ if [[ "${VERIFY_ONLY}" != "true" ]]; then
         done < <(awk 'NR>1 {print $1}' /proc/swaps 2>/dev/null || true)
     fi
 
-    echo "[2/3] Writing image to ${TARGET_DEV} via command line..."
-    if [[ "${IMAGE_PATH}" == *.xz ]]; then
+    echo "[2/3] Writing image to ${TARGET_DEV}..."
+    BMAP_CANDIDATE="${IMAGE_PATH}.bmap"
+    if command -v bmaptool >/dev/null 2>&1 && [[ -f "${BMAP_CANDIDATE}" ]]; then
+        echo "      Using bmaptool with block map (${BMAP_CANDIDATE}) to skip empty blocks..."
+        bmaptool copy --bmap "${BMAP_CANDIDATE}" "${IMAGE_PATH}" "${TARGET_DEV}"
+    elif [[ "${IMAGE_PATH}" == *.xz ]]; then
         xzcat "${IMAGE_PATH}" | dd of="${TARGET_DEV}" bs=4M status=progress conv=fsync
     else
+        if ! command -v bmaptool >/dev/null 2>&1; then
+            echo "      (Tip: install 'bmap-tools' via apt for 2-3x faster SD card flashing)"
+        fi
         dd if="${IMAGE_PATH}" of="${TARGET_DEV}" bs=4M status=progress conv=fsync
     fi
     sync
@@ -440,7 +503,7 @@ fi
 
 # Check 8: Pre-configured Wi-Fi credentials (if present)
 if [[ -f "${CHECK_MNT}/var/lib/connman/ev3_wifi.config" ]]; then
-    SSID_NAME="$(grep -E "^Name = " "${CHECK_MNT}/var/lib/connman/ev3_wifi.config" | head -n1 | cut -d= -f2- | tr -d ' ' || true)"
+    SSID_NAME="$(grep -E "^Name = " "${CHECK_MNT}/var/lib/connman/ev3_wifi.config" | tail -n1 | cut -d= -f2- | tr -d ' ' || true)"
     echo "      [INFO] Pre-configured Wi-Fi found for SSID: '${SSID_NAME}'."
 fi
 

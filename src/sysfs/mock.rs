@@ -1,14 +1,24 @@
+//! # Host Hardware Simulation Mock Interface
+//!
+//! This module simulates EV3 motors and sensors in host memory for developer testing.
+//! It implements simulated kinematics for motors (ports A, B, C, D) and standard sensor readings (ports 1, 2, 3, 4).
+//!
+//! Host-First Simulation Rule (Rule 4): Web interface and control logic must be testable on host machines
+//! at `http://localhost:8080/` without requiring physical EV3 hardware or Linux sysfs paths.
+
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use super::motor::MotorStatus;
 use super::sensor::SensorStatus;
 
+/// Controller providing in-memory simulation of motors and sensors.
 #[derive(Clone)]
 pub struct MockController {
     motors: Arc<Mutex<[MockMotorState; 4]>>,
     sensors: Arc<Mutex<[MockSensorState; 4]>>,
 }
 
+/// Simulated state for a single sensor input channel.
 #[derive(Clone)]
 struct MockSensorState {
     port: &'static str,
@@ -20,6 +30,7 @@ struct MockSensorState {
     units: &'static str,
 }
 
+/// Simulated state and kinematics for a single motor output channel.
 #[derive(Clone)]
 struct MockMotorState {
     port: &'static str,
@@ -27,10 +38,8 @@ struct MockMotorState {
     max_speed: i32,
     count_per_rot: i32,
     speed_sp: i32,
-    duty_cycle_sp: i32,
     position: f64,
     target_pos: Option<i32>,
-    time_remaining_ms: Option<u32>,
     running: bool,
     holding: bool,
     stop_action: String,
@@ -39,7 +48,11 @@ struct MockMotorState {
 }
 
 impl MockMotorState {
-    // Initializes baseline simulation registers for a virtual output channel.
+    /// Creates baseline state for a simulated motor.
+    ///
+    /// Initializes zero speed, stopped state, and normal polarity.
+    ///
+    /// Helper used during `MockController::new` for ports A, B, C, and D.
     fn new(port: &'static str, driver_name: &'static str, max_speed: i32, now: Instant) -> Self {
         Self {
             port,
@@ -47,10 +60,8 @@ impl MockMotorState {
             max_speed,
             count_per_rot: 360,
             speed_sp: 0,
-            duty_cycle_sp: 0,
             position: 0.0,
             target_pos: None,
-            time_remaining_ms: None,
             running: false,
             holding: false,
             stop_action: "brake".into(),
@@ -61,7 +72,12 @@ impl MockMotorState {
 }
 
 impl MockController {
-    /// Provisions simulated actuator and sensor banks in host memory.
+    /// Creates a simulated controller with default motors and sensors.
+    ///
+    /// Configures 2 large motors (A, B) and 2 medium motors (C, D).
+    /// Configures 4 standard EV3 sensors: touch (1), color (2), ultrasonic (3), gyro (4).
+    ///
+    /// Instantiated by `MotorController::new` when `--mock` is passed or sysfs is absent.
     pub fn new() -> Self {
         let now = Instant::now();
         Self {
@@ -112,30 +128,34 @@ impl MockController {
         }
     }
 
-    /// Spins a simulated actuator continuously at target velocity.
+    /// Runs a simulated motor continuously at the requested speed.
+    ///
+    /// Clamps speed to `max_speed`, marks `running = true`, and clears relative position targets.
+    ///
+    /// Mirrors `Motor::set_speed_sp` and `Motor::send_command("run-forever")` in memory.
     pub fn run_forever(&self, port: &str, speed: i32) {
         let mut m = self.motors.lock().unwrap();
         if let Some(motor) = m.iter_mut().find(|m| m.port.eq_ignore_ascii_case(port)) {
             motor.speed_sp = speed.clamp(-motor.max_speed, motor.max_speed);
-            motor.duty_cycle_sp = (motor.speed_sp * 100) / motor.max_speed;
             motor.running = speed != 0;
             motor.holding = false;
             motor.target_pos = None;
-            motor.time_remaining_ms = None;
             motor.last_tick = Instant::now();
         }
     }
 
-    /// Advances simulated encoder count by an incremental angular distance.
+    /// Steps a simulated motor by an incremental degree count.
+    ///
+    /// Sets `target_pos = current_position + rel_pos`, configures direction, and sets `running = true`.
+    ///
+    /// Mirrors `Motor::run_to_rel_pos` in memory for testing relative position commands.
     pub fn run_to_rel_pos(&self, port: &str, speed: i32, rel_pos: i32, stop_action: Option<String>) {
         let mut m = self.motors.lock().unwrap();
         if let Some(motor) = m.iter_mut().find(|m| m.port.eq_ignore_ascii_case(port)) {
             let target = (motor.position as i32) + rel_pos;
             let dir = if rel_pos >= 0 { 1 } else { -1 };
             motor.speed_sp = (speed.abs() * dir).clamp(-motor.max_speed, motor.max_speed);
-            motor.duty_cycle_sp = (motor.speed_sp * 100) / motor.max_speed;
             motor.target_pos = Some(target);
-            motor.time_remaining_ms = None;
             motor.running = true;
             motor.holding = false;
             if let Some(action) = stop_action {
@@ -145,15 +165,17 @@ impl MockController {
         }
     }
 
-    /// Decelerates a simulated actuator to zero using specified braking.
+    /// Stops a simulated motor on the specified port.
+    ///
+    /// Zeros target speed, sets `running = false`, and applies `stop_action` ("brake", "hold", or "coast").
+    ///
+    /// Mirrors `Motor::stop` in memory.
     pub fn stop(&self, port: &str, action: Option<String>) {
         let mut m = self.motors.lock().unwrap();
         if let Some(motor) = m.iter_mut().find(|m| m.port.eq_ignore_ascii_case(port)) {
             motor.running = false;
             motor.speed_sp = 0;
-            motor.duty_cycle_sp = 0;
             motor.target_pos = None;
-            motor.time_remaining_ms = None;
             if let Some(act) = action {
                 motor.stop_action = act;
             }
@@ -161,59 +183,85 @@ impl MockController {
         }
     }
 
-    /// Returns deceleration mode on the designated simulated channel.
+    /// Reads active stop action on a simulated motor port.
+    ///
+    /// Returns the current `stop_action` string for the port.
+    ///
+    /// Used by controller unit tests to verify that watchdog timeouts apply "coast".
     #[cfg(test)]
     pub fn get_stop_action(&self, port: &str) -> Option<String> {
         let m = self.motors.lock().unwrap();
         m.iter().find(|m| m.port.eq_ignore_ascii_case(port)).map(|m| m.stop_action.clone())
     }
 
-    /// Clears simulated encoder readings and zeros active velocity targets.
+    /// Resets encoder position and speed on a simulated motor port.
+    ///
+    /// Zeros position to 0.0, zeros speed, and marks `running = false`.
+    ///
+    /// Mirrors `Motor::send_command("reset")` in memory.
     pub fn reset(&self, port: &str) {
         let mut m = self.motors.lock().unwrap();
         if let Some(motor) = m.iter_mut().find(|m| m.port.eq_ignore_ascii_case(port)) {
             motor.running = false;
             motor.speed_sp = 0;
-            motor.duty_cycle_sp = 0;
             motor.position = 0.0;
             motor.target_pos = None;
-            motor.time_remaining_ms = None;
             motor.holding = false;
         }
     }
 
+    /// Stops all simulated motors with the given stop action.
+    ///
+    /// Iterates through all 4 simulated motors, clearing running states and setting `stop_action`.
+    ///
+    /// Shared helper called by `emergency_stop` and `coast_all`.
     fn stop_all(&self, stop_action: &str, holding: bool) {
         let mut m = self.motors.lock().unwrap();
         for motor in m.iter_mut() {
             motor.running = false;
             motor.speed_sp = 0;
-            motor.duty_cycle_sp = 0;
             motor.target_pos = None;
-            motor.time_remaining_ms = None;
             motor.holding = holding;
             motor.stop_action = stop_action.into();
         }
     }
 
-    /// Instantly brakes all simulated output channels and engages holding.
+    /// Immediately stops all simulated motors with brake and hold.
+    ///
+    /// Calls `stop_all("hold", true)`.
+    ///
+    /// Mirrors hardware emergency stop in host simulation.
     pub fn emergency_stop(&self) {
         self.stop_all("hold", true);
     }
 
-    /// Halts all simulated actuators using the coast stop action.
+    /// Halts all simulated motors using coast action.
+    ///
+    /// Calls `stop_all("coast", false)`.
+    ///
+    /// Mirrors hardware watchdog timeout coast in host simulation.
     pub fn coast_all(&self) {
         self.stop_all("coast", false);
     }
 
-    /// Checks whether any simulated actuator is actively rotating.
+    /// Checks if any simulated motor is currently moving.
+    ///
+    /// Returns true if any motor has `running = true` and `speed_sp != 0`.
+    ///
+    /// Used by watchdog logic to avoid unnecessary stop commands when motors are already idle.
     pub fn is_any_motor_running(&self) -> bool {
         let m = self.motors.lock().unwrap();
-        m.iter().any(|motor| {
-            motor.running && (motor.speed_sp != 0 || motor.duty_cycle_sp != 0)
-        })
+        m.iter().any(|motor| motor.running && motor.speed_sp != 0)
     }
 
-    /// Steps virtual kinematics elapsed time and returns telemetry records.
+    /// Updates simulated motor kinematics based on elapsed time and returns telemetry.
+    ///
+    /// 1. Calculates elapsed time `dt` since `last_tick`.
+    /// 2. Integrates position: `position += speed_sp * dt`.
+    /// 3. If a target position was set, stops motor once the target is reached.
+    /// 4. Generates a list of `MotorStatus` records matching real hardware format.
+    ///
+    /// Called by `MotorController` polling loop every 50 ms to simulate continuous physics.
     pub fn poll_and_get_all_status(&self) -> Vec<MotorStatus> {
         let mut m = self.motors.lock().unwrap();
         let now = Instant::now();
@@ -226,21 +274,7 @@ impl MockController {
                 let delta_pos = (motor.speed_sp as f64) * dt;
                 motor.position += delta_pos;
 
-                // Handle timed runs
-                if let Some(ref mut remaining) = motor.time_remaining_ms {
-                    let elapsed_ms = (dt * 1000.0) as u32;
-                    if *remaining <= elapsed_ms {
-                        motor.running = false;
-                        motor.speed_sp = 0;
-                        motor.duty_cycle_sp = 0;
-                        motor.time_remaining_ms = None;
-                        motor.holding = motor.stop_action == "hold";
-                    } else {
-                        *remaining -= elapsed_ms;
-                    }
-                }
-
-                // Handle relative/absolute position targets
+                // Handle relative position targets
                 if let Some(target) = motor.target_pos {
                     let current = motor.position as i32;
                     let reached = if motor.speed_sp >= 0 {
@@ -252,17 +286,22 @@ impl MockController {
                         motor.position = target as f64;
                         motor.running = false;
                         motor.speed_sp = 0;
-                        motor.duty_cycle_sp = 0;
                         motor.target_pos = None;
                         motor.holding = motor.stop_action == "hold";
                     }
                 }
             }
 
+            let duty_cycle = if motor.running && motor.max_speed > 0 {
+                (motor.speed_sp * 100) / motor.max_speed
+            } else {
+                0
+            };
+
             let mut state = Vec::new();
             if motor.running {
                 state.push("running".to_string());
-                if motor.duty_cycle_sp.abs() > 80 {
+                if duty_cycle.abs() > 80 {
                     state.push("ramping".to_string());
                 }
             } else if motor.holding {
@@ -275,7 +314,7 @@ impl MockController {
                 driver_name: motor.driver_name.to_string(),
                 position: motor.position.round() as i32,
                 speed: if motor.running { motor.speed_sp } else { 0 },
-                duty_cycle: if motor.running { motor.duty_cycle_sp } else { 0 },
+                duty_cycle,
                 state,
                 max_speed: motor.max_speed,
                 count_per_rot: motor.count_per_rot,
@@ -285,7 +324,11 @@ impl MockController {
         }).collect()
     }
 
-    /// Collects artificial measurement values across simulated input banks.
+    /// Reads telemetry records for all simulated sensors.
+    ///
+    /// Iterates through the 4 simulated sensors and returns formatted `SensorStatus` snapshots.
+    ///
+    /// Called by `MotorController` polling loop every 50 ms.
     pub fn poll_and_get_all_sensors(&self) -> Vec<SensorStatus> {
         let s = self.sensors.lock().unwrap();
         s.iter()
@@ -302,7 +345,12 @@ impl MockController {
             .collect()
     }
 
-    /// Switches simulated input profile and reconfigures synthetic units.
+    /// Updates the simulated sensor operating mode.
+    ///
+    /// Validates that `mode` is supported on the target sensor port.
+    /// Sets new mode and updates test measurement units (e.g. "pct", "cm", "deg").
+    ///
+    /// Mirrors `Sensor::set_mode` for testing sensor mode changes in host simulation.
     pub fn set_sensor_mode(&self, port: &str, mode: &str) -> Result<(), String> {
         let mut s = self.sensors.lock().unwrap();
         if let Some(sensor) = s.iter_mut().find(|s| s.port.eq_ignore_ascii_case(port)) {
@@ -359,7 +407,6 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    // Verifies zeroed telemetry registers upon fresh subsystem boot.
     #[test]
     fn test_mock_initial_state() {
         let mock = MockController::new();
@@ -373,7 +420,6 @@ mod tests {
         }
     }
 
-    // Validates continuous velocity integration followed by braking.
     #[test]
     fn test_mock_run_forever_and_stop() {
         let mock = MockController::new();
@@ -392,7 +438,6 @@ mod tests {
         assert!(!statuses[0].state.contains(&"running".to_string()));
     }
 
-    // Ensures rapid halt disarms all channels into holding posture.
     #[test]
     fn test_mock_emergency_stop() {
         let mock = MockController::new();
@@ -410,7 +455,6 @@ mod tests {
         }
     }
 
-    // Confirms excessive velocity inputs truncate to rated thresholds.
     #[test]
     fn test_mock_speed_clamping() {
         let mock = MockController::new();
@@ -424,7 +468,6 @@ mod tests {
         assert_eq!(statuses[0].speed, -1050);
     }
 
-    // Verifies input detection, profile transitions, and unit conversions.
     #[test]
     fn test_mock_sensors() {
         let mock = MockController::new();
@@ -452,4 +495,3 @@ mod tests {
         assert!(mock.set_sensor_mode("9", "TOUCH").is_err());
     }
 }
-

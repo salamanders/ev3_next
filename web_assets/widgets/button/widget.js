@@ -1,18 +1,47 @@
+/**
+ * # Action Button Widget Module
+ *
+ * This modular widget renders an interactive push button to control a single motor.
+ * It supports three behaviors: momentary hold-to-run, click toggle run/stop, and fixed angle stepping.
+ *
+ * Implements the modular widget interface (`createDefault`, `renderDesign`, `attachDesign`, `renderRun`, `initRun`).
+ * Dynamically loaded by `WidgetRegistry` on demand from `/widgets/button/widget.js`.
+ */
+
 export default {
     type: "button",
     label: "Action Button",
     sizeClass: "run-card-2x1",
 
-    // Seeds initial layout schema when adding a discrete action button.
+    /**
+     * Creates default configuration schema when adding an action button.
+     *
+     * Returns an object configuring port "A", momentary action, and 90 degree step angle.
+     *
+     * Factory function called by `EV3App::addWidget`.
+     */
     createDefault(id) {
         return { id, type: "button", port: "A", action: "momentary", degrees: 90 };
     },
 
+    /**
+     * Formats port badge label for the widget card header.
+     *
+     * Returns "Port A" (or configured motor port).
+     *
+     * Displays active port in card headers.
+     */
     getPortBadge(w) {
         return `Port ${w.port}`;
     },
 
-    // Generates configuration controls for behavioral action types.
+    /**
+     * Formats HTML markup for the widget settings card in Design View.
+     *
+     * Renders dropdowns for motor port, behavior mode, and degree angle input.
+     *
+     * Provides visual configuration controls in Design View.
+     */
     renderDesign(w, ctx) {
         return `
             <div class="widget-config-field">
@@ -36,7 +65,13 @@ export default {
         `;
     },
 
-    // Attaches listeners for behavior switches and rotation limits.
+    /**
+     * Attaches change event listeners to design inputs.
+     *
+     * Updates widget properties in `ctx` when the user modifies port, action, or degree settings.
+     *
+     * Wires interactivity on newly rendered configuration cards.
+     */
     attachDesign(w, cardElement, ctx) {
         cardElement.querySelector(".field-port")?.addEventListener("change", (e) => {
             ctx.updateWidget(w.id, { port: e.target.value });
@@ -50,7 +85,13 @@ export default {
         });
     },
 
-    // Generates trigger button with state-specific typography.
+    /**
+     * Formats HTML markup for the live button control card in Run View.
+     *
+     * Generates a large push button styled according to active behavior mode.
+     *
+     * Provides the touch and click control interface for Run View.
+     */
     renderRun(w) {
         const isToggle = w.action === "toggle";
         const isStep = w.action === "step";
@@ -68,7 +109,15 @@ export default {
         `;
     },
 
-    // Connects touch, toggle, or angular displacement commands to hardware.
+    /**
+     * Attaches pointer, click, and touch event handlers to the live button.
+     *
+     * 1. Momentary mode: Runs motor on `pointerdown` and stops on `pointerup`/`pointerleave`.
+     * 2. Toggle mode: Toggles between running and stopping motor on each click.
+     * 3. Step mode: Sends `run-to-rel-pos` command with configured degrees.
+     *
+     * Wires live control execution when the card is mounted into the DOM.
+     */
     initRun(w, cardElement, ctx) {
         const btn = cardElement.querySelector(`#btn-action-${w.id}`);
         if (!btn) return;
@@ -124,7 +173,13 @@ export default {
         }
     },
 
-    // Deactivates running toggles and restores dormant button styling.
+    /**
+     * Resets button styling when an emergency stop is triggered.
+     *
+     * Clears toggle active state and resets button text to "Start Motor".
+     *
+     * Lifecycle hook invoked by `EV3App::emergencyStop`.
+     */
     onEmergencyStop(w, cardElement) {
         const btn = cardElement.querySelector(`#btn-action-${w.id}`);
         if (btn && w.action === "toggle") {

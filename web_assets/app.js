@@ -1,17 +1,38 @@
 /**
- * LEGO Mindstorms EV3 Web Dashboard Controller
- * Enforces strict single-responsibility boundaries and ES2025+ standards.
+ * # EV3 Web Dashboard Application Controller
+ *
+ * This script runs in the browser to control LEGO Mindstorms EV3 robots.
+ * It manages two distinct screens:
+ * 1. Run View (`/` and `/run`): Live operator dashboard displaying interactive control widgets.
+ * 2. Design View (`/design`): Visual layout editor for adding widgets, assigning ports, and monitoring diagnostics.
+ *
+ * `app.js` serves as the central frontend controller. It runs the 250 ms telemetry polling loop,
+ * dynamically imports modular widget ES scripts, persists dashboard configuration to localStorage,
+ * and transmits command payloads to the backend REST API.
  */
 
 class WidgetRegistry {
-    // Manages dynamic module resolution and runtime widget factories.
+    /**
+     * Creates a widget registry to cache dynamically imported ES modules.
+     *
+     * Initializes internal map, manifest cache, and default known widget types.
+     *
+     * Isolates dynamic module importing and version cache-busting from DOM rendering.
+     */
     constructor() {
         this.modules = new Map();
         this.manifest = null;
         this.knownTypes = ["joystick", "tank", "slider", "button", "sensor"];
     }
 
-    // Probes local or remote catalog metadata with silent fallback.
+    /**
+     * Fetches widget catalog manifest from the web server.
+     *
+     * Sends a GET request for `/widgets/manifest.json` with a cache-busting timestamp.
+     * Stores the manifest object in `this.manifest`.
+     *
+     * Called once during application boot to check available widget versions.
+     */
     async init() {
         try {
             const res = await fetch(`/widgets/manifest.json?v=${Date.now()}`, {
@@ -23,14 +44,26 @@ class WidgetRegistry {
         } catch (_) {}
     }
 
-    // Resolves cache busting revision token for targeted element type.
+    /**
+     * Resolves the version timestamp for a widget type to bust browser caches.
+     *
+     * Returns the widget timestamp from the catalog manifest, or fallback timestamp.
+     *
+     * Ensures updated widget scripts download immediately after over-the-air updates.
+     */
     getVersion(type) {
         return this.manifest?.widgets?.[type]?.timestamp
             ?? this.manifest?.timestamp
             ?? 1728670000;
     }
 
-    // Resolves and caches component code and optional styles asynchronously.
+    /**
+     * Dynamically imports a widget module script using native ES import.
+     *
+     * Imports `/widgets/${type}/widget.js?v=${version}` and caches the exported module object.
+     *
+     * Loads widget code on demand, keeping initial page load fast and lightweight.
+     */
     async load(type) {
         if (this.modules.has(type)) {
             return this.modules.get(type);
@@ -47,27 +80,52 @@ class WidgetRegistry {
         }
     }
 
-    // Concurrently preloads active layout dependencies before render pass.
+    /**
+     * Preloads all widget types present in the active user dashboard layout.
+     *
+     * Deduplicates widget types from the configuration array and loads them concurrently.
+     *
+     * Avoids render delays by pre-fetching scripts before building DOM cards.
+     */
     async loadActive(types) {
         const unique = [...new Set(types)];
         await Promise.all(unique.map(t => this.load(t)));
     }
 
-    // Preloads catalog components to guarantee rapid interface responses.
+    /**
+     * Preloads all catalog widget types for the visual designer.
+     *
+     * Combines default types with any extra types discovered in `manifest.json`.
+     *
+     * Used in Design View so that adding any widget opens instantly without network delay.
+     */
     async loadAll() {
         const catalogTypes = Object.keys(this.manifest?.widgets ?? {});
         const allTypes = [...new Set([...this.knownTypes, ...catalogTypes])];
         await Promise.all(allTypes.map(t => this.load(t)));
     }
 
-    // Retrieves cached module definition for synchronous rendering passes.
+    /**
+     * Returns a cached widget definition.
+     *
+     * Looks up `type` in the internal Map and returns the exported widget object.
+     *
+     * Provides synchronous lookups during template rendering.
+     */
     get(type) {
         return this.modules.get(type);
     }
 }
 
 class EV3App {
-    // Initializes client state and activates primary subsystem pipelines.
+    /**
+     * Initializes the client application and triggers startup sequence.
+     *
+     * Initializes state arrays, loads saved widgets from localStorage, binds DOM elements,
+     * starts telemetry polling, and boots widget modules.
+     *
+     * Top-level state coordinator holding active hardware status and dashboard configuration.
+     */
     constructor() {
         this.widgets = [];
         this.hardwareMotors = [];
@@ -84,12 +142,27 @@ class EV3App {
         this.boot();
     }
 
-    // Distinguishes configuration editing mode from runtime operations.
+    /**
+     * Checks if current page is Design View or Run View.
+     *
+     * Returns true if element `#design-view` exists in the DOM.
+     *
+     * Allows shared `app.js` script to configure page-specific controls.
+     */
     get isDesignView() {
         return !!document.getElementById("design-view");
     }
 
-    // Asynchronously loads required widget modules before initial rendering.
+    /**
+     * Asynchronously loads widget modules and triggers initial rendering pass.
+     *
+     * 1. Fetches catalog manifest via `registry.init()`.
+     * 2. Preloads active widgets.
+     * 3. Populates missing default properties from widget module definitions.
+     * 4. Renders Design View or Run View cards.
+     *
+     * Coordinates asynchronous module loading before attaching DOM event listeners.
+     */
     async boot() {
         await this.registry.init();
         await this.registry.loadActive(this.widgets.map(w => w.type));
@@ -110,7 +183,13 @@ class EV3App {
         }
     }
 
-    // Persists configuration in local memory with fallback defaults.
+    /**
+     * Reads saved widget configuration from browser localStorage.
+     *
+     * Parses `ev3_dashboard_widgets` from `localStorage`. If empty or corrupt, loads defaults.
+     *
+     * Preserves user customized dashboard layouts across page refreshes.
+     */
     initStorage() {
         try {
             const raw = localStorage.getItem("ev3_dashboard_widgets");
@@ -125,7 +204,13 @@ class EV3App {
         this.loadDefaultWidgets();
     }
 
-    // Seeds initial interface layout when persistent storage is absent.
+    /**
+     * Populates default dashboard layout with a joystick and a slider.
+     *
+     * Sets `this.widgets` to a dual-motor joystick on ports B/C and a speed slider on port A.
+     *
+     * Provides an out-of-the-box working interface on the first browser visit.
+     */
     loadDefaultWidgets() {
         this.widgets = [
             {
@@ -143,14 +228,26 @@ class EV3App {
         this.saveWidgets();
     }
 
-    // Commits current UI configurations to browser storage for persistence.
+    /**
+     * Saves active widget layout to browser localStorage.
+     *
+     * Serializes `this.widgets` to JSON and writes to key `ev3_dashboard_widgets`.
+     *
+     * Called whenever widgets are added, removed, or reconfigured.
+     */
     saveWidgets() {
         try {
             localStorage.setItem("ev3_dashboard_widgets", JSON.stringify(this.widgets));
         } catch (_) {}
     }
 
-    // Caches page markup references to avoid repeated document lookups.
+    /**
+     * Caches frequently queried DOM elements.
+     *
+     * Stores references to header badges, buttons, lists, and diagnostic tables in `this.dom`.
+     *
+     * Avoids running expensive `document.getElementById` queries during 4 Hz polling updates.
+     */
     initDOMElements() {
         this.dom = {
             designList: document.getElementById("design-widget-list"),
@@ -174,7 +271,15 @@ class EV3App {
         };
     }
 
-    // Registers top-level keyboard and header button event bindings.
+    /**
+     * Attaches keyboard and global button event listeners.
+     *
+     * 1. Binds Spacebar key to `emergencyStop()`.
+     * 2. Binds Header E-Stop and Shutdown buttons.
+     * 3. In Design View, binds Add Widget, Rescan Hardware, and Clear Log buttons.
+     *
+     * Central event binding function called during application setup.
+     */
     attachGlobalListeners() {
         this.dom.btnEstop?.addEventListener("click", () => this.emergencyStop());
         this.dom.btnShutdown?.addEventListener("click", () => this.powerOff());
@@ -198,7 +303,14 @@ class EV3App {
         }
     }
 
-    // Enforces rate limits with guaranteed delivery of latest trailing action.
+    /**
+     * Limits the frequency of rapid function invocations while guaranteeing the final call runs.
+     *
+     * Executes `fn` immediately if `intervalMs` has elapsed since the last run.
+     * Otherwise schedules a trailing timer so the latest user input (e.g. joystick release) is sent.
+     *
+     * Prevents pointermove events (60 Hz) from flooding the 300 MHz EV3 CPU with HTTP requests.
+     */
     throttle(key, intervalMs, fn) {
         const now = Date.now();
         const entry = this.throttleMap.get(key) ?? { last: 0, timer: null, nextFn: null };
@@ -224,7 +336,13 @@ class EV3App {
         }
     }
 
-    // Disarms scheduled trailing invocation for a rate-limited action.
+    /**
+     * Cancels any pending scheduled timer for a throttle key.
+     *
+     * Clears timeout handle and discards pending closure.
+     *
+     * Called when a control is released or stopped.
+     */
     clearThrottle(key) {
         const entry = this.throttleMap.get(key);
         if (entry) {
@@ -236,7 +354,13 @@ class EV3App {
         }
     }
 
-    // Cancels all pending rate-limited callbacks across the application.
+    /**
+     * Cancels all pending throttled actions across the application.
+     *
+     * Iterates over all keys in `throttleMap` and clears timers.
+     *
+     * Called by `emergencyStop` to prevent queued move commands from firing after an emergency stop.
+     */
     clearAllThrottles() {
         this.throttleMap.forEach(entry => {
             if (entry.timer) {
@@ -247,7 +371,13 @@ class EV3App {
         });
     }
 
-    // Transmits commands to server and unwraps result data.
+    /**
+     * Transmits a JSON POST request to a backend API endpoint.
+     *
+     * Sends `fetch` request with 3-second timeout and unwraps `data` from the `ApiResponse` envelope.
+     *
+     * Core network transport helper shared by all API calls.
+     */
     async apiPost(endpoint, payload) {
         const res = await fetch(endpoint, {
             method: "POST",
@@ -260,7 +390,13 @@ class EV3App {
         return json?.data !== undefined ? json.data : json;
     }
 
-    // Transmits coordinated motor targets with link loss timeout protection.
+    /**
+     * Sends a batch motor command payload to `/api/batch`.
+     *
+     * Calls `apiPost("/api/batch", { heartbeat_ms, commands })`.
+     *
+     * Used by multi-motor controls (joystick, tank) to synchronize dual-motor actuation.
+     */
     async apiBatch(commands, heartbeatMs = 2000) {
         return this.apiPost("/api/batch", {
             heartbeat_ms: heartbeatMs,
@@ -268,7 +404,15 @@ class EV3App {
         });
     }
 
-    // Immediately halts all active channels and invokes component resets.
+    /**
+     * Immediately stops all robot motors.
+     *
+     * 1. Calls `POST /api/estop`.
+     * 2. Clears all queued throttled commands via `clearAllThrottles()`.
+     * 3. Invokes `onEmergencyStop()` on all active widget definitions to reset UI controls.
+     *
+     * Safety action triggered by the header button or the Spacebar key.
+     */
     async emergencyStop() {
         try {
             await this.apiPost("/api/estop", {});
@@ -287,7 +431,13 @@ class EV3App {
         }
     }
 
-    // Requests operating system shutdown.
+    /**
+     * Requests clean operating system shutdown of the EV3 brick.
+     *
+     * Prompts for confirmation and sends `POST /api/shutdown`.
+     *
+     * Allows safe headless shutdown from the browser without needing an SSH shell.
+     */
     async powerOff() {
         if (!confirm("Safely shut down the EV3 brick?")) return;
         try {
@@ -298,7 +448,13 @@ class EV3App {
         }
     }
 
-    // Scans ports and updates device inventory tables.
+    /**
+     * Triggers a hardware port rescan on the EV3 brick.
+     *
+     * Calls `POST /api/rescan`, updates connected motor/sensor arrays, and re-renders hardware panels.
+     *
+     * Invoked when new cables are plugged in or when the user clicks "Rescan".
+     */
     async rescanHardware(interactive = false) {
         if (this.dom.btnRescan) {
             this.dom.btnRescan.disabled = true;
@@ -322,7 +478,13 @@ class EV3App {
         }
     }
 
-    // Displays connected peripheral inventory with live link indicators.
+    /**
+     * Renders connected hardware badges in Design View.
+     *
+     * Maps ports A..D and 1..4 to green/gray status badges indicating driver name and connection.
+     *
+     * Visual hardware status display in the Design View sidebar.
+     */
     renderHardwarePanel() {
         if (!this.dom.hardwareList) return;
         const portMap = new Map([
@@ -363,7 +525,13 @@ class EV3App {
         }
     }
 
-    // Builds selection dropdown entries matching available device categories.
+    /**
+     * Builds `<option>` tags for port dropdown selectors.
+     *
+     * Formats option tags for motor ports (A..D) or sensor ports (1..4) with driver names if connected.
+     *
+     * Helper used by widget `renderDesign` functions to generate port select dropdowns.
+     */
     portOptions(selected, isSensor = false) {
         const ports = isSensor ? ["1", "2", "3", "4"] : ["A", "B", "C", "D"];
         const list = isSensor ? this.hardwareSensors : this.hardwareMotors;
@@ -374,7 +542,13 @@ class EV3App {
         }).join("");
     }
 
-    // Appends a new item schema and triggers canvas refresh.
+    /**
+     * Adds a new widget to the dashboard layout.
+     *
+     * Loads widget module, calls its `createDefault(id)` factory, appends to `this.widgets`, and saves.
+     *
+     * Triggered by the "Add Widget" button in Design View.
+     */
     async addWidget(type) {
         await this.registry.load(type);
         const def = this.registry.get(type);
@@ -386,14 +560,26 @@ class EV3App {
         this.renderDesignWidgets();
     }
 
-    // Deletes a configured item and updates the layout canvas.
+    /**
+     * Deletes a widget from the dashboard layout.
+     *
+     * Filters out the widget with matching `id`, updates localStorage, and re-renders cards.
+     *
+     * Triggered by the "Remove" button on widget design cards.
+     */
     removeWidget(id) {
         this.widgets = this.widgets.filter(w => w.id !== id);
         this.saveWidgets();
         this.renderDesignWidgets();
     }
 
-    // Modifies specific properties on an item without recreating it.
+    /**
+     * Updates properties on an existing widget configuration.
+     *
+     * Merges `patch` into the widget matching `id` and saves to localStorage.
+     *
+     * Called when users modify port assignments or settings in Design View.
+     */
     updateWidget(id, patch) {
         const w = this.widgets.find(x => x.id === id);
         if (w) {
@@ -402,7 +588,13 @@ class EV3App {
         }
     }
 
-    // Populates the setup container with editable cards and listeners.
+    /**
+     * Renders all widget configuration cards in Design View.
+     *
+     * Maps widgets to HTML cards using `renderDesignCard` and attaches change listeners.
+     *
+     * Top-level layout rendering method for Design View.
+     */
     renderDesignWidgets() {
         if (!this.dom.designList) return;
         const countLabel = document.getElementById("widget-count-label");
@@ -412,7 +604,13 @@ class EV3App {
         this.attachDesignCardListeners();
     }
 
-    // Formats editable inputs and settings markup for an item.
+    /**
+     * Formats HTML markup for a single widget configuration card.
+     *
+     * Calls the widget definition's `renderDesign(w, this)` hook to generate input fields.
+     *
+     * Isolates HTML template construction for design cards.
+     */
     renderDesignCard(w) {
         const def = this.registry.get(w.type);
         const title = def?.label ?? w.type;
@@ -433,7 +631,13 @@ class EV3App {
         `;
     }
 
-    // Connects change events on configuration inputs to schema mutators.
+    /**
+     * Attaches change listeners to inputs on design cards.
+     *
+     * Binds Remove buttons and delegates to widget `attachDesign(w, cardElement, this)` hooks.
+     *
+     * Wires interactivity on newly rendered design cards.
+     */
     attachDesignCardListeners() {
         this.dom.designList?.querySelectorAll(".btn-remove").forEach(b => {
             b.addEventListener("click", () => this.removeWidget(b.dataset.id));
@@ -448,7 +652,13 @@ class EV3App {
         });
     }
 
-    // Displays live operator controls and attaches input handlers.
+    /**
+     * Renders all active control cards in Run View.
+     *
+     * Maps widgets to operational cards using `renderRunCard` and attaches interactive controls.
+     *
+     * Top-level layout rendering method for Run View.
+     */
     renderRunWidgets() {
         if (!this.dom.runList) return;
         if (this.widgets.length === 0) {
@@ -462,7 +672,13 @@ class EV3App {
         this.attachRunCardListeners();
     }
 
-    // Constructs operational interface markup for an active item.
+    /**
+     * Formats HTML markup for a single operational control card.
+     *
+     * Calls the widget definition's `renderRun(w, this)` hook to generate touch/mouse controls.
+     *
+     * Isolates HTML template construction for operational control cards.
+     */
     renderRunCard(w) {
         const def = this.registry.get(w.type);
         const sizeClass = def?.sizeClass ?? "run-card-2x1";
@@ -485,7 +701,13 @@ class EV3App {
         `;
     }
 
-    // Wires up interactive behaviors across operational control panels.
+    /**
+     * Attaches interactive pointer and button listeners to operational control cards.
+     *
+     * Calls widget definition's `initRun(w, card, this)` lifecycle hook.
+     *
+     * Activates joystick touch dragging, slider input events, and button clicks.
+     */
     attachRunCardListeners() {
         this.widgets.forEach(w => {
             const def = this.registry.get(w.type);
@@ -496,7 +718,17 @@ class EV3App {
         });
     }
 
-    // Collects periodic system status and updates active elements.
+    /**
+     * Starts the periodic 250 ms telemetry polling heartbeat.
+     *
+     * 1. Fetches `GET /api/status` every 250 ms (4 Hz).
+     * 2. Updates online connection badge and round-trip latency measurement.
+     * 3. Updates battery voltage indicator.
+     * 4. Updates motor card footers and sensor reading cards.
+     * 5. In Design View, refreshes live diagnostics table when expanded.
+     *
+     * Keeps telemetry fresh and acts as the client heartbeat resetting the 2-second safety watchdog.
+     */
     startPolling() {
         if (this.pollTimer) clearInterval(this.pollTimer);
         this.pollTimer = setInterval(async () => {
@@ -531,7 +763,13 @@ class EV3App {
         }, 250);
     }
 
-    // Refreshes link indicators and round-trip delay readouts.
+    /**
+     * Updates header online/offline badge and latency display.
+     *
+     * Toggles `badge-connected` / `badge-disconnected` CSS classes and displays round-trip milliseconds.
+     *
+     * Called on every poll response or network error.
+     */
     setConnectionState(online, rtt) {
         this.isOnline = online;
         if (this.dom.connBadge && this.dom.connText) {
@@ -543,7 +781,13 @@ class EV3App {
         }
     }
 
-    // Formats rotational status records for the system inspection grid.
+    /**
+     * Formats motor telemetry records for the diagnostics table in Design View.
+     *
+     * Constructs table rows showing speed, position, duty cycle, and state flags for ports A..D.
+     *
+     * Diagnostic inspector rendered only when the details foldout is open.
+     */
     renderDiagnosticsTable(motors) {
         if (!this.dom.telemetryBody) return;
         this.dom.telemetryBody.innerHTML = ["A", "B", "C", "D"].map(port => {
@@ -564,7 +808,13 @@ class EV3App {
         }).join("");
     }
 
-    // Displays numeric metric values and driver metadata on cards.
+    /**
+     * Dispatches telemetry data to active sensor cards.
+     *
+     * Calls `onTelemetry(w, card, s)` on the sensor widget definition with matching port data.
+     *
+     * Feeds real-time sensor measurements to UI readout cards.
+     */
     updateSensorReadouts(sensors) {
         this.widgets.forEach(w => {
             if (w.type === "sensor") {
@@ -578,7 +828,13 @@ class EV3App {
         });
     }
 
-    // Synchronizes action widget footers with hardware link states.
+    /**
+     * Updates motor card footers with live state text.
+     *
+     * Queries cards with `data-motor-port` and updates footer text ("Ready", "running", "Disconnected").
+     *
+     * Preserves live card status without full HTML re-rendering.
+     */
     updateMotorCardStatus(motors) {
         document.querySelectorAll(".run-card[data-motor-port]").forEach(card => {
             const port = card.getAttribute("data-motor-port");
@@ -590,7 +846,13 @@ class EV3App {
         });
     }
 
-    // Records timestamped diagnostic entries in the event console.
+    /**
+     * Appends a timestamped log entry to the event console box.
+     *
+     * Creates a log `<div>` element, appends to `#log-box`, and auto-scrolls to the bottom.
+     *
+     * Provides visual feedback for API failures and emergency stop events.
+     */
     log(msg, type = "info") {
         if (!this.dom.logBox) return;
         const entry = document.createElement("div");
@@ -601,7 +863,7 @@ class EV3App {
     }
 }
 
-// Initializes UI runtime components when DOM parsing finishes.
+// Global initialization when the browser finishes parsing the HTML document
 window.addEventListener("DOMContentLoaded", () => {
     window.ev3App = new EV3App();
 });

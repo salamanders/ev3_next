@@ -1,9 +1,25 @@
+/**
+ * # Tank Drive Controls Widget Module
+ *
+ * This modular widget renders twin vertical sliders for differential tank-steering robots.
+ * It provides independent speed control for left and right drive tracks with a shared "Stop Both" button.
+ *
+ * Implements the modular widget interface (`createDefault`, `renderDesign`, `attachDesign`, `renderRun`, `initRun`).
+ * Dynamically loaded by `WidgetRegistry` on demand from `/widgets/tank/widget.js`.
+ */
+
 export default {
     type: "tank",
     label: "Tank Controls",
     sizeClass: "run-card-2x2",
 
-    // Seeds initial layout schema when adding dual-track controls.
+    /**
+     * Creates default configuration schema when adding a tank controls widget.
+     *
+     * Returns an object assigning port B to left track and port C to right track.
+     *
+     * Factory function called by `EV3App::addWidget`.
+     */
     createDefault(id) {
         return {
             id,
@@ -14,11 +30,24 @@ export default {
         };
     },
 
+    /**
+     * Formats port badge label for the widget card header.
+     *
+     * Returns `L: B | R: C` (or configured track ports).
+     *
+     * Displays active track ports in card headers.
+     */
     getPortBadge(w) {
         return `L: ${w.leftPort} | R: ${w.rightPort}`;
     },
 
-    // Generates configuration markup for left and right actuator tracks.
+    /**
+     * Formats HTML markup for the widget settings card in Design View.
+     *
+     * Renders dropdown selectors for left track port, right track port, and release stop action.
+     *
+     * Provides visual configuration controls in Design View.
+     */
     renderDesign(w, ctx) {
         return `
             <div class="widget-config-field">
@@ -39,7 +68,13 @@ export default {
         `;
     },
 
-    // Attaches listeners for channel assignments and braking options.
+    /**
+     * Attaches change event listeners to design inputs.
+     *
+     * Updates widget properties in `ctx` when the user selects different left/right track ports or stop action.
+     *
+     * Wires interactivity on newly rendered configuration cards.
+     */
     attachDesign(w, cardElement, ctx) {
         cardElement.querySelector(".field-left-port")?.addEventListener("change", (e) => {
             ctx.updateWidget(w.id, { leftPort: e.target.value });
@@ -52,7 +87,13 @@ export default {
         });
     },
 
-    // Generates dual vertical track sliders with velocity displays.
+    /**
+     * Formats HTML markup for the live dual-slider control card in Run View.
+     *
+     * Renders side-by-side vertical sliders for left and right tracks, speed readouts, and Stop Both button.
+     *
+     * Provides the touch and slider control interface for Run View.
+     */
     renderRun(w) {
         return `
             <div class="tank-controls-container">
@@ -82,7 +123,14 @@ export default {
         `;
     },
 
-    // Maps vertical slider offsets to throttled dual-channel batch vectors.
+    /**
+     * Attaches input event listeners to the vertical sliders and Stop Both button.
+     *
+     * 1. On slider adjustments: sends throttled synchronized batch commands to `/api/batch` at 15 Hz.
+     * 2. On Stop Both button click: resets both sliders to 0 and sends batch stop command with chosen stop action.
+     *
+     * Wires live control execution when the card is mounted into the DOM.
+     */
     initRun(w, cardElement, ctx) {
         const leftSlider = cardElement.querySelector(`#tank-left-${w.id}`);
         const rightSlider = cardElement.querySelector(`#tank-right-${w.id}`);
@@ -124,7 +172,13 @@ export default {
         });
     },
 
-    // Clears throttle and resets visual sliders to zero on safety stop.
+    /**
+     * Resets both track slider values and text readouts to zero on emergency stop.
+     *
+     * Sets left and right slider inputs to "0" and text readouts to "0".
+     *
+     * Lifecycle hook invoked by `EV3App::emergencyStop`.
+     */
     onEmergencyStop(w, cardElement) {
         const leftSlider = cardElement.querySelector(`#tank-left-${w.id}`);
         const rightSlider = cardElement.querySelector(`#tank-right-${w.id}`);
