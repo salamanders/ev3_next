@@ -45,21 +45,21 @@ impl DisplayController {
 
     /// Generates compact multi-line ASCII splash view for small LCDs.
     pub fn format_ready_screen(ip: &str, port: u16, battery_v: f32) -> String {
-        let ip_line = if ip == "No network" {
-            "IP: (Waiting...)".to_string()
+        let ip_trimmed = ip.trim();
+        let ip_line = if ip_trimmed.is_empty() || ip_trimmed == "No network" {
+            "No network".to_string()
         } else if port == 80 {
-            format!("IP: {}", ip)
+            ip_trimmed.to_string()
         } else {
-            format!("IP: {}:{}", ip, port)
+            format!("{}:{}", ip_trimmed, port)
         };
 
         let raw_lines = [
-            "=== EV3 MOTOR WEB ===",
+            "EV3 MOTOR WEB",
             "Status: ONLINE",
             &ip_line,
             &format!("Batt: {:.1} V", battery_v),
             "Stop: Spacebar/UI",
-            "=====================",
         ];
 
         // Join lines with newline; last line has NO trailing newline (BUG-22)
@@ -147,14 +147,32 @@ mod tests {
         display.show_ready("127.0.0.1", 8080, 8.0);
     }
 
-    // Ensures four-octet network addresses fit within visible column widths.
+    // Ensures four-octet network addresses fit within visible column widths without padding.
     #[test]
     fn test_format_ready_screen_long_ip_does_not_clip() {
         let screen = DisplayController::format_ready_screen("192.168.100.200", 80, 7.8);
         let body = screen.trim_start_matches("\x1b[?25l\x1b[2J\x1b[H");
         let lines: Vec<&str> = body.split('\n').collect();
 
-        assert!(lines.contains(&"IP: 192.168.100.200"), "Full IP address must be present without clipping");
+        assert!(lines.contains(&"192.168.100.200"), "Full IP address must be present without clipping");
+        for (idx, line) in lines.iter().enumerate() {
+            assert!(
+                line.chars().count() <= DisplayController::MAX_COLS,
+                "Line {} exceeded max columns ({}): '{}'",
+                idx + 1,
+                line.chars().count(),
+                line
+            );
+        }
+    }
+
+    #[test]
+    fn test_format_ready_screen_non_standard_port_does_not_clip() {
+        let screen = DisplayController::format_ready_screen("192.168.100.200", 8080, 7.8);
+        let body = screen.trim_start_matches("\x1b[?25l\x1b[2J\x1b[H");
+        let lines: Vec<&str> = body.split('\n').collect();
+
+        assert!(lines.contains(&"192.168.100.200:8080"), "Full IP address and port must fit without clipping");
         for (idx, line) in lines.iter().enumerate() {
             assert!(
                 line.chars().count() <= DisplayController::MAX_COLS,
