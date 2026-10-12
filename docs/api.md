@@ -175,7 +175,6 @@ curl -X POST http://<ip>/api/batch \
 
 | Method | Endpoint | Payload | Description |
 | :--- | :--- | :--- | :--- |
-| `POST` | `/api/joystick` | `{"x_port":"B","y_port":"C","x_speed":400,"y_speed":-200,"stop_action":"brake"}` | **2D Joystick Control:** Dispatches independent X and Y motor velocities with watchdog protection. |
 | `POST` | `/api/rescan` | None | Triggers immediate hardware discovery on all 8 ports. |
 | `POST` | `/api/estop` | None | **Emergency Stop:** Stops all motors immediately with brake action and sets LEDs to red. |
 | `POST` | `/api/emergency-stop` | None | Alias for `/api/estop`. |

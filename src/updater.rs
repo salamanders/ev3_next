@@ -38,11 +38,20 @@ pub fn load_local_manifest(widgets_dir: &Path) -> Option<WidgetManifest> {
     serde_json::from_slice::<WidgetManifest>(&content).ok()
 }
 
+/// Reads embedded baseline manifest when on-disk catalog is absent.
+pub fn load_embedded_manifest() -> Option<WidgetManifest> {
+    crate::web::router::BASELINE_WIDGETS
+        .iter()
+        .find(|e| e.relative_path == "manifest.json")
+        .and_then(|e| serde_json::from_slice(e.content).ok())
+}
+
 /// Fetches remote manifest index over network using system transfer tool.
 pub fn fetch_remote_manifest(url: &str, timeout_secs: u64) -> Result<WidgetManifest, String> {
     let timeout_str = timeout_secs.to_string();
     let output = Command::new("curl")
         .args([
+            "-k",
             "-s",
             "-f",
             "-m",
@@ -73,16 +82,16 @@ pub fn is_safe_component_name(name: &str) -> bool {
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
 }
 
-/// Downloads individual asset file atomically using temporary swap file.
+/// Downloads individual asset file directly to destination path.
 pub fn download_file(url: &str, dest_path: &Path, timeout_secs: u64) -> Result<(), String> {
     if let Some(parent) = dest_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
 
-    let tmp_dest = dest_path.with_extension("tmp_download");
     let timeout_str = timeout_secs.to_string();
     let output = Command::new("curl")
         .args([
+            "-k",
             "-s",
             "-f",
             "-m",
@@ -92,17 +101,16 @@ pub fn download_file(url: &str, dest_path: &Path, timeout_secs: u64) -> Result<(
             url,
             "-o",
         ])
-        .arg(&tmp_dest)
+        .arg(dest_path)
         .output()
         .map_err(|e| format!("Failed executing transfer process: {}", e))?;
 
     if !output.status.success() {
-        let _ = std::fs::remove_file(&tmp_dest);
+        let _ = std::fs::remove_file(dest_path);
         return Err(format!("Download failed for {}: code {:?}", url, output.status.code()));
     }
 
-    std::fs::rename(&tmp_dest, dest_path)
-        .map_err(|e| format!("Failed moving temporary file: {}", e))
+    Ok(())
 }
 
 /// Compares revision timestamps and retrieves newer asset files.
@@ -112,7 +120,7 @@ pub fn check_and_update_widgets(
     timeout_secs: u64,
 ) -> Result<UpdateResult, String> {
     let remote_manifest = fetch_remote_manifest(manifest_url, timeout_secs)?;
-    let local_manifest = load_local_manifest(widgets_dir);
+    let local_manifest = load_local_manifest(widgets_dir).or_else(load_embedded_manifest);
 
     let base_url = manifest_url
         .rsplit_once('/')
@@ -134,7 +142,13 @@ pub fn check_and_update_widgets(
         let should_update = match modified_manifest.widgets.get(widget_name) {
             Some(local_entry) => {
                 remote_entry.timestamp > local_entry.timestamp
-                    || remote_entry.files.iter().any(|f| !widgets_dir.join(widget_name).join(f).exists())
+                    || remote_entry.files.iter().any(|f| {
+                        let plain = widgets_dir.join(widget_name).join(f);
+                        let gz = widgets_dir.join(widget_name).join(format!("{}.gz", f));
+                        let rel = format!("{}/{}", widget_name, f);
+                        let in_baseline = crate::web::router::BASELINE_WIDGETS.iter().any(|e| e.relative_path == rel);
+                        !plain.is_file() && !gz.is_file() && !in_baseline
+                    })
             }
             None => true,
         };
@@ -224,14 +238,35 @@ pub fn start_background_updater(
     std::thread::Builder::new()
         .name("widget-updater".into())
         .spawn(move || {
-            let ip = crate::sysfs::DisplayController::detect_ip();
-            if ip == "No network" {
-                println!("[WIDGETS] Offline: no active network. Serving local widgets.");
+            let start = std::time::Instant::now();
+            let max_wait = std::time::Duration::from_secs(180);
+            let mut sleep_dur = std::time::Duration::from_secs(2);
+            let mut connected = false;
+
+            while start.elapsed() < max_wait {
+                let ip = crate::sysfs::DisplayController::detect_ip();
+                if ip != "No network" && !ip.is_empty() {
+                    connected = true;
+                    break;
+                }
+                let remaining = max_wait.saturating_sub(start.elapsed());
+                if remaining.is_zero() {
+                    break;
+                }
+                std::thread::sleep(sleep_dur.min(remaining));
+                sleep_dur = (sleep_dur * 2).min(std::time::Duration::from_secs(15));
+            }
+
+            if !connected {
+                println!("[WIDGETS] Offline: no active network after 3 minutes. Serving local widgets.");
                 return;
             }
 
             match check_and_update_widgets(&manifest_url, &widgets_dir, timeout_secs) {
                 Ok(summary) => {
+                    for err in &summary.errors {
+                        eprintln!("[WIDGETS WARN] {}", err);
+                    }
                     if summary.updated_count > 0 {
                         println!(
                             "[WIDGETS] Updated {} widget(s) ({} file(s)) from remote catalog.",
@@ -820,5 +855,54 @@ mod tests {
         remote_handle.join().unwrap();
         ev3_thread.join().unwrap();
         let _ = std::fs::remove_dir_all(&temp_assets_dir);
+    }
+
+    #[test]
+    fn test_gz_companion_recognized_in_should_update() {
+        let test_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("ev3_test_gz_present_{}", test_id));
+        let widgets_dir = temp_dir.join("widgets");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let button_dir = widgets_dir.join("button");
+        std::fs::create_dir_all(&button_dir).unwrap();
+
+        // Create only widget.js.gz on disk
+        std::fs::write(button_dir.join("widget.js.gz"), b"gz content").unwrap();
+
+        let initial_manifest = r#"{
+            "timestamp": 1000,
+            "widgets": {
+                "button": {
+                    "version": "1.0.0",
+                    "timestamp": 1000,
+                    "files": ["widget.js"]
+                }
+            }
+        }"#;
+        std::fs::write(widgets_dir.join("manifest.json"), initial_manifest).unwrap();
+
+        // Remote server has same timestamp
+        let remote_server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let remote_port = remote_server.server_addr().to_ip().unwrap().port();
+        let remote_manifest = initial_manifest;
+
+        let remote_handle = std::thread::spawn(move || {
+            if let Ok(req) = remote_server.recv() {
+                let res = tiny_http::Response::from_string(remote_manifest.to_string())
+                    .with_status_code(tiny_http::StatusCode(200));
+                let _ = req.respond(res);
+            }
+        });
+
+        let manifest_url = format!("http://127.0.0.1:{}/manifest.json", remote_port);
+        let res = check_and_update_widgets(&manifest_url, &widgets_dir, 3).unwrap();
+        assert_eq!(res.updated_count, 0);
+        assert_eq!(res.files_downloaded, 0);
+
+        remote_handle.join().unwrap();
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

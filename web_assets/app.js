@@ -40,19 +40,6 @@ class WidgetRegistry {
             const mod = await import(`/widgets/${type}/widget.js?v=${v}`);
             const def = mod.default ?? mod;
             this.modules.set(type, def);
-
-            const files = this.manifest?.widgets?.[type]?.files ?? [];
-            if (files.some(f => f.endsWith(".css")) || def.hasCss) {
-                const cssId = `widget-css-${type}`;
-                if (!document.getElementById(cssId)) {
-                    const link = document.createElement("link");
-                    link.id = cssId;
-                    link.rel = "stylesheet";
-                    link.href = `/widgets/${type}/widget.css?v=${v}`;
-                    document.head.appendChild(link);
-                }
-            }
-
             return def;
         } catch (err) {
             console.error(`Failed loading widget module for '${type}':`, err);
@@ -166,7 +153,7 @@ class EV3App {
                             port: w.port ?? "1",
                             mode: w.mode ?? "TOUCH"
                         };
-                        return base;
+                        return { ...w };
                     });
                     this.saveWidgets();
                     return;
@@ -331,25 +318,6 @@ class EV3App {
                 if (def?.onEmergencyStop && el) {
                     def.onEmergencyStop(w, el);
                 }
-            });
-
-            document.querySelectorAll(".btn-toggle").forEach(b => {
-                b.className = "btn btn-big-action btn-toggle btn-secondary";
-                b.textContent = "Start Motor";
-            });
-            document.querySelectorAll(".run-range-slider, .run-tank-slider").forEach(s => {
-                s.value = "0";
-                const readout = s.dataset.side
-                    ? document.getElementById(`tank-${s.dataset.side}-val-${s.dataset.id}`)
-                    : document.getElementById(`slider-val-${s.dataset.id}`);
-                if (readout) readout.textContent = "0";
-            });
-            document.querySelectorAll(".joystick-knob").forEach(k => {
-                k.style.transform = "translate(0px, 0px)";
-                k.classList.remove("active");
-            });
-            document.querySelectorAll(".joystick-readout").forEach(r => {
-                r.textContent = "X: 0% | Y: 0%";
             });
             this.log("Emergency stop dispatched.", "warn");
         } catch (e) {

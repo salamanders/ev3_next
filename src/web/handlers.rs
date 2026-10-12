@@ -1,37 +1,7 @@
 use serde::{Deserialize, Serialize};
 use crate::sysfs::MotorStatus;
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
-pub struct JoystickPayload {
-    pub x_port: Option<String>,
-    pub y_port: Option<String>,
-    pub x_speed: Option<i32>,
-    pub y_speed: Option<i32>,
-    pub stop_action: Option<String>,
-}
 
-impl JoystickPayload {
-    /// Fallbacks omitted axes to standard dual-drive letter names.
-    pub fn resolve_ports(&self) -> (String, String) {
-        let x = self.x_port.as_ref().and_then(|s| normalize_port_name(s)).unwrap_or_else(|| "B".to_string());
-        let y = self.y_port.as_ref().and_then(|s| normalize_port_name(s)).unwrap_or_else(|| "C".to_string());
-        (x, y)
-    }
-
-    /// Extracts coordinate rates from primary axis values.
-    pub fn resolve_speeds(&self) -> (i32, i32) {
-        (self.x_speed.unwrap_or(0), self.y_speed.unwrap_or(0))
-    }
-
-    /// Normalizes braking preference strings with fallback default.
-    pub fn resolve_stop_action(&self) -> &str {
-        match self.stop_action.as_deref() {
-            Some("coast") => "coast",
-            Some("hold") => "hold",
-            _ => "brake",
-        }
-    }
-}
 
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]

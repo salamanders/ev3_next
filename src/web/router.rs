@@ -154,6 +154,7 @@ pub(crate) fn strip_default_port(host: &str) -> &str {
 }
 
 // Ensures default modular widget files exist in the specified target path.
+#[cfg(test)]
 pub fn restore_baseline_widgets(widgets_dir: &std::path::Path) {
     let _ = std::fs::create_dir_all(widgets_dir);
     for entry in BASELINE_WIDGETS {
@@ -191,9 +192,6 @@ impl Router {
         let is_mock = controller.is_mock();
         let (html_gz, design_html_gz, css_gz, js_gz) = load_web_assets_from(assets_dir, is_mock);
         let widgets_dir = assets_dir.join("widgets");
-        if !is_mock || widgets_dir.exists() {
-            restore_baseline_widgets(&widgets_dir);
-        }
         Self {
             controller,
             html_gz,
@@ -311,21 +309,6 @@ impl Router {
                 }
             }
 
-            // 2D Joystick Directional Command Endpoint
-            (Method::Post, "/api/joystick") => {
-                match self.read_json_body::<JoystickPayload>(&mut request) {
-                    Ok(payload) => {
-                        let (x_port, y_port) = payload.resolve_ports();
-                        let (x_speed, y_speed) = payload.resolve_speeds();
-                        let stop_action = payload.resolve_stop_action();
-                        match self.controller.joystick_drive(&x_port, &y_port, x_speed, y_speed, Some(stop_action)) {
-                            Ok(_) => self.respond_json(request, StatusCode(200), &ApiResponse::ok("Joystick command dispatched")),
-                            Err(e) => self.respond_json(request, StatusCode(500), &ApiResponse::<()>::err(e)),
-                        }
-                    }
-                    Err(e) => self.respond_json(request, StatusCode(400), &ApiResponse::<()>::err(e)),
-                }
-            }
 
             // Batch Port Commands: POST /api/batch and POST /api/ports.
             (Method::Post, "/api/batch") | (Method::Post, "/api/ports") => {
@@ -466,42 +449,19 @@ impl Router {
         let gz_path = self.widgets_dir.join(format!("{}.gz", subpath));
         let file_path = self.widgets_dir.join(subpath);
 
-        let gz_exists = gz_path.is_file();
-        let plain_exists = file_path.is_file();
-
-        if gz_exists && plain_exists {
-            let is_gz_newer = match (
-                gz_path.metadata().and_then(|m| m.modified()),
-                file_path.metadata().and_then(|m| m.modified()),
-            ) {
-                (Ok(gz_m), Ok(pl_m)) => gz_m >= pl_m,
-                _ => false,
-            };
-
-            if is_gz_newer {
-                if let Ok(bytes) = std::fs::read(&gz_path) {
-                    self.respond_static_gz_slice(request, &bytes, mime, is_head);
-                    return;
-                }
-            } else {
-                let _ = std::fs::remove_file(&gz_path);
-                if let Ok(bytes) = std::fs::read(&file_path) {
-                    self.respond_static_plain_slice(request, &bytes, mime, is_head);
-                    return;
-                }
-            }
-        } else if gz_exists {
-            if let Ok(bytes) = std::fs::read(&gz_path) {
-                self.respond_static_gz_slice(request, &bytes, mime, is_head);
-                return;
-            }
-        } else if plain_exists {
-            if let Ok(bytes) = std::fs::read(&file_path) {
-                self.respond_static_plain_slice(request, &bytes, mime, is_head);
-                return;
-            }
+        // 1. Prefer pre-gzipped asset on disk if present
+        if let Ok(bytes) = std::fs::read(&gz_path) {
+            self.respond_static_gz_slice(request, &bytes, mime, is_head);
+            return;
         }
 
+        // 2. Serve plain asset on disk if present
+        if let Ok(bytes) = std::fs::read(&file_path) {
+            self.respond_static_plain_slice(request, &bytes, mime, is_head);
+            return;
+        }
+
+        // 3. Fall back to embedded compile-time baseline widget in RAM
         if let Some(entry) = BASELINE_WIDGETS.iter().find(|e| e.relative_path == subpath) {
             self.respond_static_plain_slice(request, entry.content, mime, is_head);
             return;

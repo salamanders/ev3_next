@@ -62,13 +62,19 @@ done
 
 echo "${REMOTE_SHA}" > "${TMP_DIR}/.version"
 
-# 4. If all 4 .gz files exist: set permissions, clear target and atomically move
+# 4. If all 4 .gz files exist: set permissions, preserve widgets/ and move core files
 if [ -f "${TMP_DIR}/index.html.gz" ] && [ -f "${TMP_DIR}/design.html.gz" ] && [ -f "${TMP_DIR}/style.css.gz" ] && [ -f "${TMP_DIR}/app.js.gz" ]; then
-    chmod 0755 "${TMP_DIR}" 2>/dev/null || true
-    chmod 0644 "${TMP_DIR}"/* "${TMP_DIR}/.version" 2>/dev/null || true
-    chown -R 1000:1000 "${TMP_DIR}" 2>/dev/null || true
-    rm -rf "${ASSETS_DIR}"
-    mv -T "${TMP_DIR}" "${ASSETS_DIR}"
+    mkdir -p "${ASSETS_DIR}"
+    chmod 0755 "${ASSETS_DIR}" 2>/dev/null || true
+    for file in index.html.gz design.html.gz style.css.gz app.js.gz .version; do
+        if [ -f "${TMP_DIR}/${file}" ]; then
+            chmod 0644 "${TMP_DIR}/${file}" 2>/dev/null || true
+            chown 1000:1000 "${TMP_DIR}/${file}" 2>/dev/null || true
+            mv -f "${TMP_DIR}/${file}" "${ASSETS_DIR}/${file}"
+        fi
+    done
+    rm -rf "${TMP_DIR}"
+    chown -R 1000:1000 "${ASSETS_DIR}" 2>/dev/null || true
     sync -f "${ASSETS_DIR}" 2>/dev/null || sync 2>/dev/null || true
     trap - INT TERM HUP
 

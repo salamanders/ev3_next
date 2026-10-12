@@ -7,8 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::sysfs::{MockController, Motor, MotorStatus, Sensor};
 use crate::web::handlers::{
     is_motor_port, is_sensor_port, normalize_port_name, AllPortsStatus, BatchCommandPayload,
-    BatchItemPayload, PortCommandPayload, ResolvedPortCommand, SensorStatus, MOTOR_PORTS,
-    SENSOR_PORTS,
+    ResolvedPortCommand, SensorStatus, MOTOR_PORTS, SENSOR_PORTS,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -665,34 +664,6 @@ impl MotorController {
         res
     }
 
-    /// Controls dual-axis motion from paired velocity setpoints with timeout.
-    pub fn joystick_drive(&self, x_port: &str, y_port: &str, x_speed: i32, y_speed: i32, stop_action: Option<&str>) -> Result<(), String> {
-        let stop_act = stop_action.unwrap_or("brake");
-        let batch = BatchCommandPayload {
-            heartbeat_ms: Some(2000),
-            commands: vec![
-                BatchItemPayload {
-                    port: x_port.to_string(),
-                    payload: PortCommandPayload {
-                        speed: Some(x_speed),
-                        stop_action: Some(stop_act.to_string()),
-                        ..Default::default()
-                    },
-                },
-                BatchItemPayload {
-                    port: y_port.to_string(),
-                    payload: PortCommandPayload {
-                        speed: Some(y_speed),
-                        stop_action: Some(stop_act.to_string()),
-                        ..Default::default()
-                    },
-                },
-            ],
-        };
-        self.execute_batch(&batch)?;
-        Ok(())
-    }
-
     /// Applies multi-channel instructions with unified safety watchdog.
     pub fn execute_batch(&self, batch: &BatchCommandPayload) -> Result<Vec<String>, String> {
         self.touch_client_poll();
@@ -835,13 +806,39 @@ impl MotorController {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::web::handlers::{BatchItemPayload, PortCommandPayload};
+
+    fn drive_dual(c: &MotorController, b_spd: i32, c_spd: i32, stop: &str) {
+        let batch = BatchCommandPayload {
+            heartbeat_ms: Some(2000),
+            commands: vec![
+                BatchItemPayload {
+                    port: "B".into(),
+                    payload: PortCommandPayload {
+                        speed: Some(b_spd),
+                        stop_action: Some(stop.to_string()),
+                        ..Default::default()
+                    },
+                },
+                BatchItemPayload {
+                    port: "C".into(),
+                    payload: PortCommandPayload {
+                        speed: Some(c_spd),
+                        stop_action: Some(stop.to_string()),
+                        ..Default::default()
+                    },
+                },
+            ],
+        };
+        c.execute_batch(&batch).unwrap();
+    }
 
     // Confirms missed heartbeats automatically halt dual-axis motion.
     #[test]
     fn test_joystick_watchdog_timeout() {
         let controller = MotorController::new(true, 15);
         // Start dual-motor drive
-        controller.joystick_drive("B", "C", 500, 500, Some("brake")).unwrap();
+        drive_dual(&controller, 500, 500, "brake");
         thread::sleep(Duration::from_millis(40));
 
         // Immediately check: motors B and C should be running
@@ -908,7 +905,7 @@ mod tests {
     fn test_joystick_does_not_trigger_disconnect_watchdog() {
         let controller = MotorController::new(true, 15);
         for _ in 0..6 {
-            controller.joystick_drive("B", "C", 500, 500, Some("brake")).unwrap();
+            drive_dual(&controller, 500, 500, "brake");
             thread::sleep(Duration::from_millis(200));
         }
         let st = controller.get_system_status();
@@ -1062,7 +1059,7 @@ mod tests {
     fn test_controller_joystick_independent_axes() {
         let controller = MotorController::new(true, 15);
         // Move only X axis
-        controller.joystick_drive("B", "C", 600, 0, Some("coast")).unwrap();
+        drive_dual(&controller, 600, 0, "coast");
         thread::sleep(Duration::from_millis(40));
 
         let status = controller.get_system_status();
@@ -1072,7 +1069,7 @@ mod tests {
         assert_eq!(c.speed, 0);
 
         // Move only Y axis
-        controller.joystick_drive("B", "C", 0, -400, Some("brake")).unwrap();
+        drive_dual(&controller, 0, -400, "brake");
         thread::sleep(Duration::from_millis(40));
 
         let status2 = controller.get_system_status();
@@ -1082,7 +1079,7 @@ mod tests {
         assert_eq!(c2.speed, -400);
 
         // Center joystick (stop both)
-        controller.joystick_drive("B", "C", 0, 0, Some("coast")).unwrap();
+        drive_dual(&controller, 0, 0, "coast");
         thread::sleep(Duration::from_millis(40));
 
         let status3 = controller.get_system_status();

@@ -32,6 +32,8 @@
 | **Phase 18** | Heartbeat Watchdog Relaxation & Coast Stop Action Optimization | **COMPLETE**. Extended heartbeat timeout cutoff to 2000 ms to accommodate high-latency wireless networks, replaced watchdog timeout stop action with "coast" across all active motors to eliminate mechanical gear shock, and updated tests and documentation. |
 | **Phase 19** | Unified Safety Watchdog Architecture | **COMPLETE**. Unified 2.0-second safety watchdog across all driving controls (joystick, tank, slider, port commands, batch), coasting all motors on timeout, simplified `WatchdogState`, and updated tests. |
 | **Phase 20** | Safe Dynamic Widget Updates & Modular Architecture | **COMPLETE**. Modular ES widget modules in `web_assets/widgets/`, unified `WidgetRegistry` in `app.js`, background curl updater with 3-second timeout and active IP detection, manifest rate-limit evasion, transparent `/widgets/*` static delivery (gzip and uncompressed), and end-to-end tests. |
+| **Phase 21** | Modular Widget Updater Fixes | **COMPLETE**. Resolved core updater bugs: bounded 180s network discovery retry, curl `-k` and 10s timeout for boot clock skew, asset updater directory preservation for `widgets/`, mock mode updater bypass, and read-only HTTP GET requests. |
+| **Phase 22** | Hardware Optimization & Codebase Simplification | **COMPLETE**. Removed duplicate DOM resets in emergency stop, removed double-temp download staging, removed dead CSS injector, eliminated per-request filesystem metadata checks, removed redundant `/api/joystick` endpoint, and eliminated boot-time SD card unpack writes. |
 
 ---
 
@@ -59,6 +61,8 @@
 21. [Phase 18: Heartbeat Watchdog Relaxation & Coast Stop Action Optimization](#21-phase-18-heartbeat-watchdog-relaxation--coast-stop-action-optimization)
 22. [Phase 19: Unified Safety Watchdog Architecture](#22-phase-19-unified-safety-watchdog-architecture)
 23. [Phase 20: Safe Dynamic Widget Updates & Modular Architecture](#23-phase-20-safe-dynamic-widget-updates--modular-architecture)
+24. [Phase 21: Modular Widget Updater Fixes](#24-phase-21-modular-widget-updater-fixes)
+25. [Phase 22: Hardware Optimization & Codebase Simplification](#25-phase-22-hardware-optimization--codebase-simplification)
 
 ---
 
@@ -1092,3 +1096,87 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
   - Added end-to-end unit test `test_e2e_updater_fetches_newer_widgets_and_server_serves_them`.
   - Verified 63/63 tests pass in `cargo test`.
   - Verified host simulation on default port 8080 (`http://localhost:8080/`).
+
+---
+
+## 24. Phase 21: Modular Widget Updater Fixes
+
+### 24.1 Context & Objectives
+- **Problem:** Triage of the widget updater identified 4 practical bugs: premature offline abort at boot, curl TLS failure from EV3 clock skew, clobbering of the `widgets/` folder by `update-assets.sh`, and local git working tree mutation in mock mode.
+- **Solution:** Apply minimalist fixes without adding unnecessary complexity:
+  1. Retry network detection on boot with exponential backoff up to 180 seconds maximum before falling back cleanly.
+  2. Add `-k` flag to curl and increase timeout to 10 seconds for EV3 boot clock skew and slow CPU handshakes.
+  3. Update `update-assets.sh` to move individual core asset files, preserving `widgets/`.
+  4. Disable background updater in mock mode to protect host git working tree.
+  5. Remove file deletion from HTTP GET request handler.
+  6. Recognize `.gz` companion files when verifying local widget presence.
+
+### 24.2 Architectural Decision Matrix
+
+| Option / Proposed Change | Status | Technical Rationale & File Links |
+| :--- | :--- | :--- |
+| **Bounded Network Discovery Retry** | `[IMPLEMENTED]` | Poll network status with backoff up to 180 seconds before exiting cleanly in [`src/updater.rs`](src/updater.rs). |
+| **Resilient Curl Flags** | `[IMPLEMENTED]` | Add `-k` flag and 10s timeout to survive boot clock skew in [`src/updater.rs`](src/updater.rs) and [`src/main.rs`](src/main.rs). |
+| **Preserve Widgets in Asset Updates** | `[IMPLEMENTED]` | Move core assets individually in [`tools/update-assets.sh`](tools/update-assets.sh) to avoid deleting `widgets/`. |
+| **Mock Mode Tree Isolation** | `[IMPLEMENTED]` | Disable remote updater in mock mode in [`src/main.rs`](src/main.rs) to protect git tree. |
+| **Read-Only HTTP GET Routes** | `[IMPLEMENTED]` | Remove `fs::remove_file` from `handle_widget_request` in [`src/web/router.rs`](src/web/router.rs). |
+| **Gzip-Aware Presence Checks** | `[IMPLEMENTED]` | Recognize `.gz` companion files in `should_update` in [`src/updater.rs`](src/updater.rs). |
+
+### 24.3 Implementation Checklist
+
+- [x] **Step 21.1: Startup Network Retry & Curl Resilience**
+  - Implemented 180s bounded network wait loop in `start_background_updater()`.
+  - Added `-k` flag and 10s timeout to curl invocations in `src/updater.rs`.
+- [x] **Step 21.2: Asset Updater Script Preservation**
+  - Updated `tools/update-assets.sh` to preserve `widgets/` directory during updates.
+- [x] **Step 21.3: Mock Tree Protection & Request Safety**
+  - Bypassed remote updater during mock mode execution in `src/main.rs`.
+  - Removed disk file mutation from `Router::handle_widget_request()` in `src/web/router.rs`.
+  - Added `.gz` companion check in `should_update` in `src/updater.rs`.
+- [x] **Step 21.4: Automated Test Verification**
+  - Added `test_gz_companion_recognized_in_should_update` in `src/updater.rs`.
+  - Verified all 64 unit tests pass in `cargo test`.
+
+---
+
+## 25. Phase 22: Hardware Optimization & Codebase Simplification
+
+### 25.1 Context & Objectives
+- **Problem:** MicroSD card read/write latency on the 300 MHz ARM9 CPU slows down system boot and static file serving. Unpacking baseline files to disk on startup causes unnecessary flash wear. In addition, legacy API routes (`/api/joystick`), duplicate DOM element queries, double-temporary file staging, and dead CSS injectors add unnecessary complexity.
+- **Solution:** Apply 6 direct simplifications for the slow MicroSD card and low-memory EV3 architecture:
+  1. Remove duplicate DOM element resets in `emergencyStop()` in `web_assets/app.js` (Item 1.1).
+  2. Write downloaded files directly to temporary staging paths in `src/updater.rs`, eliminating intermediate rename operations (Item 1.2).
+  3. Remove unused dynamic stylesheet link injection in `web_assets/app.js` (Item 2.1).
+  4. Eliminate filesystem `stat` and `mtime` syscalls per HTTP request in `src/web/router.rs` (Item 3.1).
+  5. Remove legacy `POST /api/joystick` route, payload structs, controller methods, and documentation (Item 4.1).
+  6. Eliminate boot-time SD card unpack writes by serving baseline widgets directly from in-memory compile-time data (Item 4.2).
+
+### 25.2 Architectural Decision Matrix
+
+| Option / Proposed Change | Status | Technical Rationale & File Links |
+| :--- | :--- | :--- |
+| **Modular Emergency Stop Reset** | `[IMPLEMENTED]` | Delegate reset exclusively to widget `onEmergencyStop()` hooks in [`web_assets/app.js`](web_assets/app.js). |
+| **Single-Stage File Downloads** | `[IMPLEMENTED]` | Stream directly to `.tmp_stage` files in [`src/updater.rs`](src/updater.rs) without extra `.tmp_download` step. |
+| **Remove Dead CSS Injector** | `[IMPLEMENTED]` | Eliminate unused stylesheet element injection in [`web_assets/app.js`](web_assets/app.js). |
+| **Stat-Free Static Delivery** | `[IMPLEMENTED]` | Try `.gz` read, then uncompressed read, then RAM fallback in [`src/web/router.rs`](src/web/router.rs) without per-request `mtime` checks. |
+| **Prune Legacy Joystick Route** | `[IMPLEMENTED]` | Remove `/api/joystick` in [`src/web/router.rs`](src/web/router.rs), [`src/web/handlers.rs`](src/web/handlers.rs), [`src/controller.rs`](src/controller.rs), and [`docs/api.md`](docs/api.md). |
+| **Zero-SD Boot Unpack** | `[IMPLEMENTED]` | Remove `restore_baseline_widgets` call on startup in [`src/web/router.rs`](src/web/router.rs); fall back directly to `BASELINE_WIDGETS` in RAM. |
+
+### 25.3 Implementation Checklist
+
+- [x] **Step 22.1: Frontend UI De-duplication**
+  - Removed duplicate DOM selector queries from `EV3App.emergencyStop()`.
+  - Removed unused `<link>` tag insertion from `WidgetRegistry.load()`.
+- [x] **Step 22.2: Updater Staging Simplification**
+  - Removed extra `.tmp_download` intermediate file rename step in `download_file()`.
+  - Added embedded baseline manifest fallback in `load_embedded_manifest()`.
+- [x] **Step 22.3: Zero-SD Boot and Stat-Free HTTP Serving**
+  - Removed boot-time baseline asset unpacking from `Router::new_with_dir()`.
+  - Removed filesystem metadata comparison on every static widget request.
+- [x] **Step 22.4: Legacy Endpoint Removal**
+  - Removed `POST /api/joystick` endpoint and `JoystickPayload`.
+  - Removed `Controller::joystick_drive()` method and updated controller tests to use batch commands.
+  - Updated API reference table in `docs/api.md`.
+- [x] **Step 22.5: Test & Host Simulation Verification**
+  - Verified all 64 unit tests pass cleanly with `cargo test`.
+

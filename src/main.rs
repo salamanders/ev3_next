@@ -97,7 +97,11 @@ fn main() {
             }
         });
     let widgets_dir = assets_dir.join("widgets");
-    updater::start_background_updater(manifest_url, widgets_dir, 3);
+    if config.mock_mode {
+        println!("[WIDGETS] Mock mode active: background updater disabled.");
+    } else {
+        updater::start_background_updater(manifest_url, widgets_dir, 10);
+    }
 
     // Worker pool servicing requests concurrently on ARM/Host.
     let num_workers = 2;
