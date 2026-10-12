@@ -4,58 +4,34 @@ This guide describes how to bake, flash, and boot the standalone EV3 Web Motor C
 
 ---
 
-## 1. Step 1: Bake the Appliance Image
+## 1. Step 1: Configure `wifi.txt` Once
 
-The bake script creates a custom bootable disk image from the base `ev3dev-stretch` release. It pre-installs the cross-compiled Rust binary, installs systemd service units, and configures Wi-Fi credentials:
+Create a `wifi.txt` file in the project root directory (this file is git-ignored so your credentials are never committed):
 
-```bash
-sudo ./tools/bake-image.sh --ssid "<SSID>" --password "<PASSWORD>"
-```
-
-### What the Script Does:
-1. Downloads the official `ev3dev-stretch` base image if not cached locally.
-2. Mounts the root filesystem partition.
-3. Injects the ARMv5te release binary into `/usr/local/bin/ev3-web-motor`.
-4. Installs the `ev3-web.service` systemd unit file.
-5. Writes the ConnMan Wi-Fi configuration file (`/var/lib/connman/ev3_wifi.config`).
-6. Masks slow boot services to reduce boot time to 10–15 seconds.
-7. Compresses the output image into `ev3-web-motor-ready.img.xz`.
-
----
-
-## 2. Step 2: Verify Your Target MicroSD Card
-
-> [!CAUTION]
-> Always verify the drive device name before writing. Writing to an incorrect disk will cause permanent data loss.
-
-Confirm your target card device name:
-
-```bash
-# Verify drive connection type and size (look for TRAN=usb):
-lsblk -d -o NAME,SIZE,MODEL,TRAN
-
-# Verify existing partition labels:
-lsblk -f /dev/sdX
+```text
+<SSID>
+<PASSWORD>
 ```
 
 ---
 
-## 3. Step 3: Flash and Verify the Image
+## 2. Step 2: Bake, Flash, and Verify in One Command
 
-Flash the compressed image to your MicroSD card using the verified device name (for example, `/dev/sdb`):
+Plug in your MicroSD card and run:
 
 ```bash
-sudo ./tools/flash-image.sh /dev/sdX
+sudo ./tools/flash-image.sh -y
 ```
 
-### Manual Command Alternative:
-```bash
-xzcat ev3-web-motor-ready.img.xz | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync
-sudo sync
-sudo ./tools/flash-image.sh --verify-only /dev/sdX
-```
+*(Tip: Install `bmap-tools` via `sudo apt install bmap-tools` on Linux for 2–3x faster flashing that skips empty disk blocks.)*
 
-*Note: The `conv=fsync` parameter ensures all written blocks flush to physical storage before the process exits.*
+### What `flash-image.sh` Does Automatically:
+1. Calls [`tools/bake-image.sh`](file:///Users/benhill/Desktop/hobbies/ev3_next/tools/bake-image.sh), which reads `./wifi.txt` (or accepts `--ssid "<SSID>" --password "<PASSWORD>"` overrides).
+2. Downloads the official `ev3dev-stretch` base image once and extracts a clean `build_image/ev3dev.img`.
+3. Mounts the ext4 root filesystem, injects `/usr/local/bin/ev3-web-motor`, enables `ev3-web.service`, writes `/var/lib/connman/ev3_wifi.config`, and disables `brickman`.
+4. Generates a block map (`build_image/ev3dev.img.bmap`) using `bmaptool create` and skips slow `xz` compression (pass `--xz` to `bake-image.sh` only when building a compressed release archive).
+5. Auto-detects your removable USB MicroSD card (`RM=1`, 2 GB–64 GB), or uses the device path you specify (for example, `sudo ./tools/flash-image.sh -y /dev/sdc`).
+6. Writes the uncompressed image using `bmaptool copy --bmap` (falling back to `dd` if `bmaptool` is not installed) and verifies the flashed root partition.
 
 ---
 

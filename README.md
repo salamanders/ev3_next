@@ -10,12 +10,12 @@ A fast, lightweight web server in Rust for the LEGO Mindstorms EV3 hardware (Tex
 
 ## Quickstart
 
-### 1. Standalone Appliance Setup (1-Click Flashing)
-Bake a pre-configured image with your Wi-Fi credentials and flash your MicroSD card:
+### 1. Standalone Appliance Setup (1-Click Bake & Flash)
+Create a git-ignored `wifi.txt` file in the repository root with your Wi-Fi name on line 1 and password on line 2, then run:
 ```bash
-sudo ./tools/bake-image.sh --ssid "<SSID>" --password "<PASSWORD>" && sudo ./tools/flash-image.sh /dev/sdX
+sudo ./tools/flash-image.sh -y
 ```
-Insert the card and a compatible USB Wi-Fi dongle into the EV3 brick. The brick connects to Wi-Fi automatically and displays its web address (`http://<ip>/`) on the LCD screen.
+`flash-image.sh` automatically runs `bake-image.sh` (reading `wifi.txt`), generates a `.bmap` block map without slow `xz` compression, auto-detects your removable MicroSD card, flashes only allocated blocks with `bmaptool`, and verifies the installation. Insert the card and a compatible USB Wi-Fi dongle into the EV3 brick to boot directly to the ready URL (`http://<ip>/`).
 
 ### 2. Host Simulation Testing
 Test the complete web interface, 2D joystick, and simulated motors on your PC without EV3 hardware:
