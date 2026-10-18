@@ -114,7 +114,8 @@ export default {
      *
      * Lifecycle hook invoked at 4 Hz by `EV3App::updateSensorReadouts`.
      */
-    onTelemetry(w, cardElement, s) {
+    onTelemetry(w, cardElement, data) {
+        const s = data?.sensors ? data.sensors.find(x => x.port === w.port) : data;
         const connected = s?.connected;
         const readout = cardElement.querySelector(".sensor-display-val");
         if (readout) readout.textContent = connected ? (s.value0 ?? s.value ?? "--") : "--";

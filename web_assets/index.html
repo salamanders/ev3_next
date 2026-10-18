@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>EV3 Mindstorms - Run</title>
+    <title>EV3 Mindstorms</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,15 +13,19 @@
             <a href="/design" id="btn-nav-design" class="tab-btn">Design</a>
             <a href="/run" id="btn-nav-run" class="tab-btn active">Run</a>
         </div>
+        <button id="btn-rescan" class="btn btn-secondary btn-sm" style="display: none;" title="Scan for connected hardware on all ports">
+            Rescan
+        </button>
     </nav>
 
     <!-- Main Container -->
     <main class="container">
+        <!-- Run View -->
         <section id="run-view" class="view-panel">
             <div id="run-empty-notice" class="card empty-notice" style="display: none;">
                 <h3>No Controls Configured</h3>
                 <p>Create robot controls and assign motor ports.</p>
-                <a href="/design" class="btn btn-primary">
+                <a href="/design" id="btn-open-design" class="btn btn-primary">
                     Open Design
                 </a>
             </div>
@@ -29,6 +33,84 @@
             <div id="run-widget-list" class="run-widget-list">
                 <!-- Dynamically populated run cards -->
             </div>
+        </section>
+
+        <!-- Design View -->
+        <section id="design-view" class="view-panel" style="display: none;">
+            <!-- Hardware Inventory Panel -->
+            <div class="card hardware-card">
+                <div class="card-header">
+                    <h3>Connected Hardware</h3>
+                    <span class="badge badge-info" id="hw-count-badge">Detecting...</span>
+                </div>
+                <div class="hardware-grid" id="hardware-list">
+                    <div class="hw-item">Loading hardware status...</div>
+                </div>
+            </div>
+
+            <!-- Widget Builder Toolbar -->
+            <div class="card builder-toolbar-card">
+                <div class="builder-toolbar">
+                    <div class="builder-select-group">
+                        <label for="widget-type-select">Type:</label>
+                        <select id="widget-type-select"></select>
+                    </div>
+                    <div class="builder-buttons">
+                        <button id="btn-add-widget" class="btn btn-primary">
+                            Add
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Design Widget Card List -->
+            <div class="widget-list-header">
+                <h3>Active Controls</h3>
+                <span class="text-muted" id="widget-count-label">0 active</span>
+            </div>
+            <div id="design-widget-list" class="design-widget-list">
+                <!-- Dynamically populated widget config cards -->
+            </div>
+
+            <!-- Diagnostics Drawer -->
+            <section class="diagnostics-drawer card">
+                <details id="diagnostics-details">
+                    <summary class="diagnostics-summary">
+                        <span>Diagnostics &amp; Log</span>
+                        <span class="text-muted text-sm">(Click to expand)</span>
+                    </summary>
+
+                    <div class="diagnostics-content">
+                        <div class="telemetry-table-container">
+                            <table class="telemetry-table">
+                                <thead>
+                                    <tr>
+                                        <th>Port</th>
+                                        <th>Status</th>
+                                        <th>Speed</th>
+                                        <th>Position</th>
+                                        <th>Duty</th>
+                                        <th>Polarity</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="telemetry-table-body">
+                                    <tr><td colspan="6" style="text-align:center;">Waiting for telemetry...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="log-container">
+                            <div class="log-header">
+                                <span>Command &amp; Event Log</span>
+                                <button id="btn-clear-log" class="btn btn-sm btn-secondary">Clear</button>
+                            </div>
+                            <div id="log-box" class="log-box">
+                                <div class="log-entry log-info">[System] Ready.</div>
+                            </div>
+                        </div>
+                    </div>
+                </details>
+            </section>
         </section>
     </main>
 
@@ -51,6 +133,9 @@
             </button>
             <button id="btn-shutdown-header" class="btn btn-secondary" title="Safely Power Off EV3 Brick">
                 Power Off
+            </button>
+            <button id="btn-update-header" class="btn btn-secondary" style="display: none;" title="Update widgets from GitHub">
+                Update
             </button>
         </div>
     </footer>

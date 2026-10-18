@@ -11,66 +11,58 @@
  * and transmits command payloads to the backend REST API.
  */
 
+const MOTOR_PORTS = ["A", "B", "C", "D"];
+const SENSOR_PORTS = ["1", "2", "3", "4"];
+
 class WidgetRegistry {
     /**
      * Creates a widget registry to cache dynamically imported ES modules.
      *
-     * Initializes internal map, manifest cache, and default known widget types.
+     * Initializes internal module map and list of discovered widget names on disk.
      *
-     * Isolates dynamic module importing and version cache-busting from DOM rendering.
+     * Isolates dynamic module importing from DOM rendering.
      */
     constructor() {
         this.modules = new Map();
-        this.manifest = null;
-        this.knownTypes = ["joystick", "tank", "slider", "button", "sensor"];
+        this.availableTypes = [];
     }
 
     /**
-     * Fetches widget catalog manifest from the web server.
+     * Fetches the list of available widget scripts on disk from `/api/widgets`.
      *
-     * Sends a GET request for `/widgets/manifest.json` with a cache-busting timestamp.
-     * Stores the manifest object in `this.manifest`.
+     * Sends a GET request to `/api/widgets` and stores the returned array of widget names.
      *
-     * Called once during application boot to check available widget versions.
+     * Called during application boot and after an on-demand GitHub widget update.
      */
     async init() {
         try {
-            const res = await fetch(`/widgets/manifest.json?v=${Date.now()}`, {
+            const res = await fetch("/api/widgets", {
                 signal: AbortSignal.timeout(1500)
             });
             if (res.ok) {
-                this.manifest = await res.json();
+                const json = await res.json();
+                const list = json?.data ?? json;
+                if (Array.isArray(list)) {
+                    this.availableTypes = list;
+                }
             }
         } catch (_) {}
     }
 
     /**
-     * Resolves the version timestamp for a widget type to bust browser caches.
-     *
-     * Returns the widget timestamp from the catalog manifest, or fallback timestamp.
-     *
-     * Ensures updated widget scripts download immediately after over-the-air updates.
-     */
-    getVersion(type) {
-        return this.manifest?.widgets?.[type]?.timestamp
-            ?? this.manifest?.timestamp
-            ?? 1728670000;
-    }
-
-    /**
      * Dynamically imports a widget module script using native ES import.
      *
-     * Imports `/widgets/${type}/widget.js?v=${version}` and caches the exported module object.
+     * Imports `/widgets/${type}.js` and caches the exported module object.
      *
      * Loads widget code on demand, keeping initial page load fast and lightweight.
      */
-    async load(type) {
-        if (this.modules.has(type)) {
+    async load(type, bustCache = false) {
+        if (!bustCache && this.modules.has(type)) {
             return this.modules.get(type);
         }
-        const v = this.getVersion(type);
         try {
-            const mod = await import(`/widgets/${type}/widget.js?v=${v}`);
+            const suffix = bustCache ? `?t=${Date.now()}` : "";
+            const mod = await import(`/widgets/${type}.js${suffix}`);
             const def = mod.default ?? mod;
             this.modules.set(type, def);
             return def;
@@ -93,16 +85,15 @@ class WidgetRegistry {
     }
 
     /**
-     * Preloads all catalog widget types for the visual designer.
+     * Preloads all available widget types discovered on disk for Design View.
      *
-     * Combines default types with any extra types discovered in `manifest.json`.
-     *
-     * Used in Design View so that adding any widget opens instantly without network delay.
+     * Loads every widget returned by `/api/widgets` so the Design View dropdown can display their labels.
      */
-    async loadAll() {
-        const catalogTypes = Object.keys(this.manifest?.widgets ?? {});
-        const allTypes = [...new Set([...this.knownTypes, ...catalogTypes])];
-        await Promise.all(allTypes.map(t => this.load(t)));
+    async loadAll(bustCache = false) {
+        if (bustCache) {
+            this.modules.clear();
+        }
+        await Promise.all(this.availableTypes.map(t => this.load(t, bustCache)));
     }
 
     /**
@@ -134,6 +125,7 @@ class EV3App {
         this.stopBurstMap = new Map();
         this.isOnline = false;
         this.pollTimer = null;
+        this.isDesignView = window.location.pathname === "/design";
         this.registry = new WidgetRegistry();
 
         this.initStorage();
@@ -144,29 +136,18 @@ class EV3App {
     }
 
     /**
-     * Checks if current page is Design View or Run View.
-     *
-     * Returns true if element `#design-view` exists in the DOM.
-     *
-     * Allows shared `app.js` script to configure page-specific controls.
-     */
-    get isDesignView() {
-        return !!document.getElementById("design-view");
-    }
-
-    /**
      * Asynchronously loads widget modules and triggers initial rendering pass.
      *
-     * 1. Fetches catalog manifest via `registry.init()`.
-     * 2. Preloads active widgets.
+     * 1. Fetches available widget list via `registry.init()`.
+     * 2. Preloads all available widgets.
      * 3. Populates missing default properties from widget module definitions.
-     * 4. Renders Design View or Run View cards.
+     * 4. Applies initial view state (Design View or Run View).
      *
      * Coordinates asynchronous module loading before attaching DOM event listeners.
      */
     async boot() {
         await this.registry.init();
-        await this.registry.loadActive(this.widgets.map(w => w.type));
+        await this.registry.loadAll();
 
         // Ensure default properties are populated from widget module definitions
         this.widgets = this.widgets.map(w => {
@@ -174,13 +155,88 @@ class EV3App {
             return def?.createDefault ? { ...def.createDefault(w.id), ...w } : w;
         });
 
-        if (this.isDesignView) {
-            await this.registry.loadAll();
+        this.renderWidgetSelect();
+        this.applyViewMode(this.isDesignView, false);
+    }
+
+    /**
+     * Switches between Design View and Run View in place without reloading the page.
+     *
+     * Toggles panel visibility, navigation tab active states, and header/footer action buttons.
+     */
+    applyViewMode(designMode, pushHistory = true) {
+        this.isDesignView = designMode;
+        if (pushHistory) {
+            const targetPath = designMode ? "/design" : "/run";
+            if (window.location.pathname !== targetPath) {
+                window.history.pushState({}, "", targetPath);
+            }
+        }
+
+        if (this.dom.designView) this.dom.designView.style.display = designMode ? "" : "none";
+        if (this.dom.runView) this.dom.runView.style.display = designMode ? "none" : "";
+        this.dom.navDesign?.classList.toggle("active", designMode);
+        this.dom.navRun?.classList.toggle("active", !designMode);
+        if (this.dom.btnRescan) this.dom.btnRescan.style.display = designMode ? "" : "none";
+        if (this.dom.btnUpdate) this.dom.btnUpdate.style.display = designMode ? "" : "none";
+
+        if (designMode) {
+            this.renderWidgetSelect();
             this.renderHardwarePanel();
             this.rescanHardware(false);
             this.renderDesignWidgets();
         } else {
             this.renderRunWidgets();
+        }
+    }
+
+    /**
+     * Populates the Design View widget `<select>` dropdown from all loaded widget modules.
+     *
+     * Maps each available widget type to an `<option>` tag using its module's `label`.
+     * Automatically includes any newly added or downloaded widgets without hardcoding HTML.
+     */
+    renderWidgetSelect() {
+        if (!this.dom.widgetSelect) return;
+        const prev = this.dom.widgetSelect.value;
+        this.dom.widgetSelect.innerHTML = this.registry.availableTypes
+            .map(type => {
+                const def = this.registry.get(type);
+                if (!def) return "";
+                const label = def.label ?? type;
+                return `<option value="${type}" ${type === prev ? "selected" : ""}>${label}</option>`;
+            })
+            .join("");
+    }
+
+    /**
+     * Triggers an on-demand GitHub widget CRUD sync (`POST /update`) and refreshes Design View.
+     *
+     * Calls `POST /update`, reloads the available widget list and modules, and updates the dropdown.
+     */
+    async updateWidgetsFromGithub() {
+        const btn = this.dom.btnUpdate;
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = "Updating...";
+        }
+        try {
+            const res = await this.apiPost("/update", {});
+            await this.registry.init();
+            await this.registry.loadAll(true);
+            this.renderWidgetSelect();
+            this.renderDesignWidgets();
+            const msg = `Widgets synced (+${res.created ?? 0} new, ~${res.updated ?? 0} updated, -${res.deleted ?? 0} removed).`;
+            this.log(msg, "info");
+            alert(msg);
+        } catch (e) {
+            this.log(`Widget update failed: ${e.message}`, "error");
+            alert(`Widget update failed: ${e.message}`);
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = "Update";
+            }
         }
     }
 
@@ -251,6 +307,11 @@ class EV3App {
      */
     initDOMElements() {
         this.dom = {
+            runView: document.getElementById("run-view"),
+            designView: document.getElementById("design-view"),
+            navDesign: document.getElementById("btn-nav-design"),
+            navRun: document.getElementById("btn-nav-run"),
+            btnOpenDesign: document.getElementById("btn-open-design"),
             designList: document.getElementById("design-widget-list"),
             runList: document.getElementById("run-widget-list"),
             emptyNotice: document.getElementById("run-empty-notice"),
@@ -265,6 +326,7 @@ class EV3App {
             latencyVal: document.getElementById("latency-val"),
             btnEstop: document.getElementById("btn-estop-header"),
             btnShutdown: document.getElementById("btn-shutdown-header"),
+            btnUpdate: document.getElementById("btn-update-header"),
             diagDetails: document.getElementById("diagnostics-details"),
             telemetryBody: document.getElementById("telemetry-table-body"),
             logBox: document.getElementById("log-box"),
@@ -273,17 +335,34 @@ class EV3App {
     }
 
     /**
-     * Attaches keyboard and global button event listeners.
+     * Attaches keyboard, tab navigation, and global button event listeners.
      *
      * 1. Binds Spacebar key to `emergencyStop()`.
-     * 2. Binds Header E-Stop and Shutdown buttons.
-     * 3. In Design View, binds Add Widget, Rescan Hardware, and Clear Log buttons.
+     * 2. Binds in-place Design / Run tab switching.
+     * 3. Binds Header/Footer E-Stop, Shutdown, Update, Add Widget, Rescan, and Clear Log buttons.
      *
      * Central event binding function called during application setup.
      */
     attachGlobalListeners() {
         this.dom.btnEstop?.addEventListener("click", () => this.emergencyStop());
         this.dom.btnShutdown?.addEventListener("click", () => this.powerOff());
+        this.dom.btnUpdate?.addEventListener("click", () => this.updateWidgetsFromGithub());
+
+        this.dom.navDesign?.addEventListener("click", (e) => {
+            e.preventDefault();
+            this.applyViewMode(true);
+        });
+        this.dom.navRun?.addEventListener("click", (e) => {
+            e.preventDefault();
+            this.applyViewMode(false);
+        });
+        this.dom.btnOpenDesign?.addEventListener("click", (e) => {
+            e.preventDefault();
+            this.applyViewMode(true);
+        });
+        window.addEventListener("popstate", () => {
+            this.applyViewMode(window.location.pathname === "/design", false);
+        });
 
         window.addEventListener("keydown", (e) => {
             if (e.code === "Space" && e.target.tagName !== "INPUT") {
@@ -297,16 +376,14 @@ class EV3App {
             if (document.hidden) this.emergencyStop();
         });
 
-        if (this.isDesignView) {
-            this.dom.btnAdd?.addEventListener("click", async () => {
-                const type = this.dom.widgetSelect?.value ?? "joystick";
-                await this.addWidget(type);
-            });
-            this.dom.btnRescan?.addEventListener("click", () => this.rescanHardware(true));
-            this.dom.btnClearLog?.addEventListener("click", () => {
-                if (this.dom.logBox) this.dom.logBox.innerHTML = "";
-            });
-        }
+        this.dom.btnAdd?.addEventListener("click", async () => {
+            const type = this.dom.widgetSelect?.value ?? "joystick";
+            await this.addWidget(type);
+        });
+        this.dom.btnRescan?.addEventListener("click", () => this.rescanHardware(true));
+        this.dom.btnClearLog?.addEventListener("click", () => {
+            if (this.dom.logBox) this.dom.logBox.innerHTML = "";
+        });
     }
 
     /**
@@ -588,8 +665,8 @@ class EV3App {
     renderHardwarePanel() {
         if (!this.dom.hardwareList) return;
         const portMap = new Map([
-            ...["A", "B", "C", "D"].map(p => [p, { type: "motor", name: `Port ${p}`, desc: "Disconnected", connected: false }]),
-            ...["1", "2", "3", "4"].map(p => [p, { type: "sensor", name: `Port ${p}`, desc: "Disconnected", connected: false }])
+            ...MOTOR_PORTS.map(p => [p, { type: "motor", name: `Port ${p}`, desc: "Disconnected", connected: false }]),
+            ...SENSOR_PORTS.map(p => [p, { type: "sensor", name: `Port ${p}`, desc: "Disconnected", connected: false }])
         ]);
 
         this.hardwareMotors.forEach(m => {
@@ -633,7 +710,7 @@ class EV3App {
      * Helper used by widget `renderDesign` functions to generate port select dropdowns.
      */
     portOptions(selected, isSensor = false) {
-        const ports = isSensor ? ["1", "2", "3", "4"] : ["A", "B", "C", "D"];
+        const ports = isSensor ? SENSOR_PORTS : MOTOR_PORTS;
         const list = isSensor ? this.hardwareSensors : this.hardwareMotors;
         return ports.map(p => {
             const hw = list.find(x => x.port === p);
@@ -784,9 +861,7 @@ class EV3App {
         const sizeClass = def?.sizeClass ?? "run-card-2x1";
         const portBadge = def?.getPortBadge ? def.getPortBadge(w) : (w.port ? `Port ${w.port}` : "");
         const cardTitle = def?.label ?? w.type;
-        const portAttr = (w.type === "slider" || w.type === "button")
-            ? `data-motor-port="${w.port}"`
-            : (w.type === "sensor" ? `data-sensor-port="${w.port}"` : "");
+        const portAttr = MOTOR_PORTS.includes(w.port) ? `data-motor-port="${w.port}"` : "";
         const body = def?.renderRun ? def.renderRun(w, this) : "";
 
         return `
@@ -819,15 +894,12 @@ class EV3App {
     }
 
     /**
-     * Starts the periodic 250 ms telemetry polling heartbeat.
+     * Starts the periodic 250 ms telemetry polling loop.
      *
      * 1. Fetches `GET /api/status` every 250 ms (4 Hz).
-     * 2. Updates online connection badge and round-trip latency measurement.
-     * 3. Updates battery voltage indicator.
-     * 4. Updates motor card footers and sensor reading cards.
-     * 5. In Design View, refreshes live diagnostics table when expanded.
-     *
-     * Keeps telemetry fresh and acts as the client heartbeat resetting the 2-second safety watchdog.
+     * 2. Updates online connection badge, round-trip latency, and battery voltage.
+     * 3. Stores latest `hardwareMotors` and `hardwareSensors` snapshots on `this`.
+     * 4. Dispatches `onTelemetry` to all widgets that define it and updates motor card footers.
      */
     startPolling() {
         if (this.pollTimer) clearInterval(this.pollTimer);
@@ -846,17 +918,19 @@ class EV3App {
                     this.dom.batteryVal.textContent = Number(volt).toFixed(1);
                 }
 
-                if (this.isDesignView && this.dom.diagDetails?.open) {
-                    this.renderDiagnosticsTable(data.motors ?? []);
+                if (data.motors) {
+                    this.hardwareMotors = data.motors;
+                    this.updateMotorCardStatus(data.motors);
+                    if (this.isDesignView && this.dom.diagDetails?.open) {
+                        this.renderDiagnosticsTable(data.motors);
+                    }
                 }
 
                 if (data.sensors) {
-                    this.updateSensorReadouts(data.sensors);
+                    this.hardwareSensors = data.sensors;
                 }
 
-                if (data.motors) {
-                    this.updateMotorCardStatus(data.motors);
-                }
+                this.dispatchTelemetry(data);
             } catch (_) {
                 this.setConnectionState(false, 0);
             }
@@ -890,7 +964,7 @@ class EV3App {
      */
     renderDiagnosticsTable(motors) {
         if (!this.dom.telemetryBody) return;
-        this.dom.telemetryBody.innerHTML = ["A", "B", "C", "D"].map(port => {
+        this.dom.telemetryBody.innerHTML = MOTOR_PORTS.map(port => {
             const m = motors.find(x => x.port === port);
             if (!m || !m.connected) {
                 return `<tr><td><strong>${port}</strong></td><td colspan="5" class="text-muted">Disconnected</td></tr>`;
@@ -909,21 +983,16 @@ class EV3App {
     }
 
     /**
-     * Dispatches telemetry data to active sensor cards.
+     * Dispatches live telemetry snapshots to any active widget that defines `onTelemetry`.
      *
-     * Calls `onTelemetry(w, card, s)` on the sensor widget definition with matching port data.
-     *
-     * Feeds real-time sensor measurements to UI readout cards.
+     * Calls `def.onTelemetry(w, card, data)` without hardcoding specific widget type names.
      */
-    updateSensorReadouts(sensors) {
+    dispatchTelemetry(data) {
         this.widgets.forEach(w => {
-            if (w.type === "sensor") {
-                const s = sensors.find(x => x.port === w.port);
-                const card = document.getElementById(`run-card-${w.id}`);
-                const def = this.registry.get(w.type);
-                if (card && def?.onTelemetry) {
-                    def.onTelemetry(w, card, s);
-                }
+            const card = document.getElementById(`run-card-${w.id}`);
+            const def = this.registry.get(w.type);
+            if (card && def?.onTelemetry) {
+                def.onTelemetry(w, card, data);
             }
         });
     }
