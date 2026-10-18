@@ -37,7 +37,8 @@
 | **Phase 23** | Asset Pipeline Simplification & Uncompressed Delivery | **COMPLETE**. Removed all gzip compression, removed shell updater service, plain RAM/disk delivery, idempotent Wi-Fi check, 4 HTTP workers, 200ms bounded rescan. |
 | **Phase 24** | Five-Area Codebase Simplification & Dead Code Elimination | **COMPLETE**. Direct RAM core asset serving, single-file widget pipeline, controller helper deduplication, generic frontend widget processing, and route alias/dead parameter pruning. |
 | **Phase 25** | Codebase Commenting & Function/File Consolidation | **COMPLETE**. Merged `web/` into single `src/web.rs`, moved address parsers to `src/sysfs/mod.rs`, eliminated dead fields/methods, added STE headers and detailed comments across all files. |
-| **Historical Archive** | Bug Tracking & Historical Remediation Archive | **COMPLETE**. Full historical record of `BUG-01` through `BUG-47` and retired archive directory artifacts preserved in Section 29. |
+| **Phase 26** | DRY Widget Pipeline, On-Demand GitHub Sync & Keyframe Recorder | **COMPLETE**. Flattened widgets to `web_assets/widgets/<name>.js`, removed `manifest.json` and `BASELINE_*` embeds, unified `index.html` and `design.html`, added `GET /api/widgets` and `POST /api/widgets/update`, and built `record.js`. |
+| **Historical Archive** | Bug Tracking & Historical Remediation Archive | **COMPLETE**. Full historical record of `BUG-01` through `BUG-47` and retired archive directory artifacts preserved in Section 30. |
 
 ---
 
@@ -70,7 +71,8 @@
 26. [Phase 23: Asset Pipeline Simplification & Uncompressed Delivery](#26-phase-23-asset-pipeline-simplification--uncompressed-delivery)
 27. [Phase 24: Five-Area Codebase Simplification & Dead Code Elimination](#27-phase-24-five-area-codebase-simplification--dead-code-elimination)
 28. [Phase 25: Codebase Commenting & Function/File Consolidation](#28-phase-25-codebase-commenting--functionfile-consolidation)
-29. [Historical Bug & Remediation Archive (BUG-01 to BUG-47)](#29-historical-bug--remediation-archive-bug-01-to-bug-47)
+29. [Phase 26: DRY Widget Pipeline, On-Demand GitHub Sync & Keyframe Recorder](#29-phase-26-dry-widget-pipeline-on-demand-github-sync--keyframe-recorder)
+30. [Historical Bug & Remediation Archive (BUG-01 to BUG-47)](#30-historical-bug--remediation-archive-bug-01-to-bug-47)
 
 ---
 
@@ -1326,19 +1328,61 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
 
 ---
 
-## 29. Historical Bug & Remediation Archive (BUG-01 to BUG-47)
+## 29. Phase 26: DRY Widget Pipeline, On-Demand GitHub Sync & Keyframe Recorder
 
-### 29.1 Overview & Former `/archive/` Contents
+### 29.1 Context & Objectives
+- **Problem:** Widget names were hardcoded in four places (`src/web.rs` `BASELINE_WIDGETS`, `web_assets/widgets/manifest.json`, `web_assets/design.html`, and `web_assets/app.js`). Widgets were stored inside nested subdirectories (`web_assets/widgets/<name>/widget.js`), core HTML was duplicated across `index.html` and `design.html`, `src/web.rs` mixed RAM embeds (`include_bytes!`) with disk serving, and `app.js` contained hardcoded widget type checks (`w.type === "sensor"`, `w.type === "slider"`). In addition, users needed a "Keyframe Recorder" (`record`) widget to record motor positions across all connected motors and play them back sequentially at maximum speed with stall detection.
+- **Solution:**
+  1. Flatten widgets to one file per widget (`web_assets/widgets/<name>.js`) and delete `web_assets/widgets/manifest.json`.
+  2. Serve all web assets (`index.html`, `style.css`, `app.js`, and `widgets/*.js`) consistently from `web_assets/` on disk (copied by `tools/bake-image.sh`), removing `BASELINE_*` `include_bytes!` constants from `src/web.rs`.
+  3. Add `GET /api/widgets` to scan `web_assets/widgets/*.js` dynamically and populate the Design View `<select>` dropdown from `def.label` with zero hardcoded widget lists.
+  4. Replace background boot-time manifest polling with on-demand `POST /api/widgets/update` triggered by the **Update** button in Design View, performing direct CRUD synchronization against the GitHub directory listing using temporary `.tmp` files and atomic renames.
+  5. Merge `design.html` into `index.html` with in-place `/run` and `/design` tab switching so recorded keyframes stay in memory when switching views, and replace hardcoded telemetry type checks in `app.js` with generic `def.onTelemetry(w, card, data)` dispatch.
+  6. Add `web_assets/widgets/record.js` (`Keyframe Recorder`) to record motor positions (`A`–`D`) and play them back sequentially (`0 -> 1 -> ... -> End`) via `POST /api/batch` (`run-to-rel-pos` at maximum speed, waiting at most 1,000 ms for stalled motors after non-stalled motors finish before sending `stop` with `brake`).
+
+### 29.2 Architectural Decision Matrix
+
+| Option / Proposed Change | Status | Technical Rationale & File Links |
+| :--- | :--- | :--- |
+| **Flat Single-File Widgets (`widgets/<name>.js`)** | `[IMPLEMENTED]` | Replaced nested `widgets/<name>/widget.js` folders and deleted `manifest.json` in [`web_assets/widgets/`](web_assets/widgets/). |
+| **Consistent Disk Asset Serving (`web_assets/`)** | `[IMPLEMENTED]` | Removed `BASELINE_*` `include_bytes!` from [`src/web.rs`](src/web.rs) and copied `web_assets/` into `/home/robot/web_assets/` in [`tools/bake-image.sh`](tools/bake-image.sh). |
+| **Dynamic Widget Discovery (`GET /api/widgets`)** | `[IMPLEMENTED]` | Scans `web_assets/widgets/*.js` in [`src/web.rs`](src/web.rs) and populates `#widget-type-select` dynamically in [`web_assets/app.js`](web_assets/app.js). |
+| **On-Demand GitHub Directory CRUD Sync (`POST /api/widgets/update`)** | `[IMPLEMENTED]` | Syncs local `.js` widgets with GitHub Contents API using `.tmp` files and atomic renames in [`src/updater.rs`](src/updater.rs). |
+| **Single HTML Shell & Generic Telemetry Hook** | `[IMPLEMENTED]` | Merged `design.html` into [`web_assets/index.html`](web_assets/index.html) and dispatched `def.onTelemetry(w, card, data)` generically in [`web_assets/app.js`](web_assets/app.js). |
+| **Keyframe Recorder Widget (`record.js`)** | `[IMPLEMENTED]` | Added [`web_assets/widgets/record.js`](web_assets/widgets/record.js) with multi-motor keyframe capture, sequential playback, and 1-second stall timeout handling. |
+
+### 29.3 Implementation Checklist
+
+- [x] **Step 26.1: Flatten Widget Files & Remove `manifest.json`**
+  - Moved `button`, `joystick`, `sensor`, `slider`, and `tank` to `web_assets/widgets/<name>.js` and deleted `web_assets/widgets/manifest.json`.
+- [x] **Step 26.2: On-Demand GitHub CRUD Updater (`src/updater.rs`, `src/main.rs`)**
+  - Replaced boot-time manifest updater with `sync_widgets_from_github` in `src/updater.rs`, creating new `.js` files, updating modified `.js` files via `.tmp` atomic rename, and deleting removed `.js` files.
+- [x] **Step 26.3: Consistent Disk Serving & Dynamic Widget Route (`src/web.rs`, `tools/bake-image.sh`)**
+  - Removed `BASELINE_*` constants from `src/web.rs`; added `GET /api/widgets` and `POST /api/widgets/update`.
+  - Updated `tools/bake-image.sh` to copy `web_assets/*.{html,css,js}` and `web_assets/widgets/*.js` into the image.
+- [x] **Step 26.4: Unify HTML & DRY Up `web_assets/app.js`**
+  - Merged `design.html` into `web_assets/index.html` and deleted `web_assets/design.html`.
+  - Added `MOTOR_PORTS` and `SENSOR_PORTS` constants, in-place `/run` and `/design` tab switching, dynamic widget loading from `/api/widgets`, generic `dispatchTelemetry`, and the Design View **Update** button handler.
+- [x] **Step 26.5: Keyframe Recorder Widget (`web_assets/widgets/record.js`)**
+  - Built `web_assets/widgets/record.js` with `Record Keyframe`, `Done Recording`, `Playback` (with stop-on-click and 1-second stall timeout after non-stalled motors finish), and `Re-record`.
+- [x] **Step 26.6: Verification (`cargo test`, ARMv5TE release build, host simulation)**
+  - Verified all 39 unit tests pass in `cargo test` and cross-compiled `armv5te-unknown-linux-musleabi` release binary.
+
+---
+
+## 30. Historical Bug & Remediation Archive (BUG-01 to BUG-47)
+
+### 30.1 Overview & Former `/archive/` Contents
 
 This section preserves the complete historical bug tracking and remediation records formerly maintained in the `/archive/` directory. The `/archive/` directory contained legacy deployment scripts, post-mortem notes, and review summaries created during early development. Those files were reviewed and removed to maintain a clean workspace:
 
-- `archive/BUGS.md`: Comprehensive log of all identified bugs, risks, and hardware incompatibilities (`BUG-01` through `BUG-47`). Preserved in full in Section 29.2 below.
+- `archive/BUGS.md`: Comprehensive log of all identified bugs, risks, and hardware incompatibilities (`BUG-01` through `BUG-47`). Preserved in full in Section 30.2 below.
 - `archive/REPORT.md`: Architectural feasibility and triage report (2026-10-04). Key hardware determinations (TI Sitara AM1808 300 MHz CPU, 64 MB RAM, native `musleabi` runtime, zero-allocation telemetry polling, and rejection of TLS encryption overhead) are integrated into [`docs/architecture.md`](docs/architecture.md), Phase 8, and Phase 9.
 - `archive/POSSIBLE_FIXES.md`: Post-mortem investigation report analyzing appliance disk image boot failures. All remediations (systemd service paths, Brickman masking, base image extraction, console fonts, and clock synchronization) were implemented in [`tools/bake-image.sh`](tools/bake-image.sh) and documented in Step 9.3.
 - `archive/deploy.ps1` & `archive/deploy.sh`: Legacy direct-SSH/SCP deployment scripts used before appliance image baking. Superseded by appliance image automation (`tools/bake-image.sh`, `tools/flash-image.sh`) and standard atomic deployment steps in [`docs/development.md`](docs/development.md).
 - `archive/zig-lld-arm.cmd`: Windows batch wrapper for Zig cross-compilation. Superseded by standard `.cargo/config.toml` linker configuration.
 
-### 29.2 Historical Bug Register (BUG-01 to BUG-47)
+### 30.2 Historical Bug Register (BUG-01 to BUG-47)
 
 | ID | Title | Severity | Status | Component | Description & Remediation Summary |
 | :--- | :--- | :--- | :--- | :--- | :--- |
