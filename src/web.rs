@@ -17,46 +17,6 @@ use crate::controller::MotorController;
 
 pub use crate::sysfs::SensorStatus;
 
-// Embedded Single Page Application Web Assets served directly from RAM
-const BASELINE_HTML: &[u8] = include_bytes!("../web_assets/index.html");
-const BASELINE_DESIGN_HTML: &[u8] = include_bytes!("../web_assets/design.html");
-const BASELINE_CSS: &[u8] = include_bytes!("../web_assets/style.css");
-const BASELINE_JS: &[u8] = include_bytes!("../web_assets/app.js");
-
-/// Embedded baseline widget asset stored in flash and RAM.
-pub struct BaselineWidget {
-    pub relative_path: &'static str,
-    pub content: &'static [u8],
-}
-
-/// Compile-time baseline widgets available offline without internet access.
-pub const BASELINE_WIDGETS: &[BaselineWidget] = &[
-    BaselineWidget {
-        relative_path: "manifest.json",
-        content: include_bytes!("../web_assets/widgets/manifest.json"),
-    },
-    BaselineWidget {
-        relative_path: "joystick/widget.js",
-        content: include_bytes!("../web_assets/widgets/joystick/widget.js"),
-    },
-    BaselineWidget {
-        relative_path: "tank/widget.js",
-        content: include_bytes!("../web_assets/widgets/tank/widget.js"),
-    },
-    BaselineWidget {
-        relative_path: "slider/widget.js",
-        content: include_bytes!("../web_assets/widgets/slider/widget.js"),
-    },
-    BaselineWidget {
-        relative_path: "button/widget.js",
-        content: include_bytes!("../web_assets/widgets/button/widget.js"),
-    },
-    BaselineWidget {
-        relative_path: "sensor/widget.js",
-        content: include_bytes!("../web_assets/widgets/sensor/widget.js"),
-    },
-];
-
 /// Incoming JSON payload for single-port commands.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PortCommandPayload {
@@ -250,6 +210,7 @@ pub(crate) fn strip_default_port(host: &str) -> &str {
 /// HTTP request router dispatching API calls and serving web assets.
 pub struct Router {
     controller: Arc<MotorController>,
+    assets_dir: PathBuf,
     widgets_dir: PathBuf,
 }
 
@@ -281,9 +242,10 @@ impl Router {
     /// Allows unit tests to provide a temporary directory for widget asset resolution.
     pub fn new_with_dir(controller: Arc<MotorController>, assets_dir: &Path) -> Self {
         let widgets_dir = assets_dir.join("widgets");
-        println!("[ROUTER] Core web assets served directly from RAM; widgets from {:?}", widgets_dir);
+        println!("[ROUTER] Serving web assets from {:?} (widgets: {:?})", assets_dir, widgets_dir);
         Self {
             controller,
+            assets_dir: assets_dir.to_path_buf(),
             widgets_dir,
         }
     }
@@ -292,10 +254,10 @@ impl Router {
     ///
     /// 1. Rejects cross-origin POST requests by verifying that Origin matches Host.
     /// 2. Returns 405 Method Not Allowed for OPTIONS preflight requests.
-    /// 3. Serves core SPA files (`/`, `/run`, `/design`, `/style.css`, `/app.js`) directly
-    ///    from compile-time RAM byte slices (`BASELINE_*`), eliminating disk reads.
-    /// 4. Serves `/widgets/*` files from disk (`widgets_dir`) with RAM baseline fallback.
+    /// 3. Serves core SPA files (`/`, `/run`, `/design`, `/style.css`, `/app.js`) from `assets_dir`.
+    /// 4. Serves `/widgets/*` files from `widgets_dir`.
     /// 5. Routes API endpoints:
+    ///    - `GET /api/widgets`: Lists available widget scripts in `widgets_dir`.
     ///    - `GET /api/status`: Returns cached telemetry in <0.05 ms without sysfs I/O.
     ///    - `POST /api/shutdown`: Triggers system poweroff.
     ///    - `POST /api/estop`: Halts all motors immediately.
@@ -339,18 +301,15 @@ impl Router {
 
         let is_head = method == Method::Head;
         match (method, path) {
-            // Static Web Assets (supporting GET and HEAD) served directly from RAM
-            (Method::Get, "/") | (Method::Head, "/") | (Method::Get, "/run") | (Method::Head, "/run") => {
-                self.respond_static_plain_slice(request, BASELINE_HTML, "text/html; charset=utf-8", is_head);
-            }
-            (Method::Get, "/design") | (Method::Head, "/design") => {
-                self.respond_static_plain_slice(request, BASELINE_DESIGN_HTML, "text/html; charset=utf-8", is_head);
+            // Static Web Assets (supporting GET and HEAD) served from assets_dir on disk
+            (Method::Get, "/") | (Method::Head, "/") | (Method::Get, "/run") | (Method::Head, "/run") | (Method::Get, "/design") | (Method::Head, "/design") => {
+                self.serve_asset_file(request, "index.html", "text/html; charset=utf-8", is_head);
             }
             (Method::Get, "/style.css") | (Method::Head, "/style.css") => {
-                self.respond_static_plain_slice(request, BASELINE_CSS, "text/css; charset=utf-8", is_head);
+                self.serve_asset_file(request, "style.css", "text/css; charset=utf-8", is_head);
             }
             (Method::Get, "/app.js") | (Method::Head, "/app.js") => {
-                self.respond_static_plain_slice(request, BASELINE_JS, "application/javascript; charset=utf-8", is_head);
+                self.serve_asset_file(request, "app.js", "application/javascript; charset=utf-8", is_head);
             }
             (Method::Get, "/favicon.ico") | (Method::Head, "/favicon.ico") => {
                 let res = Response::empty(StatusCode(204));
@@ -363,6 +322,11 @@ impl Router {
             }
             (Method::Head, p) if p.starts_with("/widgets/") => {
                 self.handle_widget_request(request, p, true);
+            }
+
+            // Available Widgets Discovery Endpoint
+            (Method::Get, "/api/widgets") => {
+                self.handle_list_widgets(request);
             }
 
             // Telemetry Endpoint (reads in <0.05ms from RAM cache)
@@ -406,10 +370,10 @@ impl Router {
 
             // Explicit On-Demand Widget Updater Endpoint
             (Method::Post, "/update") | (Method::Post, "/api/update") => {
-                let manifest_url = std::env::var("WIDGET_MANIFEST_URL").unwrap_or_else(|_| {
-                    "https://raw.githubusercontent.com/salamanders/ev3_next/main/web_assets/widgets/manifest.json".to_string()
+                let api_url = std::env::var("WIDGET_UPDATE_URL").unwrap_or_else(|_| {
+                    "https://api.github.com/repos/salamanders/ev3_next/contents/web_assets/widgets".to_string()
                 });
-                match crate::updater::check_and_update_widgets(&manifest_url, &self.widgets_dir, 10) {
+                match crate::updater::check_and_update_widgets(&api_url, &self.widgets_dir, 10) {
                     Ok(summary) => self.respond_json(request, StatusCode(200), &ApiResponse::ok(summary)),
                     Err(e) => self.respond_json(request, StatusCode(500), &ApiResponse::<()>::err(e)),
                 }
@@ -482,15 +446,30 @@ impl Router {
         serde_json::from_str::<T>(&body).map_err(|e| format!("Invalid JSON payload: {}", e))
     }
 
-    /// Resolves and serves widget assets from disk with RAM baseline fallback.
+    /// Lists all `*.js` widget names present in `widgets_dir` on disk.
     ///
-    /// 1. Rejects path traversal characters (`..`, null bytes, URL encoded `%2e`).
-    /// 2. Determines Content-Type from extension (`.js`, `.json`, `.css`, `.html`).
-    /// 3. Checks if file exists on disk in `widgets_dir`.
-    /// 4. If absent on disk, falls back to embedded baseline in RAM (`BASELINE_WIDGETS`).
+    /// Scans `self.widgets_dir`, extracts the stem of each `.js` file, sorts the list alphabetically,
+    /// and returns it as a JSON array via `GET /api/widgets`.
+    fn handle_list_widgets(&self, request: Request) {
+        let mut names = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&self.widgets_dir) {
+            for entry in entries.flatten() {
+                let file_name = entry.file_name().to_string_lossy().to_string();
+                if let Some(stem) = file_name.strip_suffix(".js") {
+                    if !stem.is_empty() && !stem.starts_with('.') {
+                        names.push(stem.to_string());
+                    }
+                }
+            }
+        }
+        names.sort();
+        self.respond_json(request, StatusCode(200), &ApiResponse::ok(names));
+    }
+
+    /// Resolves and serves widget assets directly from `widgets_dir` on disk.
     ///
-    /// Allows downloaded over-the-air widget updates to take effect immediately on reload
-    /// while maintaining offline fallback capability without disk files.
+    /// Rejects path traversal characters (`..`, null bytes, URL encoded `%2e`), determines Content-Type,
+    /// and serves the requested file from `self.widgets_dir`.
     fn handle_widget_request(&self, request: Request, full_path: &str, is_head: bool) {
         let subpath = &full_path["/widgets/".len()..];
         if subpath.is_empty() {
@@ -524,8 +503,6 @@ impl Router {
         };
 
         let file_path = self.widgets_dir.join(subpath);
-
-        // 1. Serve plain asset on disk if present and non-empty
         if let Ok(bytes) = std::fs::read(&file_path) {
             if !bytes.is_empty() {
                 self.respond_static_plain_slice(request, &bytes, mime, is_head);
@@ -533,13 +510,19 @@ impl Router {
             }
         }
 
-        // 2. Fall back to embedded compile-time baseline widget in RAM
-        if let Some(entry) = BASELINE_WIDGETS.iter().find(|e| e.relative_path == subpath) {
-            self.respond_static_plain_slice(request, entry.content, mime, is_head);
-            return;
-        }
-
         self.respond_json(request, StatusCode(404), &ApiResponse::<()>::err("Widget file not found"));
+    }
+
+    /// Reads and serves a static file from `assets_dir` on disk.
+    ///
+    /// Reads `self.assets_dir.join(file_name)` and responds with `200 OK` or `404 Not Found`.
+    fn serve_asset_file(&self, request: Request, file_name: &str, content_type: &str, is_head: bool) {
+        let path = self.assets_dir.join(file_name);
+        if let Ok(bytes) = std::fs::read(&path) {
+            self.respond_static_plain_slice(request, &bytes, content_type, is_head);
+        } else {
+            self.respond_json(request, StatusCode(404), &ApiResponse::<()>::err("Asset file not found"));
+        }
     }
 
     /// Serves static bytes with strict zero-cache policy headers.
@@ -650,22 +633,14 @@ mod tests {
     }
 
     #[test]
-    fn test_baseline_assets_embedded_and_valid_plain() {
-        assert!(!BASELINE_HTML.is_empty());
-        assert!(!BASELINE_DESIGN_HTML.is_empty());
-        assert!(!BASELINE_CSS.is_empty());
-        assert!(!BASELINE_JS.is_empty());
-
-        let html = std::str::from_utf8(BASELINE_HTML).unwrap();
+    fn test_web_assets_on_disk_valid_plain() {
+        let html = std::fs::read_to_string("web_assets/index.html").unwrap();
         assert!(html.contains("<!DOCTYPE html>") || html.contains("<html"));
 
-        let design = std::str::from_utf8(BASELINE_DESIGN_HTML).unwrap();
-        assert!(design.contains("<!DOCTYPE html>") || design.contains("<html"));
-
-        let css = std::str::from_utf8(BASELINE_CSS).unwrap();
+        let css = std::fs::read_to_string("web_assets/style.css").unwrap();
         assert!(css.contains("body") || css.contains("margin"));
 
-        let js = std::str::from_utf8(BASELINE_JS).unwrap();
+        let js = std::fs::read_to_string("web_assets/app.js").unwrap();
         assert!(js.contains("function") || js.contains("const") || js.contains("let") || js.contains("class"));
     }
 
@@ -947,23 +922,24 @@ mod tests {
             }
         });
 
-        // 1. GET /widgets/manifest.json
+        // 1. GET /api/widgets
         {
             let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"GET /widgets/manifest.json HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
+            stream.write_all(b"GET /api/widgets HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
             let mut resp = Vec::new();
             stream.read_to_end(&mut resp).unwrap();
             let resp_str = String::from_utf8_lossy(&resp);
 
             assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-            assert!(resp_str.contains("Content-Type: application/json; charset=utf-8"));
-            assert!(resp_str.contains("Cache-Control: no-cache"));
+            assert!(resp_str.contains("Content-Type: application/json"));
+            assert!(resp_str.contains("\"joystick\""));
+            assert!(resp_str.contains("\"slider\""));
         }
 
-        // 2. GET /widgets/joystick/widget.js?v=1728670000
+        // 2. GET /widgets/joystick.js
         {
             let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"GET /widgets/joystick/widget.js?v=1728670000 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
+            stream.write_all(b"GET /widgets/joystick.js HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
             let mut resp = Vec::new();
             stream.read_to_end(&mut resp).unwrap();
             let resp_str = String::from_utf8_lossy(&resp);
@@ -973,10 +949,10 @@ mod tests {
             assert!(resp_str.contains("Cache-Control: no-cache"));
         }
 
-        // 3. HEAD /widgets/joystick/widget.js
+        // 3. HEAD /widgets/joystick.js
         {
             let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"HEAD /widgets/joystick/widget.js HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
+            stream.write_all(b"HEAD /widgets/joystick.js HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
             let mut resp = Vec::new();
             stream.read_to_end(&mut resp).unwrap();
             let resp_str = String::from_utf8_lossy(&resp);

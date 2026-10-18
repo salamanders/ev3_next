@@ -224,8 +224,10 @@ mkdir -p "${MOUNT_DIR}/home/robot"
 ln -sf /usr/local/bin/ev3-web-motor "${MOUNT_DIR}/home/robot/ev3-web-motor"
 chown -h 1000:1000 "${MOUNT_DIR}/home/robot/ev3-web-motor" 2>/dev/null || true
 
-# Prepare /home/robot/web_assets/widgets for dynamic widget storage
-mkdir -p "${MOUNT_DIR}/home/robot/web_assets/widgets" "${MOUNT_DIR}/var/lib/ev3-web/widgets"
+# Copy web_assets (index.html, style.css, app.js, and widgets/*.js) into /home/robot/web_assets
+mkdir -p "${MOUNT_DIR}/home/robot/web_assets/widgets"
+cp -f "${WORKSPACE_DIR}/web_assets/"*.html "${WORKSPACE_DIR}/web_assets/"*.css "${WORKSPACE_DIR}/web_assets/"*.js "${MOUNT_DIR}/home/robot/web_assets/"
+cp -f "${WORKSPACE_DIR}/web_assets/widgets/"*.js "${MOUNT_DIR}/home/robot/web_assets/widgets/"
 chmod 0755 "${MOUNT_DIR}/home/robot/web_assets" "${MOUNT_DIR}/home/robot/web_assets/widgets"
 chown -R 1000:1000 "${MOUNT_DIR}/home/robot/web_assets" 2>/dev/null || true
 
