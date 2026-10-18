@@ -717,6 +717,7 @@ body {
     height: 24px;
     accent-color: var(--primary);
     cursor: pointer;
+    touch-action: none;
 }
 
 .slider-actions {

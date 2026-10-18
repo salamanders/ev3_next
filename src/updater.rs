@@ -9,7 +9,7 @@
 //! from interfering with real-time motor control and HTTP request routing.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use serde::{Deserialize, Serialize};
 
@@ -32,7 +32,7 @@ pub struct WidgetEntry {
 }
 
 /// Result tally capturing updated widget counts and error diagnostics.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UpdateResult {
     pub updated_count: usize,
     pub files_downloaded: usize,
@@ -235,65 +235,6 @@ pub fn check_and_update_widgets(
     }
 
     Ok(result)
-}
-
-/// Spawns a background thread to check for widget updates on startup.
-///
-/// 1. Waits up to 60 seconds for an active network IP address.
-/// 2. If connected, triggers `check_and_update_widgets`.
-/// 3. If offline, exits cleanly without delaying HTTP server readiness.
-///
-/// Network checks run asynchronously so the server can serve requests immediately.
-pub fn start_background_updater(
-    manifest_url: String,
-    widgets_dir: PathBuf,
-    timeout_secs: u64,
-) -> std::thread::JoinHandle<()> {
-    std::thread::Builder::new()
-        .name("widget-updater".into())
-        .spawn(move || {
-            let start = std::time::Instant::now();
-            let max_wait = std::time::Duration::from_secs(60);
-            let mut connected = false;
-
-            while start.elapsed() < max_wait {
-                let ip = crate::sysfs::DisplayController::detect_ip();
-                if ip != "No network" && !ip.is_empty() {
-                    connected = true;
-                    break;
-                }
-                let remaining = max_wait.saturating_sub(start.elapsed());
-                if remaining.is_zero() {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_secs(2).min(remaining));
-            }
-
-            if !connected {
-                println!("[WIDGETS] Offline: no active network. Serving local widgets.");
-                return;
-            }
-
-            match check_and_update_widgets(&manifest_url, &widgets_dir, timeout_secs) {
-                Ok(summary) => {
-                    for err in &summary.errors {
-                        eprintln!("[WIDGETS WARN] {}", err);
-                    }
-                    if summary.updated_count > 0 {
-                        println!(
-                            "[WIDGETS] Updated {} widget(s) ({} file(s)) from remote catalog.",
-                            summary.updated_count, summary.files_downloaded
-                        );
-                    } else {
-                        println!("[WIDGETS] Widgets up to date. Serving local widgets.");
-                    }
-                }
-                Err(err) => {
-                    println!("[WIDGETS] Background check complete ({}); serving local widgets.", err);
-                }
-            }
-        })
-        .expect("Failed to spawn widget-updater thread")
 }
 
 #[cfg(test)]

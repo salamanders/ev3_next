@@ -337,19 +337,20 @@ impl Router {
             return;
         }
 
+        let is_head = method == Method::Head;
         match (method, path) {
             // Static Web Assets (supporting GET and HEAD) served directly from RAM
             (Method::Get, "/") | (Method::Head, "/") | (Method::Get, "/run") | (Method::Head, "/run") => {
-                self.respond_static_plain_slice(request, BASELINE_HTML, "text/html; charset=utf-8", method == Method::Head);
+                self.respond_static_plain_slice(request, BASELINE_HTML, "text/html; charset=utf-8", is_head);
             }
             (Method::Get, "/design") | (Method::Head, "/design") => {
-                self.respond_static_plain_slice(request, BASELINE_DESIGN_HTML, "text/html; charset=utf-8", method == Method::Head);
+                self.respond_static_plain_slice(request, BASELINE_DESIGN_HTML, "text/html; charset=utf-8", is_head);
             }
             (Method::Get, "/style.css") | (Method::Head, "/style.css") => {
-                self.respond_static_plain_slice(request, BASELINE_CSS, "text/css; charset=utf-8", method == Method::Head);
+                self.respond_static_plain_slice(request, BASELINE_CSS, "text/css; charset=utf-8", is_head);
             }
             (Method::Get, "/app.js") | (Method::Head, "/app.js") => {
-                self.respond_static_plain_slice(request, BASELINE_JS, "application/javascript; charset=utf-8", method == Method::Head);
+                self.respond_static_plain_slice(request, BASELINE_JS, "application/javascript; charset=utf-8", is_head);
             }
             (Method::Get, "/favicon.ico") | (Method::Head, "/favicon.ico") => {
                 let res = Response::empty(StatusCode(204));
@@ -399,6 +400,17 @@ impl Router {
             (Method::Post, "/api/rescan") => {
                 match self.controller.rescan() {
                     Ok(ports) => self.respond_json(request, StatusCode(200), &ApiResponse::ok(ports)),
+                    Err(e) => self.respond_json(request, StatusCode(500), &ApiResponse::<()>::err(e)),
+                }
+            }
+
+            // Explicit On-Demand Widget Updater Endpoint
+            (Method::Post, "/update") | (Method::Post, "/api/update") => {
+                let manifest_url = std::env::var("WIDGET_MANIFEST_URL").unwrap_or_else(|_| {
+                    "https://raw.githubusercontent.com/salamanders/ev3_next/main/web_assets/widgets/manifest.json".to_string()
+                });
+                match crate::updater::check_and_update_widgets(&manifest_url, &self.widgets_dir, 10) {
+                    Ok(summary) => self.respond_json(request, StatusCode(200), &ApiResponse::ok(summary)),
                     Err(e) => self.respond_json(request, StatusCode(500), &ApiResponse::<()>::err(e)),
                 }
             }

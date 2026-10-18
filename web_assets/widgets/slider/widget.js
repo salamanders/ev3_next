@@ -101,6 +101,26 @@ export default {
         const btnZero = cardElement.querySelector(`.btn-slider-zero[data-id="${w.id}"]`);
         if (!slider) return;
 
+        let active = false;
+
+        const stopAndCenter = () => {
+            active = false;
+            slider.value = "0";
+            if (readout) readout.textContent = "0";
+            ctx.stopBurst(`slider_${w.id}`, () =>
+                ctx.apiPost(`/api/port/${w.port}`, { command: "stop", stop_action: "brake" })
+            );
+        };
+
+        slider.addEventListener("pointerdown", () => {
+            active = true;
+            ctx.cancelStopBurst(`slider_${w.id}`);
+        });
+        slider.addEventListener("touchstart", () => {
+            active = true;
+            ctx.cancelStopBurst(`slider_${w.id}`);
+        }, { passive: true });
+
         slider.addEventListener("input", (e) => {
             const speed = parseInt(e.target.value, 10);
             if (readout) readout.textContent = speed;
@@ -112,12 +132,14 @@ export default {
             });
         });
 
-        btnZero?.addEventListener("click", () => {
-            slider.value = "0";
-            if (readout) readout.textContent = "0";
-            ctx.clearThrottle(`slider_${w.id}`);
-            ctx.apiPost(`/api/port/${w.port}`, { command: "stop", stop_action: "brake" }).catch(() => {});
+        ["pointerup", "pointercancel", "lostpointercapture", "touchend", "touchcancel", "change"].forEach(evt => {
+            slider.addEventListener(evt, stopAndCenter);
         });
+        window.addEventListener("blur", () => {
+            if (active || slider.value !== "0") stopAndCenter();
+        });
+
+        btnZero?.addEventListener("click", stopAndCenter);
     },
 
     /**

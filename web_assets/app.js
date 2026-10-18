@@ -131,6 +131,7 @@ class EV3App {
         this.hardwareMotors = [];
         this.hardwareSensors = [];
         this.throttleMap = new Map();
+        this.stopBurstMap = new Map();
         this.isOnline = false;
         this.pollTimer = null;
         this.registry = new WidgetRegistry();
@@ -291,6 +292,11 @@ class EV3App {
             }
         });
 
+        window.addEventListener("pagehide", () => this.emergencyStop());
+        document.addEventListener("visibilitychange", () => {
+            if (document.hidden) this.emergencyStop();
+        });
+
         if (this.isDesignView) {
             this.dom.btnAdd?.addEventListener("click", async () => {
                 const type = this.dom.widgetSelect?.value ?? "joystick";
@@ -304,17 +310,38 @@ class EV3App {
     }
 
     /**
-     * Limits the frequency of rapid function invocations while guaranteeing the final call runs.
+     * Limits the frequency of rapid function invocations while guaranteeing the final call runs,
+     * and repeats the latest held command every `repeatMs` (default 250 ms) while active.
      *
      * Executes `fn` immediately if `intervalMs` has elapsed since the last run.
-     * Otherwise schedules a trailing timer so the latest user input (e.g. joystick release) is sent.
+     * Schedules a stationary hold timer so holding a finger still on a 2D joystick or slider
+     * keeps refreshing the motor command until `clearThrottle(key)` is called on release.
      *
      * Prevents pointermove events (60 Hz) from flooding the 300 MHz EV3 CPU with HTTP requests.
      */
-    throttle(key, intervalMs, fn) {
+    throttle(key, intervalMs, fn, repeatMs = 250) {
+        this.cancelStopBurst(key);
         const now = Date.now();
-        const entry = this.throttleMap.get(key) ?? { last: 0, timer: null, nextFn: null };
+        const entry = this.throttleMap.get(key) ?? { last: 0, timer: null, holdTimer: null, nextFn: null, holdFn: null, holdCount: 0 };
         entry.nextFn = fn;
+        entry.holdFn = fn;
+        entry.holdCount = 0;
+
+        const scheduleHold = () => {
+            if (entry.holdTimer) clearTimeout(entry.holdTimer);
+            if (!repeatMs || repeatMs <= 0) return;
+            entry.holdTimer = setTimeout(() => {
+                entry.holdTimer = null;
+                // Cap stationary hold repeats to 40 (~10 seconds without any finger movement)
+                // so a missed release event cannot keep a motor running forever.
+                if (entry.holdFn && entry.holdCount < 40) {
+                    entry.holdCount += 1;
+                    entry.last = Date.now();
+                    entry.holdFn();
+                    scheduleHold();
+                }
+            }, repeatMs);
+        };
 
         if (now - entry.last >= intervalMs) {
             entry.last = now;
@@ -324,13 +351,19 @@ class EV3App {
             }
             this.throttleMap.set(key, entry);
             fn();
+            scheduleHold();
         } else if (!entry.timer) {
+            if (entry.holdTimer) {
+                clearTimeout(entry.holdTimer);
+                entry.holdTimer = null;
+            }
             entry.timer = setTimeout(() => {
                 entry.last = Date.now();
                 entry.timer = null;
                 const toRun = entry.nextFn;
                 entry.nextFn = null;
                 if (toRun) toRun();
+                scheduleHold();
             }, intervalMs - (now - entry.last));
             this.throttleMap.set(key, entry);
         }
@@ -350,7 +383,13 @@ class EV3App {
                 clearTimeout(entry.timer);
                 entry.timer = null;
             }
+            if (entry.holdTimer) {
+                clearTimeout(entry.holdTimer);
+                entry.holdTimer = null;
+            }
             entry.nextFn = null;
+            entry.holdFn = null;
+            entry.holdCount = 0;
         }
     }
 
@@ -367,8 +406,69 @@ class EV3App {
                 clearTimeout(entry.timer);
                 entry.timer = null;
             }
+            if (entry.holdTimer) {
+                clearTimeout(entry.holdTimer);
+                entry.holdTimer = null;
+            }
             entry.nextFn = null;
+            entry.holdFn = null;
+            entry.holdCount = 0;
         });
+        this.stopBurstMap.forEach(state => {
+            state.cancelled = true;
+            if (state.timer) clearTimeout(state.timer);
+        });
+        this.stopBurstMap.clear();
+    }
+
+    /**
+     * Cancels an active stop-command burst for a control key.
+     *
+     * Marks the burst state as cancelled and clears any pending timer.
+     *
+     * Called as soon as the user touches or moves the control again so old stop retries do not fight new movement.
+     */
+    cancelStopBurst(key) {
+        const prev = this.stopBurstMap.get(key);
+        if (prev) {
+            prev.cancelled = true;
+            if (prev.timer) clearTimeout(prev.timer);
+            this.stopBurstMap.delete(key);
+        }
+    }
+
+    /**
+     * Sends a reliable burst of stop commands on finger release.
+     *
+     * Fires `actionFn()` immediately, then up to `maxCount - 1` additional times with `gapMs` (66 ms)
+     * after each request finishes (bounded to 500 ms total), aborting immediately if the control is touched again.
+     *
+     * Guarantees motor stop delivery over lossy Wi-Fi or right after an in-flight move request.
+     */
+    stopBurst(key, actionFn, maxCount = 5, gapMs = 66) {
+        this.clearThrottle(key);
+        this.cancelStopBurst(key);
+
+        const state = { cancelled: false, timer: null };
+        this.stopBurstMap.set(key, state);
+        const startTime = Date.now();
+        let sent = 0;
+
+        const step = async () => {
+            if (state.cancelled) return;
+            sent += 1;
+            try {
+                await actionFn();
+            } catch (_) {}
+            if (state.cancelled) return;
+            if (sent < maxCount && (Date.now() - startTime) < 500) {
+                state.timer = setTimeout(step, gapMs);
+            } else if (this.stopBurstMap.get(key) === state) {
+                this.stopBurstMap.delete(key);
+            }
+        };
+
+        step();
     }
 
     /**
@@ -397,7 +497,7 @@ class EV3App {
      *
      * Used by multi-motor controls (joystick, tank) to synchronize dual-motor actuation.
      */
-    async apiBatch(commands, heartbeatMs = 2000) {
+    async apiBatch(commands, heartbeatMs = 5000) {
         return this.apiPost("/api/batch", {
             heartbeat_ms: heartbeatMs,
             commands

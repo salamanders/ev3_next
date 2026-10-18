@@ -118,25 +118,7 @@ fn main() {
         })
         .expect("Failed to spawn display refresh thread");
 
-    // Background task fetching widget updates from GitHub catalog URL
-    let manifest_url = std::env::var("WIDGET_MANIFEST_URL").unwrap_or_else(|_| {
-        "https://raw.githubusercontent.com/salamanders/ev3_next/main/web_assets/widgets/manifest.json".to_string()
-    });
-    let assets_dir = std::env::var("WEB_ASSETS_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            if config.mock_mode && !std::path::Path::new("/home/robot/web_assets").exists() {
-                std::path::PathBuf::from("web_assets")
-            } else {
-                std::path::PathBuf::from("/home/robot/web_assets")
-            }
-        });
-    let widgets_dir = assets_dir.join("widgets");
-    if config.mock_mode {
-        println!("[WIDGETS] Mock mode active: background updater disabled.");
-    } else {
-        updater::start_background_updater(manifest_url, widgets_dir, 5);
-    }
+    println!("[WIDGETS] On-demand updater ready via POST /update.");
 
     // Worker pool servicing requests concurrently on ARM/Host
     let num_workers = 4;

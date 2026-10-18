@@ -321,10 +321,10 @@ export default {
         if (!boundary || !knob) return;
 
         let dragging = false;
-        const maxRadius = Math.max(30, (boundary.clientWidth - knob.clientWidth) / 2 || 70);
 
         const onPointerMove = (clientX, clientY) => {
             const rect = boundary.getBoundingClientRect();
+            const maxRadius = Math.max(30, (rect.width - (knob.offsetWidth || 44)) / 2 || 70);
             const rawX = clientX - (rect.left + rect.width / 2);
             const rawY = clientY - (rect.top + rect.height / 2);
             const dist = Math.hypot(rawX, rawY);
@@ -357,19 +357,22 @@ export default {
             knob.style.transform = "translate(0px, 0px)";
             if (readout) readout.textContent = "X: 0% | Y: 0%";
 
-            ctx.clearThrottle(`joy_${w.id}`);
-
             const commands = getJoystickStopCommands(w);
             if (commands.length > 0) {
-                ctx.apiBatch(commands).catch(() => {});
+                ctx.stopBurst(`joy_${w.id}`, () => ctx.apiBatch(commands));
+            } else {
+                ctx.clearThrottle(`joy_${w.id}`);
             }
         };
 
         boundary.addEventListener("pointerdown", (e) => {
             e.preventDefault();
             dragging = true;
+            ctx.cancelStopBurst(`joy_${w.id}`);
             knob.classList.add("active");
-            boundary.setPointerCapture(e.pointerId);
+            try {
+                boundary.setPointerCapture(e.pointerId);
+            } catch (_) {}
             onPointerMove(e.clientX, e.clientY);
         });
 
@@ -380,8 +383,10 @@ export default {
             }
         });
 
-        boundary.addEventListener("pointerup", stopMotion);
-        boundary.addEventListener("pointercancel", stopMotion);
+        ["pointerup", "pointercancel", "lostpointercapture"].forEach(evt => {
+            boundary.addEventListener(evt, stopMotion);
+        });
+        window.addEventListener("blur", stopMotion);
     },
 
     /**

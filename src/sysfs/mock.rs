@@ -244,16 +244,6 @@ impl MockController {
         self.stop_all("coast", false);
     }
 
-    /// Checks if any simulated motor is currently moving.
-    ///
-    /// Returns true if any motor has `running = true` and `speed_sp != 0`.
-    ///
-    /// Used by watchdog logic to avoid unnecessary stop commands when motors are already idle.
-    pub fn is_any_motor_running(&self) -> bool {
-        let m = self.motors.lock().unwrap();
-        m.iter().any(|motor| motor.running && motor.speed_sp != 0)
-    }
-
     /// Updates simulated motor kinematics based on elapsed time and returns telemetry.
     ///
     /// 1. Calculates elapsed time `dt` since `last_tick`.
