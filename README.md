@@ -2,9 +2,12 @@
 
 A fast, lightweight web server in Rust for the LEGO Mindstorms EV3 hardware (Texas Instruments Sitara AM1808, ARMv5te @ 300MHz, 64MB DRAM).
 
-| Design View (`/design`) | Run View Desktop (`/run`) | Run View Mobile (390×844) |
-| :---: | :---: | :---: |
-| ![Design View](docs/screenshots/screenshot_design.png) | ![Run View Desktop](docs/screenshots/screenshot_run.png) | ![Run View Mobile](docs/screenshots/screenshot_run_mobile.png) |
+### Mobile Workflow Walkthrough (Portrait 390×844)
+
+| 1. Check for Updates | 2. Add Widgets | 3. Move & Drive | 4. Record Keyframes | 5. Playback Steps |
+| :---: | :---: | :---: | :---: | :---: |
+| ![01 Check for Updates](docs/screenshots/01_check_for_updates.png) | ![02 Add 3 Widgets](docs/screenshots/02_add_3_widgets.png) | ![03 Move](docs/screenshots/03_move.png) | ![04 Record 3rd Step](docs/screenshots/04_record_3rd_step.png) | ![05 Playback Steps](docs/screenshots/05_playback_steps.png) |
+| **Design View:** Check updates from GitHub and inspect connected hardware. | **Configure Layout:** Add 2D Joystick, Speed Slider, and Keyframe Recorder. | **Run View:** Drive motors in real-time with responsive touch controls. | **Keyframe Recorder:** Capture live motor positions across all ports (A–D). | **Autonomous Playback:** Replay recorded positions with stall recovery. |
 
 ---
 
