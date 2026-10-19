@@ -54,6 +54,17 @@ struct SensorState {
     cached_file: Option<File>,
 }
 
+impl SensorState {
+    /// Reloads `decimals`, `units`, and active `mode` from the sensor's sysfs directory.
+    ///
+    /// Shared by initial sensor discovery and runtime `set_mode` transitions so scaling metadata is read in one place.
+    fn refresh_scale(&mut self, sysfs_path: &Path, mode: String) {
+        self.decimals = super::read_attr_parsed(sysfs_path, "decimals", 0);
+        self.units = super::read_attr_trimmed(sysfs_path, "units", "");
+        self.mode = mode;
+    }
+}
+
 /// Handle to a physical EV3 sensor discovered in sysfs.
 #[derive(Clone)]
 pub struct Sensor {
@@ -99,22 +110,15 @@ impl Sensor {
                     };
 
                     let address = addr.trim().to_string();
-                    let driver_name = fs::read_to_string(path.join("driver_name"))
-                        .map(|s| s.trim().to_string())
-                        .unwrap_or_else(|_| "lego-sensor".into());
-                    let mode = fs::read_to_string(path.join("mode"))
-                        .map(|s| s.trim().to_string())
-                        .unwrap_or_default();
-                    let modes: Vec<String> = fs::read_to_string(path.join("modes"))
-                        .map(|s| s.split_whitespace().map(|m| m.to_string()).collect())
-                        .unwrap_or_default();
-                    let decimals = fs::read_to_string(path.join("decimals"))
-                        .ok()
-                        .and_then(|s| s.trim().parse().ok())
-                        .unwrap_or(0);
-                    let units = fs::read_to_string(path.join("units"))
-                        .map(|s| s.trim().to_string())
-                        .unwrap_or_default();
+                    let driver_name = super::read_attr_trimmed(&path, "driver_name", "lego-sensor");
+                    let mode = super::read_attr_trimmed(&path, "mode", "");
+                    let modes: Vec<String> = super::read_attr_trimmed(&path, "modes", "")
+                        .split_whitespace()
+                        .map(String::from)
+                        .collect();
+
+                    let mut st = SensorState::default();
+                    st.refresh_scale(&path, mode);
 
                     sensors.push(Sensor {
                         port: port.to_string(),
@@ -122,12 +126,7 @@ impl Sensor {
                         address,
                         driver_name,
                         modes,
-                        state: Arc::new(Mutex::new(SensorState {
-                            mode,
-                            decimals,
-                            units,
-                            cached_file: None,
-                        })),
+                        state: Arc::new(Mutex::new(st)),
                     });
                 }
             }
@@ -156,14 +155,7 @@ impl Sensor {
         file.write_all(mode.as_bytes())?;
         file.flush()?;
 
-        st.decimals = fs::read_to_string(self.sysfs_path.join("decimals"))
-            .ok()
-            .and_then(|s| s.trim().parse::<u32>().ok())
-            .unwrap_or(0);
-        st.units = fs::read_to_string(self.sysfs_path.join("units"))
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default();
-        st.mode = mode.to_string();
+        st.refresh_scale(&self.sysfs_path, mode.to_string());
 
         Ok(())
     }

@@ -38,15 +38,6 @@ impl WifiManager {
     /// Path to the persistent ConnMan Wi-Fi configuration file on ev3dev.
     pub const CONNMAN_CONFIG_PATH: &'static str = "/var/lib/connman/ev3_wifi.config";
 
-    /// Scans candidate storage locations for a setup file containing Wi-Fi credentials.
-    ///
-    /// Calls `find_wifi_credentials_in` with the standard `CANDIDATE_PATHS`.
-    ///
-    /// Production entry point for discovering `wifi.txt` across boot media partitions.
-    pub fn find_wifi_credentials() -> Result<Option<WifiCredentials>, WifiError> {
-        Self::find_wifi_credentials_in(Self::CANDIDATE_PATHS)
-    }
-
     /// Scans a specific list of file paths for Wi-Fi credentials.
     ///
     /// Checks each path in order. If a file exists, reads and parses SSID and passphrase.
@@ -172,15 +163,6 @@ impl WifiManager {
             "[global]\nName = EV3_WiFi\nDescription = EV3 Auto-Connect Wi-Fi\n\n[service_ev3_wifi]\nType = wifi\nName = {}\nPassphrase = {}\nIPv4 = dhcp\nAutoConnect = true\n",
             ssid, pass
         )
-    }
-
-    /// Writes ConnMan configuration to default system path `/var/lib/connman/ev3_wifi.config`.
-    ///
-    /// Calls `write_connman_config_to` with `CONNMAN_CONFIG_PATH`.
-    ///
-    /// Standard production write helper.
-    pub fn write_connman_config(ssid: &str, pass: &str) -> std::io::Result<()> {
-        Self::write_connman_config_to(Path::new(Self::CONNMAN_CONFIG_PATH), ssid, pass)
     }
 
     /// Writes ConnMan configuration to a designated file path with restricted permissions.

@@ -47,40 +47,55 @@ pub fn is_safe_component_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
 }
 
-/// Fetches the list of widget files from the remote GitHub Contents API.
+/// Executes system `curl` with standard timeout and User-Agent flags.
 ///
-/// Invokes system `curl` with a `User-Agent` header and timeout, then deserializes the JSON
-/// array of `RemoteWidgetEntry` items. Using `/usr/bin/curl` avoids linking TLS libraries
-/// into the binary on the 64 MB EV3 brick.
-pub fn fetch_remote_widget_list(
-    api_url: &str,
-    timeout_secs: u64,
-) -> Result<Vec<RemoteWidgetEntry>, String> {
+/// When `dest_path` is `Some`, writes response bytes directly to disk via `-o`;
+/// otherwise returns the captured stdout buffer. Shared by directory listing and file downloads
+/// so TLS flags, timeouts, and User-Agent headers are defined once.
+fn run_curl(url: &str, timeout_secs: u64, dest_path: Option<&Path>) -> Result<Vec<u8>, String> {
     let timeout_str = timeout_secs.to_string();
-    let output = Command::new("curl")
-        .args([
-            "-k",
-            "-s",
-            "-f",
-            "-m",
-            &timeout_str,
-            "--connect-timeout",
-            &timeout_str,
-            "-H",
-            "User-Agent: ev3-web-motor",
-            api_url,
-        ])
+    let mut cmd = Command::new("curl");
+    cmd.args([
+        "-k",
+        "-s",
+        "-f",
+        "-m",
+        &timeout_str,
+        "--connect-timeout",
+        &timeout_str,
+        "-H",
+        "User-Agent: ev3-web-motor",
+        url,
+    ]);
+    if let Some(dest) = dest_path {
+        cmd.arg("-o").arg(dest);
+    }
+
+    let output = cmd
         .output()
-        .map_err(|e| format!("Failed to execute curl: {}", e))?;
+        .map_err(|e| format!("Failed executing curl for {}: {}", url, e))?;
 
     if !output.status.success() {
         return Err(format!(
-            "curl transfer failed: code {:?}",
+            "curl transfer failed for {}: code {:?}",
+            url,
             output.status.code()
         ));
     }
 
-    serde_json::from_slice::<Vec<RemoteWidgetEntry>>(&output.stdout)
+    Ok(output.stdout)
+}
+
+/// Fetches the list of widget files from the remote GitHub Contents API.
+///
+/// Invokes `run_curl` and deserializes the JSON array of `RemoteWidgetEntry` items.
+/// Using `/usr/bin/curl` avoids linking TLS libraries into the binary on the 64 MB EV3 brick.
+pub fn fetch_remote_widget_list(
+    api_url: &str,
+    timeout_secs: u64,
+) -> Result<Vec<RemoteWidgetEntry>, String> {
+    let stdout = run_curl(api_url, timeout_secs, None)?;
+    serde_json::from_slice::<Vec<RemoteWidgetEntry>>(&stdout)
         .map_err(|e| format!("Invalid widget list JSON payload: {}", e))
 }
 
@@ -93,32 +108,9 @@ pub fn download_file(url: &str, dest_path: &Path, timeout_secs: u64) -> Result<(
         let _ = std::fs::create_dir_all(parent);
     }
 
-    let timeout_str = timeout_secs.to_string();
-    let output = Command::new("curl")
-        .args([
-            "-k",
-            "-s",
-            "-f",
-            "-m",
-            &timeout_str,
-            "--connect-timeout",
-            &timeout_str,
-            "-H",
-            "User-Agent: ev3-web-motor",
-            url,
-            "-o",
-        ])
-        .arg(dest_path)
-        .output()
-        .map_err(|e| format!("Failed executing transfer process: {}", e))?;
-
-    if !output.status.success() {
+    if let Err(e) = run_curl(url, timeout_secs, Some(dest_path)) {
         let _ = std::fs::remove_file(dest_path);
-        return Err(format!(
-            "Download failed for {}: code {:?}",
-            url,
-            output.status.code()
-        ));
+        return Err(e);
     }
 
     let is_non_empty = std::fs::metadata(dest_path)
@@ -174,33 +166,24 @@ pub fn check_and_update_widgets(
             Ok(()) => {
                 let staged_bytes = std::fs::read(&staged_path).unwrap_or_default();
                 let local_bytes = std::fs::read(&final_path).ok();
+                let is_new = local_bytes.is_none();
 
-                match local_bytes {
-                    None => {
-                        if let Err(e) = std::fs::rename(&staged_path, &final_path) {
-                            result
-                                .errors
-                                .push(format!("Failed creating {}: {}", entry.name, e));
-                            let _ = std::fs::remove_file(&staged_path);
-                        } else {
+                if local_bytes.as_deref() != Some(staged_bytes.as_slice()) {
+                    if let Err(e) = std::fs::rename(&staged_path, &final_path) {
+                        result
+                            .errors
+                            .push(format!("Failed saving {}: {}", entry.name, e));
+                        let _ = std::fs::remove_file(&staged_path);
+                    } else {
+                        if is_new {
                             result.created += 1;
-                            result.updated_count += 1;
-                        }
-                    }
-                    Some(existing) if existing != staged_bytes => {
-                        if let Err(e) = std::fs::rename(&staged_path, &final_path) {
-                            result
-                                .errors
-                                .push(format!("Failed updating {}: {}", entry.name, e));
-                            let _ = std::fs::remove_file(&staged_path);
                         } else {
                             result.updated += 1;
-                            result.updated_count += 1;
                         }
+                        result.updated_count += 1;
                     }
-                    Some(_) => {
-                        let _ = std::fs::remove_file(&staged_path);
-                    }
+                } else {
+                    let _ = std::fs::remove_file(&staged_path);
                 }
             }
             Err(e) => {

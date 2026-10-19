@@ -10,7 +10,6 @@
 //!    (`HardwareBackend::Mock`) behind a single clean Rust API.
 //! 3. Safety watchdog: Automatically coasts all motors if client communication stops for over 2 seconds.
 
-use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread;
@@ -82,23 +81,9 @@ impl MotorController {
         } else {
             println!("[CONTROLLER] Initializing in REAL hardware mode (sysfs /sys/class/tacho-motor and lego-sensor).");
             let motors = Motor::find_all();
-            for m in &motors {
-                if let Err(e) = m.send_command("reset") {
-                    eprintln!("[WARN] Initial reset failed for motor on Port {}: {}", m.port, e);
-                }
-            }
+            Self::reset_new_motors(&motors, &[]);
             let sensors = Sensor::find_all();
             (HardwareBackend::Real, motors, sensors)
-        };
-
-        let initial_status = match &backend {
-            HardwareBackend::Mock(mock) => mock.poll_and_get_all_status(),
-            HardwareBackend::Real => Self::query_real_motors(&boot_motors),
-        };
-
-        let initial_sensors = match &backend {
-            HardwareBackend::Mock(mock) => mock.poll_and_get_all_sensors(),
-            HardwareBackend::Real => Self::query_real_sensors(&boot_sensors),
         };
 
         let initial_battery = match &backend {
@@ -107,15 +92,12 @@ impl MotorController {
         };
 
         let now = Instant::now();
-        let motors_arc = Arc::new(RwLock::new(boot_motors));
-        let sensors_arc = Arc::new(RwLock::new(boot_sensors));
-        let rescan_signal = Arc::new((Mutex::new(false), Condvar::new()));
         let controller = Arc::new(Self {
             backend,
-            cached_status: Arc::new(RwLock::new(initial_status)),
-            motors: motors_arc,
-            cached_sensors: Arc::new(RwLock::new(initial_sensors)),
-            sensors: sensors_arc,
+            cached_status: Arc::new(RwLock::new(Vec::new())),
+            motors: Arc::new(RwLock::new(boot_motors)),
+            cached_sensors: Arc::new(RwLock::new(Vec::new())),
+            sensors: Arc::new(RwLock::new(boot_sensors)),
             cached_battery: Arc::new(RwLock::new(initial_battery)),
             poll_interval_ms,
             watchdog: Mutex::new(WatchdogState {
@@ -124,8 +106,9 @@ impl MotorController {
                 active: false,
             }),
             cmd_lock: Mutex::new(()),
-            rescan_signal,
+            rescan_signal: Arc::new((Mutex::new(false), Condvar::new())),
         });
+        controller.poll_hardware();
 
         // Background thread updates RAM cache without blocking HTTP threads (Rule 6).
         let c_clone = controller.clone();
@@ -137,6 +120,49 @@ impl MotorController {
             .expect("Failed to spawn telemetry polling thread");
 
         controller
+    }
+
+    /// Sends a `reset` command to any discovered motor port not already present in `existing_ports`.
+    ///
+    /// Shared by initial controller boot (`existing_ports = &[]`) and runtime hardware rescans
+    /// so newly plugged motors are initialized without interrupting motors that were already active.
+    fn reset_new_motors(motors: &[Motor], existing_ports: &[String]) {
+        for m in motors {
+            if !existing_ports.iter().any(|p| p.eq_ignore_ascii_case(&m.port)) {
+                if let Err(e) = m.send_command("reset") {
+                    eprintln!("[WARN] Reset failed for motor on Port {}: {}", m.port, e);
+                }
+            }
+        }
+    }
+
+    /// Samples all motors and sensors from the active backend and updates in-memory caches.
+    ///
+    /// Shared by `MotorController::new`, `run_poller_loop`, and mock `rescan` so backend dispatch
+    /// and `RwLock` cache writes exist in a single method.
+    fn poll_hardware(&self) {
+        let statuses = match &self.backend {
+            HardwareBackend::Mock(mock) => mock.poll_and_get_all_status(),
+            HardwareBackend::Real => {
+                let current_motors = self.motors.read().unwrap_or_else(|e| e.into_inner());
+                Self::query_real_motors(&current_motors)
+            }
+        };
+
+        let sensor_statuses = match &self.backend {
+            HardwareBackend::Mock(mock) => mock.poll_and_get_all_sensors(),
+            HardwareBackend::Real => {
+                let current_sensors = self.sensors.read().unwrap_or_else(|e| e.into_inner());
+                Self::query_real_sensors(&current_sensors)
+            }
+        };
+
+        if let Ok(mut cache) = self.cached_status.write() {
+            *cache = statuses;
+        }
+        if let Ok(mut cache) = self.cached_sensors.write() {
+            *cache = sensor_statuses;
+        }
     }
 
     /// Queries dynamic metrics across all physical motor ports A, B, C, and D.
@@ -182,20 +208,9 @@ impl MotorController {
     ///
     /// Called on a slow 2-second cycle by the background poller to avoid excess sysfs reads.
     fn query_real_battery() -> BatteryStatus {
-        let volt_path = Path::new("/sys/class/power_supply/lego-ev3-battery/voltage_now");
-        let curr_path = Path::new("/sys/class/power_supply/lego-ev3-battery/current_now");
-
-        let voltage_v = fs::read_to_string(volt_path)
-            .ok()
-            .and_then(|s| s.trim().parse::<f32>().ok())
-            .map(|uv| uv / 1_000_000.0)
-            .unwrap_or(7.8);
-
-        let current_a = fs::read_to_string(curr_path)
-            .ok()
-            .and_then(|s| s.trim().parse::<f32>().ok())
-            .map(|ua| (ua / 1_000_000.0).abs())
-            .unwrap_or(0.12);
+        let dir = Path::new("/sys/class/power_supply/lego-ev3-battery");
+        let voltage_v = crate::sysfs::read_attr_parsed(dir, "voltage_now", 7_800_000.0_f32) / 1_000_000.0;
+        let current_a = (crate::sysfs::read_attr_parsed(dir, "current_now", 120_000.0_f32) / 1_000_000.0).abs();
 
         BatteryStatus { voltage_v, current_a }
     }
@@ -203,10 +218,9 @@ impl MotorController {
     /// Background polling loop running continuously on a dedicated thread.
     ///
     /// 1. Checks if a hardware rescan was requested and rescans if signaled.
-    /// 2. Reads motor and sensor statuses.
-    /// 3. Updates in-memory `cached_status` and `cached_sensors` with write locks.
-    /// 4. Checks the safety watchdog timer (`check_watchdogs`).
-    /// 5. Sleeps for `poll_interval_ms` (typically 50 ms).
+    /// 2. Reads motor and sensor statuses via `poll_hardware()`.
+    /// 3. Checks the safety watchdog timer (`check_watchdogs`).
+    /// 4. Sleeps for `poll_interval_ms` (typically 50 ms).
     ///
     /// Runs indefinitely on the background poller thread.
     /// Keeps lock durations minimal so HTTP reader threads are never blocked.
@@ -217,7 +231,6 @@ impl MotorController {
 
         loop {
             let mut did_rescan = false;
-            // Check if hardware rescan was requested
             {
                 let (lock, _) = &*self.rescan_signal;
                 let requested = lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -229,56 +242,29 @@ impl MotorController {
                             let r = self.motors.read().unwrap_or_else(|e| e.into_inner());
                             r.iter().map(|m| m.port.clone()).collect()
                         };
-                        for m in &scanned {
-                            if !existing_ports.iter().any(|p| p.eq_ignore_ascii_case(&m.port)) {
-                                if let Err(e) = m.send_command("reset") {
-                                    eprintln!("[WARN] Reset failed on newly discovered port {}: {}", m.port, e);
-                                }
-                            }
-                        }
+                        Self::reset_new_motors(&scanned, &existing_ports);
                         if let Ok(mut w) = self.motors.write() {
                             *w = scanned;
                         }
-
-                        let scanned_sensors = Sensor::find_all();
                         if let Ok(mut w) = self.sensors.write() {
-                            *w = scanned_sensors;
+                            *w = Sensor::find_all();
                         }
                     }
                     did_rescan = true;
                 }
             }
 
-            let statuses = match &self.backend {
-                HardwareBackend::Mock(mock) => mock.poll_and_get_all_status(),
-                HardwareBackend::Real => {
-                    battery_tick += 1;
-                    if battery_tick >= battery_interval_ticks {
-                        battery_tick = 0;
-                        if let Ok(mut battery_guard) = self.cached_battery.write() {
-                            *battery_guard = Self::query_real_battery();
-                        }
+            if let HardwareBackend::Real = &self.backend {
+                battery_tick += 1;
+                if battery_tick >= battery_interval_ticks {
+                    battery_tick = 0;
+                    if let Ok(mut battery_guard) = self.cached_battery.write() {
+                        *battery_guard = Self::query_real_battery();
                     }
-                    let current_motors = self.motors.read().unwrap_or_else(|e| e.into_inner());
-                    Self::query_real_motors(&current_motors)
                 }
-            };
-
-            let sensor_statuses = match &self.backend {
-                HardwareBackend::Mock(mock) => mock.poll_and_get_all_sensors(),
-                HardwareBackend::Real => {
-                    let current_sensors = self.sensors.read().unwrap_or_else(|e| e.into_inner());
-                    Self::query_real_sensors(&current_sensors)
-                }
-            };
-
-            if let Ok(mut cache) = self.cached_status.write() {
-                *cache = statuses;
             }
 
-            if let Ok(mut cache) = self.cached_sensors.write() {
-                *cache = sensor_statuses;
-            }
+            self.poll_hardware();
 
             if did_rescan {
                 let (lock, cvar) = &*self.rescan_signal;
@@ -750,15 +736,8 @@ impl MotorController {
     /// Invoked by `POST /api/rescan` when cables are plugged or unplugged.
     pub fn rescan(&self) -> Result<SystemStatus, String> {
         match &self.backend {
-            HardwareBackend::Mock(mock) => {
-                let motors = mock.poll_and_get_all_status();
-                let sensors = mock.poll_and_get_all_sensors();
-                if let Ok(mut cache) = self.cached_status.write() {
-                    *cache = motors;
-                }
-                if let Ok(mut cache) = self.cached_sensors.write() {
-                    *cache = sensors;
-                }
+            HardwareBackend::Mock(_) => {
+                self.poll_hardware();
                 Ok(self.get_system_status())
             }
             HardwareBackend::Real => {

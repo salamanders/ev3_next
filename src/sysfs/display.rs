@@ -13,6 +13,7 @@ use std::net::UdpSocket;
 use std::path::Path;
 
 /// Controller managing text rendering to the EV3 brick LCD.
+#[derive(Clone, Copy)]
 pub struct DisplayController {
     mock_mode: bool,
     tty_path: &'static str,

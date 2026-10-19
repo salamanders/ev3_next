@@ -5,90 +5,49 @@
  * It displays real-time values, units, and allows selecting sensor operating modes (e.g. `COL-COLOR`, `US-DIST-CM`).
  *
  * Implements the modular widget interface (`createDefault`, `renderDesign`, `attachDesign`, `renderRun`, `onTelemetry`).
- * Dynamically loaded by `WidgetRegistry` on demand from `/widgets/sensor/widget.js`.
+ * Dynamically loaded by `WidgetRegistry` on demand from `/widgets/sensor.js`.
  */
+
+const FALLBACK_MODES = ["TOUCH", "COL-COLOR", "US-DIST-CM", "GYRO-ANG"];
 
 export default {
     type: "sensor",
     label: "Sensor Display",
     sizeClass: "run-card-2x1",
 
-    /**
-     * Creates default configuration schema when adding a sensor widget.
-     *
-     * Returns an object configuring port "1" and default mode "TOUCH".
-     *
-     * Factory function called by `EV3App::addWidget`.
-     */
+    // Configures input port 1 and TOUCH mode by default.
     createDefault(id) {
         return { id, type: "sensor", port: "1", mode: "TOUCH" };
     },
 
-    /**
-     * Formats port badge label for the widget card header.
-     *
-     * Returns "Port 1" (or configured sensor port).
-     *
-     * Displays active port in card headers.
-     */
-    getPortBadge(w) {
-        return `Port ${w.port}`;
-    },
-
-    /**
-     * Formats HTML markup for the widget settings card in Design View.
-     *
-     * Renders dropdowns for sensor port selection and available sensor mode options.
-     *
-     * Provides visual configuration controls in Design View.
-     */
+    // Renders sensor port and operating mode selectors for Design View.
     renderDesign(w, ctx) {
         const sensor = ctx.hardwareSensors?.find(s => s.port === w.port);
-        const modes = sensor?.modes?.length ? sensor.modes : ["TOUCH", "COL-COLOR", "US-DIST-CM", "GYRO-ANG"];
-        const modeOpts = modes.map(m => `<option value="${m}" ${w.mode === m ? "selected" : ""}>${m}</option>`).join("");
+        const modes = sensor?.modes?.length ? sensor.modes : FALLBACK_MODES;
+        const modeOpts = ctx.selectOptions(modes.map(m => [m, m]), w.mode);
 
-        return `
-            <div class="widget-config-field">
-                <label>Port</label>
-                <select class="field-sensor-port" data-id="${w.id}">${ctx.portOptions(w.port, true)}</select>
-            </div>
-            <div class="widget-config-field">
-                <label>Reading</label>
-                <select class="field-sensor-mode" data-id="${w.id}">${modeOpts}</select>
-            </div>
-        `;
+        return ctx.portField("Port", "field-sensor-port", w.port, false, true)
+            + ctx.field("Reading", `<select class="field-sensor-mode">${modeOpts}</select>`);
     },
 
-    /**
-     * Attaches change event listeners to design inputs.
-     *
-     * Updates port and mode configurations, and sends `POST /api/port/{port}` with `{ mode }` to change hardware mode.
-     *
-     * Wires interactivity on newly rendered configuration cards.
-     */
+    // Binds sensor port and mode selectors and dispatches mode changes to hardware.
     attachDesign(w, cardElement, ctx) {
-        cardElement.querySelector(".field-sensor-port")?.addEventListener("change", (e) => {
-            ctx.updateWidget(w.id, { port: e.target.value });
-            ctx.renderDesignWidgets();
-        });
-        cardElement.querySelector(".field-sensor-mode")?.addEventListener("change", (e) => {
-            const mode = e.target.value;
-            ctx.updateWidget(w.id, { mode });
-            if (w.port) {
-                ctx.apiPost(`/api/port/${w.port}`, { mode }).catch(err => {
-                    ctx.log(`Failed to set sensor mode: ${err.message}`, "error");
-                });
+        ctx.bindFields(cardElement, w, {
+            ".field-sensor-port": { key: "port", rerender: true },
+            ".field-sensor-mode": {
+                key: "mode",
+                after: mode => {
+                    if (w.port) {
+                        ctx.apiPost(`/api/port/${w.port}`, { mode }).catch(err => {
+                            ctx.log(`Failed to set sensor mode: ${err.message}`, "error");
+                        });
+                    }
+                }
             }
         });
     },
 
-    /**
-     * Formats HTML markup for the live sensor reading card in Run View.
-     *
-     * Renders a large numerical display and engineering unit label.
-     *
-     * Provides the visual readout interface for Run View.
-     */
+    // Renders the live numeric value and unit readout for Run View.
     renderRun(w) {
         return `
             <div class="run-sensor-box">
@@ -98,22 +57,7 @@ export default {
         `;
     },
 
-    /**
-     * Passive sensor readout requiring no active pointer controls.
-     *
-     * No-op function satisfying the modular widget lifecycle interface.
-     *
-     * Interface completeness for `initRun`.
-     */
-    initRun() {},
-
-    /**
-     * Updates live measurement display on each telemetry polling response.
-     *
-     * Updates value readout text, engineering units, and footer connection status.
-     *
-     * Lifecycle hook invoked at 4 Hz by `EV3App::updateSensorReadouts`.
-     */
+    // Updates sensor value, unit label, and footer status on each 4 Hz poll.
     onTelemetry(w, cardElement, data) {
         const s = data?.sensors ? data.sensors.find(x => x.port === w.port) : data;
         const connected = s?.connected;

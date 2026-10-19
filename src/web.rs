@@ -66,32 +66,26 @@ impl PortCommandPayload {
     /// Pure resolution logic testable with unit tests without running an HTTP server or hardware.
     pub fn resolve(&self, max_speed: i32) -> Result<ResolvedPortCommand, String> {
         let stop_act = self.stop_action.clone().unwrap_or_else(|| "brake".into());
+        let clamped_speed = self.speed.unwrap_or(max_speed / 2).clamp(-max_speed, max_speed);
+        let rel_pos = |deg: i32, stop_action: String| ResolvedPortCommand::RunToRelPos {
+            speed: clamped_speed,
+            position_sp: deg,
+            stop_action,
+        };
 
         if let Some(ref cmd) = self.command {
-            match cmd.to_ascii_lowercase().as_str() {
-                "stop" => return Ok(ResolvedPortCommand::Stop { stop_action: stop_act }),
-                "reset" => return Ok(ResolvedPortCommand::Reset),
-                "run-forever" => {
-                    let sp = self.speed.unwrap_or(max_speed / 2).clamp(-max_speed, max_speed);
-                    return Ok(ResolvedPortCommand::RunForever { speed: sp });
-                }
-                "run-to-rel-pos" | "step" => {
-                    let sp = self.speed.unwrap_or(max_speed / 2).clamp(-max_speed, max_speed);
-                    let deg = self.degrees.unwrap_or(90);
-                    return Ok(ResolvedPortCommand::RunToRelPos {
-                        speed: sp,
-                        position_sp: deg,
-                        stop_action: stop_act,
-                    });
-                }
-                "mode" => {
-                    if let Some(ref m) = self.mode {
-                        return Ok(ResolvedPortCommand::SetMode { mode: m.clone() });
-                    }
-                    return Err("Mode command requires 'mode' parameter".into());
-                }
-                other => return Err(format!("Unrecognized command: '{}'", other)),
-            }
+            return match cmd.to_ascii_lowercase().as_str() {
+                "stop" => Ok(ResolvedPortCommand::Stop { stop_action: stop_act }),
+                "reset" => Ok(ResolvedPortCommand::Reset),
+                "run-forever" => Ok(ResolvedPortCommand::RunForever { speed: clamped_speed }),
+                "run-to-rel-pos" | "step" => Ok(rel_pos(self.degrees.unwrap_or(90), stop_act)),
+                "mode" => self
+                    .mode
+                    .clone()
+                    .map(|mode| ResolvedPortCommand::SetMode { mode })
+                    .ok_or_else(|| "Mode command requires 'mode' parameter".into()),
+                other => Err(format!("Unrecognized command: '{}'", other)),
+            };
         }
 
         // Inferred commands when 'command' parameter is omitted
@@ -99,18 +93,13 @@ impl PortCommandPayload {
             return Ok(ResolvedPortCommand::SetMode { mode: m.clone() });
         }
         if let Some(deg) = self.degrees {
-            let sp = self.speed.unwrap_or(max_speed / 2).clamp(-max_speed, max_speed);
-            return Ok(ResolvedPortCommand::RunToRelPos {
-                speed: sp,
-                position_sp: deg,
-                stop_action: stop_act,
-            });
+            return Ok(rel_pos(deg, stop_act));
         }
         if let Some(sp) = self.speed {
             if sp == 0 {
                 return Ok(ResolvedPortCommand::Stop { stop_action: stop_act });
             }
-            return Ok(ResolvedPortCommand::RunForever { speed: sp.clamp(-max_speed, max_speed) });
+            return Ok(ResolvedPortCommand::RunForever { speed: clamped_speed });
         }
         if self.stop_action.is_some() {
             return Ok(ResolvedPortCommand::Stop { stop_action: stop_act });
@@ -571,17 +560,31 @@ impl Router {
     }
 }
 
-// Re-export submodules for compatibility
-pub mod handlers {
-    pub use super::*;
-}
-pub mod router {
-    pub use super::*;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+
+    /// Sends a raw HTTP/1.1 request to `127.0.0.1:port` and returns the full response string.
+    fn send_raw_http(port: u16, raw_req: &str) -> String {
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.write_all(raw_req.as_bytes()).unwrap();
+        let mut resp = Vec::new();
+        stream.read_to_end(&mut resp).unwrap();
+        String::from_utf8_lossy(&resp).into_owned()
+    }
+
+    /// Sends a JSON POST request to `path` on `127.0.0.1:port` and returns the full response string.
+    fn post_json_http(port: u16, path: &str, body: &str) -> String {
+        let req = format!(
+            "POST {} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            path,
+            body.len(),
+            body
+        );
+        send_raw_http(port, &req)
+    }
 
     #[test]
     fn test_normalize_port_name() {
@@ -646,246 +649,91 @@ mod tests {
 
     #[test]
     fn test_http_routes_serve_plain_assets_and_headers() {
-        use std::io::{Read, Write};
-        use std::net::TcpStream;
-
         let controller = MotorController::new(true, 50);
         let router = Arc::new(Router::new(controller));
 
         let server = tiny_http::Server::http("127.0.0.1:0").expect("Failed to bind ephemeral test server");
-        let addr = server.server_addr().to_ip().unwrap();
-        let port = addr.port();
+        let port = server.server_addr().to_ip().unwrap().port();
 
         let router_clone = router.clone();
-        let server_clone = server;
         let thread_handle = std::thread::spawn(move || {
             for _ in 0..16 {
-                if let Ok(req) = server_clone.recv() {
+                if let Ok(req) = server.recv() {
                     router_clone.handle_request(req);
                 }
             }
         });
 
-        // 1. Test GET /
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
+        // 1-4 & GET /design, GET /run: static assets with Content-Type and Cache-Control: no-cache
+        for (verb, path, expected_mime) in [
+            ("GET", "/", "text/html; charset=utf-8"),
+            ("HEAD", "/", "text/html; charset=utf-8"),
+            ("GET", "/style.css", "text/css; charset=utf-8"),
+            ("GET", "/app.js", "application/javascript; charset=utf-8"),
+            ("GET", "/design", "text/html; charset=utf-8"),
+            ("GET", "/run", "text/html; charset=utf-8"),
+        ] {
+            let req = format!("{} {} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", verb, path);
+            let resp_str = send_raw_http(port, &req);
             assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-            assert!(resp_str.contains("Content-Type: text/html; charset=utf-8"));
+            assert!(resp_str.contains(&format!("Content-Type: {}", expected_mime)));
             assert!(!resp_str.contains("Content-Encoding: gzip"));
             assert!(resp_str.contains("Cache-Control: no-cache"));
         }
 
-        // 2. Test HEAD /
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"HEAD / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
-            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-            assert!(resp_str.contains("Content-Type: text/html; charset=utf-8"));
-            assert!(!resp_str.contains("Content-Encoding: gzip"));
-            assert!(resp_str.contains("Cache-Control: no-cache"));
-        }
-
-        // 3. Test GET /style.css
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"GET /style.css HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
-            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-            assert!(resp_str.contains("Content-Type: text/css; charset=utf-8"));
-            assert!(!resp_str.contains("Content-Encoding: gzip"));
-            assert!(resp_str.contains("Cache-Control: no-cache"));
-        }
-
-        // 4. Test GET /app.js
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"GET /app.js HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
-            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-            assert!(resp_str.contains("Content-Type: application/javascript; charset=utf-8"));
-            assert!(!resp_str.contains("Content-Encoding: gzip"));
-            assert!(resp_str.contains("Cache-Control: no-cache"));
-        }
-
-        // Test GET /design
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"GET /design HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
-            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-            assert!(resp_str.contains("Content-Type: text/html; charset=utf-8"));
-            assert!(!resp_str.contains("Content-Encoding: gzip"));
-        }
-
-        // Test GET /run
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"GET /run HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
-            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-            assert!(resp_str.contains("Content-Type: text/html; charset=utf-8"));
-            assert!(!resp_str.contains("Content-Encoding: gzip"));
-        }
-
-        // 5. Test GET /favicon.ico
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"GET /favicon.ico HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
+        // 5-6. GET and HEAD /favicon.ico -> 204 No Content
+        for verb in ["GET", "HEAD"] {
+            let req = format!("{} /favicon.ico HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", verb);
+            let resp_str = send_raw_http(port, &req);
             assert!(resp_str.starts_with("HTTP/1.1 204 No Content"));
         }
 
-        // 6. Test HEAD /favicon.ico
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"HEAD /favicon.ico HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
+        // 7. GET /api/status (Cache-Control: no-store)
+        let resp_str = send_raw_http(port, "GET /api/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
+        assert!(resp_str.contains("Cache-Control: no-store"));
+        assert!(resp_str.contains("Content-Type: application/json"));
 
-            assert!(resp_str.starts_with("HTTP/1.1 204 No Content"));
-        }
+        // 8. POST /api/rescan
+        let resp_str = post_json_http(port, "/api/rescan", "");
+        assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
+        assert!(resp_str.contains("Content-Type: application/json"));
+        assert!(resp_str.contains("\"success\":true"));
 
-        // 7. Test GET /api/status (Cache-Control: no-store)
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"GET /api/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
+        // 9. POST /api/port/outA
+        let resp_str = post_json_http(port, "/api/port/outA", r#"{"speed": 500}"#);
+        assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
+        assert!(resp_str.contains("\"success\":true"));
 
-            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-            assert!(resp_str.contains("Cache-Control: no-store"));
-            assert!(resp_str.contains("Content-Type: application/json"));
-        }
+        // 10. POST /api/port/2 (Change sensor mode)
+        let resp_str = post_json_http(port, "/api/port/2", r#"{"mode": "COL-REFLECT"}"#);
+        assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
+        assert!(resp_str.contains("\"success\":true"));
 
-        // 8. Test POST /api/rescan
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"POST /api/rescan HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: 0\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
+        // 11. POST /api/estop
+        let resp_str = post_json_http(port, "/api/estop", "");
+        assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
+        assert!(resp_str.contains("\"success\":true"));
+        assert!(resp_str.contains("All motors stopped"));
 
-            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-            assert!(resp_str.contains("Content-Type: application/json"));
-            assert!(resp_str.contains("\"success\":true"));
-        }
-
-        // 9. Test POST /api/port/outA
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            let body = b"{\"speed\": 500}";
-            let req = format!(
-                "POST /api/port/outA HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                body.len(),
-                std::str::from_utf8(body).unwrap()
-            );
-            stream.write_all(req.as_bytes()).unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
-            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-            assert!(resp_str.contains("\"success\":true"));
-        }
-
-        // 10. Test POST /api/port/2 (Change sensor mode)
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            let body = b"{\"mode\": \"COL-REFLECT\"}";
-            let req = format!(
-                "POST /api/port/2 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                body.len(),
-                std::str::from_utf8(body).unwrap()
-            );
-            stream.write_all(req.as_bytes()).unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
-            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-            assert!(resp_str.contains("\"success\":true"));
-        }
-
-        // 11. Test POST /api/estop
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"POST /api/estop HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: 0\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
-            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-            assert!(resp_str.contains("\"success\":true"));
-            assert!(resp_str.contains("All motors stopped"));
-        }
-
-        // 12. Test POST /api/batch
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            let body = b"{\"heartbeat_ms\": 2000, \"commands\": [{\"port\": \"A\", \"speed\": 200}]}";
-            let req = format!(
-                "POST /api/batch HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                body.len(),
-                std::str::from_utf8(body).unwrap()
-            );
-            stream.write_all(req.as_bytes()).unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
-            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-            assert!(resp_str.contains("\"success\":true"));
-        }
+        // 12. POST /api/batch
+        let resp_str = post_json_http(port, "/api/batch", r#"{"heartbeat_ms": 2000, "commands": [{"port": "A", "speed": 200}]}"#);
+        assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
+        assert!(resp_str.contains("\"success\":true"));
 
         // 13. Cross-origin POST with port 80 in Host omitted in Origin
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            let req = "POST /api/estop HTTP/1.1\r\nHost: localhost:80\r\nOrigin: http://localhost\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
-            stream.write_all(req.as_bytes()).unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
+        let resp_str = send_raw_http(
+            port,
+            "POST /api/estop HTTP/1.1\r\nHost: localhost:80\r\nOrigin: http://localhost\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+        );
+        assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
 
-            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-        }
-
-        // 14. Test genuine cross-origin POST rejected with 403 Forbidden
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            let req = "POST /api/estop HTTP/1.1\r\nHost: localhost\r\nOrigin: http://attacker.com\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
-            stream.write_all(req.as_bytes()).unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
-            assert!(resp_str.starts_with("HTTP/1.1 403 Forbidden"));
-        }
+        // 14. Genuine cross-origin POST rejected with 403 Forbidden
+        let resp_str = send_raw_http(
+            port,
+            "POST /api/estop HTTP/1.1\r\nHost: localhost\r\nOrigin: http://attacker.com\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+        );
+        assert!(resp_str.starts_with("HTTP/1.1 403 Forbidden"));
 
         thread_handle.join().unwrap();
     }
@@ -903,9 +751,6 @@ mod tests {
 
     #[test]
     fn test_widget_static_routes_headers_and_security() {
-        use std::io::{Read, Write};
-        use std::net::TcpStream;
-
         let controller = MotorController::new(true, 50);
         let router = Arc::new(Router::new(controller));
 
@@ -913,98 +758,42 @@ mod tests {
         let port = server.server_addr().to_ip().unwrap().port();
 
         let router_clone = router.clone();
-        let server_clone = server;
         let thread_handle = std::thread::spawn(move || {
             for _ in 0..7 {
-                if let Ok(req) = server_clone.recv() {
+                if let Ok(req) = server.recv() {
                     router_clone.handle_request(req);
                 }
             }
         });
 
         // 1. GET /api/widgets
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"GET /api/widgets HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
+        let resp_str = send_raw_http(port, "GET /api/widgets HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
+        assert!(resp_str.contains("Content-Type: application/json"));
+        assert!(resp_str.contains("\"joystick\""));
+        assert!(resp_str.contains("\"slider\""));
 
-            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-            assert!(resp_str.contains("Content-Type: application/json"));
-            assert!(resp_str.contains("\"joystick\""));
-            assert!(resp_str.contains("\"slider\""));
-        }
-
-        // 2. GET /widgets/joystick.js
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"GET /widgets/joystick.js HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
+        // 2-3. GET and HEAD /widgets/joystick.js
+        for verb in ["GET", "HEAD"] {
+            let req = format!("{} /widgets/joystick.js HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", verb);
+            let resp_str = send_raw_http(port, &req);
             assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
             assert!(resp_str.contains("Content-Type: application/javascript; charset=utf-8"));
             assert!(resp_str.contains("Cache-Control: no-cache"));
         }
 
-        // 3. HEAD /widgets/joystick.js
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"HEAD /widgets/joystick.js HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
-            assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
-            assert!(resp_str.contains("Content-Type: application/javascript; charset=utf-8"));
-            assert!(resp_str.contains("Cache-Control: no-cache"));
-        }
-
-        // 4. Path traversal attempt (GET /widgets/../../etc/passwd)
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"GET /widgets/../../etc/passwd HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
+        // 4 & 6. Path traversal attempts (raw and URL-encoded)
+        for bad_path in ["/widgets/../../etc/passwd", "/widgets/%2e%2e/passwd"] {
+            let req = format!("GET {} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", bad_path);
+            let resp_str = send_raw_http(port, &req);
             assert!(resp_str.starts_with("HTTP/1.1 400 Bad Request"));
             assert!(resp_str.contains("Invalid path traversal"));
         }
 
-        // 5. Non-existent widget file (GET /widgets/missing_file.js)
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"GET /widgets/missing_file.js HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
-            assert!(resp_str.starts_with("HTTP/1.1 404 Not Found"));
-        }
-
-        // 6. Encoded path traversal attempt (GET /widgets/%2e%2e/passwd)
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"GET /widgets/%2e%2e/passwd HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
-            assert!(resp_str.starts_with("HTTP/1.1 400 Bad Request"));
-            assert!(resp_str.contains("Invalid path traversal"));
-        }
-
-        // 7. Empty subpath (GET /widgets/)
-        {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            stream.write_all(b"GET /widgets/ HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
-            let mut resp = Vec::new();
-            stream.read_to_end(&mut resp).unwrap();
-            let resp_str = String::from_utf8_lossy(&resp);
-
+        // 5 & 7. Non-existent widget file and empty subpath -> 404 Not Found
+        for missing_path in ["/widgets/missing_file.js", "/widgets/"] {
+            let req = format!("GET {} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", missing_path);
+            let resp_str = send_raw_http(port, &req);
             assert!(resp_str.starts_with("HTTP/1.1 404 Not Found"));
         }
 

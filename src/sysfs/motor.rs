@@ -107,20 +107,10 @@ impl Motor {
                     };
 
                     let address = addr.trim().to_string();
-                    let driver_name = fs::read_to_string(path.join("driver_name"))
-                        .map(|s| s.trim().to_string())
-                        .unwrap_or_else(|_| "tacho-motor".into());
-                    let max_speed = fs::read_to_string(path.join("max_speed"))
-                        .ok()
-                        .and_then(|s| s.trim().parse().ok())
-                        .unwrap_or(1050);
-                    let count_per_rot = fs::read_to_string(path.join("count_per_rot"))
-                        .ok()
-                        .and_then(|s| s.trim().parse().ok())
-                        .unwrap_or(360);
-                    let polarity = fs::read_to_string(path.join("polarity"))
-                        .map(|s| s.trim().to_string())
-                        .unwrap_or_else(|_| "normal".into());
+                    let driver_name = super::read_attr_trimmed(&path, "driver_name", "tacho-motor");
+                    let max_speed = super::read_attr_parsed(&path, "max_speed", 1050);
+                    let count_per_rot = super::read_attr_parsed(&path, "count_per_rot", 360);
+                    let polarity = super::read_attr_trimmed(&path, "polarity", "normal");
 
                     motors.push(Motor {
                         port: port.to_string(),
@@ -141,15 +131,6 @@ impl Motor {
         // Sort alphabetically by port name: A, B, C, D
         motors.sort_by(|a, b| a.port.cmp(&b.port));
         motors
-    }
-
-    /// Reads the cached rotation polarity ("normal" or "inversed").
-    ///
-    /// Returns the polarity stored in `MotorState` without a filesystem read.
-    ///
-    /// Polarity is configured at driver bind time and rarely changes during execution.
-    pub fn polarity(&self) -> String {
-        self.state.lock().map(|g| g.polarity.clone()).unwrap_or_else(|_| "normal".into())
     }
 
     /// Sets the target speed attribute in sysfs.

@@ -8,9 +8,10 @@
 //! Storing shared file handle caching and port address parsers here prevents code duplication
 //! between `motor.rs` and `sensor.rs`, and prevents hardware drivers from importing from the web layer.
 
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
+use std::str::FromStr;
 
 pub mod motor;
 pub mod sensor;
@@ -22,9 +23,28 @@ pub mod wifi;
 pub use motor::{Motor, MotorStatus};
 pub use sensor::{Sensor, SensorStatus};
 pub use mock::MockController;
-pub use led::{LedColor, LedController};
+pub use led::LedController;
 pub use display::DisplayController;
 pub use wifi::{WifiManager, WifiProvisionResult};
+
+/// Reads and trims a single-line sysfs attribute file, returning `default` if absent or unreadable.
+///
+/// Shared by motor and sensor discovery so sysfs attribute reads do not repeat `fs::read_to_string` chains.
+pub(crate) fn read_attr_trimmed(dir: &Path, attr: &str, default: &str) -> String {
+    fs::read_to_string(dir.join(attr))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| default.into())
+}
+
+/// Reads, trims, and parses a typed value from a sysfs attribute file, returning `default` on failure.
+///
+/// Shared by motor, sensor, and battery sysfs readers for integer and floating-point attributes.
+pub(crate) fn read_attr_parsed<T: FromStr>(dir: &Path, attr: &str, default: T) -> T {
+    fs::read_to_string(dir.join(attr))
+        .ok()
+        .and_then(|s| s.trim().parse::<T>().ok())
+        .unwrap_or(default)
+}
 
 /// Matches Linux kernel sysfs address text against port patterns.
 ///

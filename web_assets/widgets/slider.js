@@ -5,72 +5,40 @@
  * It includes a quick "Zero (Stop)" button to brake the motor immediately.
  *
  * Implements the modular widget interface (`createDefault`, `renderDesign`, `attachDesign`, `renderRun`, `initRun`).
- * Dynamically loaded by `WidgetRegistry` on demand from `/widgets/slider/widget.js`.
+ * Dynamically loaded by `WidgetRegistry` on demand from `/widgets/slider.js`.
  */
+
+const BRAKE = { command: "stop", stop_action: "brake" };
+
+// Resets the range thumb and numeric readout to zero.
+function zeroSlider(w, cardElement) {
+    const slider = cardElement.querySelector(`#slider-input-${w.id}`);
+    const readout = cardElement.querySelector(`#slider-val-${w.id}`);
+    if (slider) slider.value = "0";
+    if (readout) readout.textContent = "0";
+}
 
 export default {
     type: "slider",
     label: "Speed Slider",
     sizeClass: "run-card-2x1",
 
-    /**
-     * Creates default configuration schema when adding a slider widget.
-     *
-     * Returns an object configuring motor port "A".
-     *
-     * Factory function called by `EV3App::addWidget`.
-     */
+    // Assigns motor port A by default when adding a slider widget.
     createDefault(id) {
         return { id, type: "slider", port: "A" };
     },
 
-    /**
-     * Formats port badge label for the widget card header.
-     *
-     * Returns "Port A" (or configured motor port).
-     *
-     * Displays active port in card headers.
-     */
-    getPortBadge(w) {
-        return `Port ${w.port}`;
-    },
-
-    /**
-     * Formats HTML markup for the widget settings card in Design View.
-     *
-     * Renders motor port selection dropdown.
-     *
-     * Provides visual configuration controls in Design View.
-     */
+    // Renders the single motor port dropdown for Design View.
     renderDesign(w, ctx) {
-        return `
-            <div class="widget-config-field full-width">
-                <label>Motor</label>
-                <select class="field-port" data-id="${w.id}">${ctx.portOptions(w.port)}</select>
-            </div>
-        `;
+        return ctx.portField("Motor", "field-port", w.port, true);
     },
 
-    /**
-     * Attaches change event listener to port selection input.
-     *
-     * Updates widget `port` in `ctx` when the user selects a different motor.
-     *
-     * Wires interactivity on newly rendered configuration cards.
-     */
+    // Binds the motor port dropdown to persist selection changes.
     attachDesign(w, cardElement, ctx) {
-        cardElement.querySelector(".field-port")?.addEventListener("change", (e) => {
-            ctx.updateWidget(w.id, { port: e.target.value });
-        });
+        ctx.bindFields(cardElement, w, { ".field-port": "port" });
     },
 
-    /**
-     * Formats HTML markup for the live slider control card in Run View.
-     *
-     * Renders a range slider from -1000 to +1000 with step 25, speed readout, and Zero button.
-     *
-     * Provides the touch and slider control interface for Run View.
-     */
+    // Renders the horizontal speed slider and Zero button for Run View.
     renderRun(w) {
         return `
             <div class="run-slider-box">
@@ -78,57 +46,42 @@ export default {
                     <span>Speed: <strong class="slider-val-readout" id="slider-val-${w.id}">0</strong> ticks/s</span>
                 </div>
                 <input type="range" class="run-range-slider" id="slider-input-${w.id}"
-                       min="-1000" max="1000" value="0" step="25" data-id="${w.id}">
+                       min="-1000" max="1000" value="0" step="25">
                 <div class="slider-actions">
-                    <button class="btn btn-sm btn-secondary btn-slider-zero" data-id="${w.id}">Zero (Stop)</button>
+                    <button class="btn btn-sm btn-secondary btn-slider-zero">Zero (Stop)</button>
                 </div>
             </div>
         `;
     },
 
-    /**
-     * Attaches input event listeners to the range slider and Zero button.
-     *
-     * 1. On slider drag: throttles speed commands at 15 Hz (66 ms) via `POST /api/port/{port}`.
-     * 2. When slider is set to 0: sends stop command with brake action.
-     * 3. On Zero button click: resets slider value to 0, clears throttle timer, and stops motor.
-     *
-     * Wires live control execution when the card is mounted into the DOM.
-     */
+    // Streams 15 Hz speed updates while dragging and brakes on release.
     initRun(w, cardElement, ctx) {
         const slider = cardElement.querySelector(`#slider-input-${w.id}`);
         const readout = cardElement.querySelector(`#slider-val-${w.id}`);
-        const btnZero = cardElement.querySelector(`.btn-slider-zero[data-id="${w.id}"]`);
         if (!slider) return;
 
+        const key = `slider_${w.id}`;
+        const send = payload => ctx.apiPost(`/api/port/${w.port}`, payload);
         let active = false;
 
         const stopAndCenter = () => {
             active = false;
-            slider.value = "0";
-            if (readout) readout.textContent = "0";
-            ctx.stopBurst(`slider_${w.id}`, () =>
-                ctx.apiPost(`/api/port/${w.port}`, { command: "stop", stop_action: "brake" })
-            );
+            zeroSlider(w, cardElement);
+            ctx.stopBurst(key, () => send(BRAKE));
         };
 
-        slider.addEventListener("pointerdown", () => {
+        const grab = () => {
             active = true;
-            ctx.cancelStopBurst(`slider_${w.id}`);
-        });
-        slider.addEventListener("touchstart", () => {
-            active = true;
-            ctx.cancelStopBurst(`slider_${w.id}`);
-        }, { passive: true });
+            ctx.cancelStopBurst(key);
+        };
+        slider.addEventListener("pointerdown", grab);
+        slider.addEventListener("touchstart", grab, { passive: true });
 
         slider.addEventListener("input", (e) => {
             const speed = parseInt(e.target.value, 10);
             if (readout) readout.textContent = speed;
-            ctx.throttle(`slider_${w.id}`, 66, () => {
-                const payload = speed === 0
-                    ? { command: "stop", stop_action: "brake" }
-                    : { speed };
-                ctx.apiPost(`/api/port/${w.port}`, payload).catch(() => {});
+            ctx.throttle(key, 66, () => {
+                send(speed === 0 ? BRAKE : { speed }).catch(() => {});
             });
         });
 
@@ -139,20 +92,11 @@ export default {
             if (active || slider.value !== "0") stopAndCenter();
         });
 
-        btnZero?.addEventListener("click", stopAndCenter);
+        cardElement.querySelector(".btn-slider-zero")?.addEventListener("click", stopAndCenter);
     },
 
-    /**
-     * Resets slider position and text readout to zero on emergency stop.
-     *
-     * Sets slider input value to "0" and text readout to "0".
-     *
-     * Lifecycle hook invoked by `EV3App::emergencyStop`.
-     */
+    // Resets the slider thumb and readout when emergency stop is triggered.
     onEmergencyStop(w, cardElement) {
-        const slider = cardElement.querySelector(`#slider-input-${w.id}`);
-        const readout = cardElement.querySelector(`#slider-val-${w.id}`);
-        if (slider) slider.value = "0";
-        if (readout) readout.textContent = "0";
+        zeroSlider(w, cardElement);
     }
 };

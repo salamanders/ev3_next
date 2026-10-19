@@ -103,7 +103,6 @@ fn main() {
     display.show_ready(&active_ip, config.port, battery_v);
 
     // Periodic LCD display refresh thread (every 5 seconds)
-    let display_clone = sysfs::DisplayController::new(config.mock_mode);
     let controller_disp = controller.clone();
     let port = config.port;
     thread::Builder::new()
@@ -113,7 +112,7 @@ fn main() {
                 thread::sleep(std::time::Duration::from_secs(5));
                 let ip = sysfs::DisplayController::detect_ip();
                 let bat = controller_disp.get_battery().voltage_v;
-                display_clone.show_ready(&ip, port, bat);
+                display.show_ready(&ip, port, bat);
             }
         })
         .expect("Failed to spawn display refresh thread");

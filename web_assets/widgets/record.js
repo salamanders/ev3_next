@@ -10,11 +10,10 @@
 
 const stateMap = new Map();
 
-/**
- * Returns or initializes the in-memory recording and playback state for a widget ID.
- *
- * Keeps recorded keyframes in browser memory for the current session without persisting to localStorage.
- */
+// Formats a count with singular or plural noun ("1 step" vs "2 steps").
+const plural = (n, word) => `${n} ${n === 1 ? word : `${word}s`}`;
+
+// Returns or initializes the session-scoped keyframe state for a widget ID.
 function getState(id) {
     if (!stateMap.has(id)) {
         stateMap.set(id, {
@@ -27,19 +26,14 @@ function getState(id) {
     return stateMap.get(id);
 }
 
-/**
- * Formats the inner HTML controls of the card for either Recording mode or Playback mode.
- *
- * Separated so switching between Recording and Playback updates only this widget card.
- */
+// Formats the inner HTML controls for Recording mode or Playback mode.
 function renderCardControls(w) {
     const st = getState(w.id);
     if (st.mode === "playback") {
-        const count = st.keyframes.length;
         return `
             <div class="run-button-box" id="rec-box-${w.id}">
                 <button class="btn btn-primary btn-big-action btn-action-card" id="btn-rec-play-${w.id}">
-                    Playback (${count} ${count === 1 ? "step" : "steps"})
+                    Playback (${plural(st.keyframes.length, "step")})
                 </button>
                 <div class="slider-actions" style="margin-top: 8px;">
                     <button class="btn btn-sm btn-secondary" id="btn-rec-reset-${w.id}">Re-record</button>
@@ -63,21 +57,13 @@ function renderCardControls(w) {
     `;
 }
 
-/**
- * Updates the status text in the bottom footer of the widget card.
- *
- * Centralizes footer status updates during recording and keyframe playback.
- */
+// Updates the status text in the bottom footer of the widget card.
 function setFooter(cardElement, text) {
     const footer = cardElement.querySelector(".run-card-footer");
     if (footer) footer.textContent = text;
 }
 
-/**
- * Stops all recorded motor ports with brake action.
- *
- * Used when cancelling playback or releasing a stalled motor before advancing to the next keyframe.
- */
+// Sends a batch brake stop command to the specified motor ports.
 async function brakePorts(ctx, ports) {
     if (!ports.length) return;
     const commands = ports.map(port => ({ port, command: "stop", stop_action: "brake" }));
@@ -86,42 +72,32 @@ async function brakePorts(ctx, ports) {
     } catch (_) {}
 }
 
-/**
- * Drives all motors in `frame` to their recorded encoder positions at maximum speed and waits until complete.
- *
- * Monitors live motor telemetry every 100 ms:
- * - Marks a motor as at-goal when within 10 degrees of its target position.
- * - Detects stalled motors when `state` reports "stalled"/"overloaded", when the kernel finishes
- *   `run-to-rel-pos` (`!state.includes("running")`), or when position changes by less than 3 degrees
- *   across 500 ms.
- * - Once all non-stalled motors reach their goal, waits at most 1 second (1000 ms) if any motor is stalled,
- *   stops the stalled motor so it does not keep straining, and resolves to advance to the next keyframe.
- */
+// Flags active playback to abort and immediately brakes recorded motor ports.
+async function abortPlayback(st, ctx) {
+    st.abort = true;
+    await brakePorts(ctx, Object.keys(st.keyframes[0] ?? {}));
+}
+
+// Drives all motors in a keyframe to their target positions and waits for completion.
 async function moveToKeyframe(st, frame, ctx) {
-    const ports = Object.keys(frame);
     const getMotor = (port) => ctx.hardwareMotors?.find(m => m.port === port && m.connected);
 
-    const commands = [];
-    const activePorts = [];
-
-    for (const port of ports) {
+    // Builds run-to-rel-pos commands for ports whose remaining error exceeds minDelta.
+    const buildCommands = (ports, minDelta) => ports.flatMap(port => {
         const m = getMotor(port);
-        if (!m) continue;
-        const target = frame[port].position;
-        const delta = target - m.position;
-        if (Math.abs(delta) > 3) {
-            commands.push({
-                port,
-                command: "run-to-rel-pos",
-                speed: m.max_speed || frame[port].maxSpeed || 1050,
-                degrees: delta,
-                stop_action: "brake"
-            });
-            activePorts.push(port);
-        }
-    }
+        const delta = m ? frame[port].position - m.position : 0;
+        return Math.abs(delta) > minDelta ? [{
+            port,
+            command: "run-to-rel-pos",
+            speed: m.max_speed || frame[port].maxSpeed || 1050,
+            degrees: delta,
+            stop_action: "brake"
+        }] : [];
+    });
 
+    const commands = buildCommands(Object.keys(frame), 3);
     if (commands.length === 0) return;
+    const activePorts = commands.map(c => c.port);
 
     await ctx.apiBatch(commands);
 
@@ -145,8 +121,7 @@ async function moveToKeyframe(st, frame, ctx) {
         for (const port of activePorts) {
             const m = getMotor(port);
             if (!m) continue;
-            const target = frame[port].position;
-            const err = Math.abs(target - m.position);
+            const err = Math.abs(frame[port].position - m.position);
             const tr = progress.get(port);
 
             if (err <= 10) {
@@ -193,24 +168,11 @@ async function moveToKeyframe(st, frame, ctx) {
             stallDeadline = null;
         }
 
-        // Refresh remaining relative movement every 3.5s during long moves so the 5s idle watchdog does not coast
+        // Refreshes in-flight moves every 3.5 s so the 5 s watchdog does not coast.
         if (now - lastKeepalive >= 3500) {
             lastKeepalive = now;
-            const refreshCmds = [];
-            for (const port of activePorts) {
-                const m = getMotor(port);
-                if (!m || progress.get(port)?.stalled) continue;
-                const delta = frame[port].position - m.position;
-                if (Math.abs(delta) > 10) {
-                    refreshCmds.push({
-                        port,
-                        command: "run-to-rel-pos",
-                        speed: m.max_speed || frame[port].maxSpeed || 1050,
-                        degrees: delta,
-                        stop_action: "brake"
-                    });
-                }
-            }
+            const movingPorts = activePorts.filter(p => !progress.get(p)?.stalled);
+            const refreshCmds = buildCommands(movingPorts, 10);
             if (refreshCmds.length > 0) {
                 ctx.apiBatch(refreshCmds).catch(() => {});
             }
@@ -223,29 +185,17 @@ export default {
     label: "Keyframe Recorder",
     sizeClass: "run-card-2x1",
 
-    /**
-     * Creates default configuration object when adding a Keyframe Recorder widget.
-     *
-     * Requires no port configuration because it automatically records all connected motors.
-     */
+    // Requires only id and type because all connected motors are recorded.
     createDefault(id) {
         return { id, type: "record" };
     },
 
-    /**
-     * Formats the badge text in the card header.
-     *
-     * Indicates that the recorder operates across all connected motors.
-     */
+    // Indicates that the recorder captures all connected motor ports.
     getPortBadge() {
         return "All Motors";
     },
 
-    /**
-     * Renders the Design View card body.
-     *
-     * Displays a concise note explaining that all connected motors are recorded automatically.
-     */
+    // Renders a short description in Design View.
     renderDesign() {
         return `
             <div class="widget-config-field full-width">
@@ -254,20 +204,12 @@ export default {
         `;
     },
 
-    /**
-     * Renders the Run View card body.
-     *
-     * Delegates to `renderCardControls` based on whether the widget is in Recording or Playback mode.
-     */
+    // Delegates Run View markup to the active Recording or Playback mode.
     renderRun(w) {
         return renderCardControls(w);
     },
 
-    /**
-     * Wires button event handlers for recording keyframes, finishing recording, playing back, and re-recording.
-     *
-     * Re-binds cleanly whenever the card transitions between Recording and Playback states.
-     */
+    // Binds Record, Done, Playback, and Re-record buttons for the active mode.
     initRun(w, cardElement, ctx) {
         const st = getState(w.id);
 
@@ -281,7 +223,7 @@ export default {
 
         if (st.mode === "record") {
             const count = st.keyframes.length;
-            setFooter(cardElement, count === 0 ? "Ready to record" : `${count} ${count === 1 ? "keyframe" : "keyframes"} recorded`);
+            setFooter(cardElement, count === 0 ? "Ready to record" : `${plural(count, "keyframe")} recorded`);
 
             const btnAdd = cardElement.querySelector(`#btn-rec-add-${w.id}`);
             const btnDone = cardElement.querySelector(`#btn-rec-done-${w.id}`);
@@ -292,16 +234,11 @@ export default {
                     setFooter(cardElement, "No connected motors found");
                     return;
                 }
-                const snapshot = {};
-                connected.forEach(m => {
-                    snapshot[m.port] = {
-                        position: m.position,
-                        maxSpeed: m.max_speed || 1050
-                    };
-                });
+                const snapshot = Object.fromEntries(
+                    connected.map(m => [m.port, { position: m.position, maxSpeed: m.max_speed || 1050 }])
+                );
                 st.keyframes.push(snapshot);
-                const total = st.keyframes.length;
-                setFooter(cardElement, `${total} ${total === 1 ? "keyframe" : "keyframes"} recorded`);
+                setFooter(cardElement, `${plural(st.keyframes.length, "keyframe")} recorded`);
                 if (btnDone) btnDone.disabled = false;
             });
 
@@ -309,33 +246,26 @@ export default {
                 if (st.keyframes.length === 0) return;
                 st.mode = "playback";
                 refreshCard();
-                setFooter(cardElement, `Ready (${st.keyframes.length} steps)`);
+                setFooter(cardElement, `Ready (${plural(st.keyframes.length, "step")})`);
             });
             return;
         }
 
-        // Playback mode
         const btnPlay = cardElement.querySelector(`#btn-rec-play-${w.id}`);
         const btnReset = cardElement.querySelector(`#btn-rec-reset-${w.id}`);
 
         const updatePlayButton = () => {
             if (!btnPlay) return;
-            const total = st.keyframes.length;
-            if (st.playing) {
-                btnPlay.classList.remove("btn-primary");
-                btnPlay.classList.add("btn-danger");
-            } else {
-                btnPlay.classList.remove("btn-danger");
-                btnPlay.classList.add("btn-primary");
-                btnPlay.textContent = `Playback (${total} ${total === 1 ? "step" : "steps"})`;
+            btnPlay.classList.toggle("btn-danger", st.playing);
+            btnPlay.classList.toggle("btn-primary", !st.playing);
+            if (!st.playing) {
+                btnPlay.textContent = `Playback (${plural(st.keyframes.length, "step")})`;
             }
         };
 
         btnPlay?.addEventListener("click", async () => {
             if (st.playing) {
-                st.abort = true;
-                const ports = Object.keys(st.keyframes[0] ?? {});
-                await brakePorts(ctx, ports);
+                await abortPlayback(st, ctx);
                 return;
             }
 
@@ -353,7 +283,7 @@ export default {
                     setFooter(cardElement, `Moving to keyframe ${i} (${i + 1} / ${total})...`);
                     await moveToKeyframe(st, st.keyframes[i], ctx);
                 }
-                setFooter(cardElement, st.abort ? "Playback stopped" : `Playback complete (${total} steps)`);
+                setFooter(cardElement, st.abort ? "Playback stopped" : `Playback complete (${plural(total, "step")})`);
             } catch (e) {
                 setFooter(cardElement, `Playback error: ${e.message}`);
             } finally {
@@ -365,22 +295,14 @@ export default {
         });
 
         btnReset?.addEventListener("click", async () => {
-            if (st.playing) {
-                st.abort = true;
-                const ports = Object.keys(st.keyframes[0] ?? {});
-                await brakePorts(ctx, ports);
-            }
+            if (st.playing) await abortPlayback(st, ctx);
             st.keyframes = [];
             st.mode = "record";
             refreshCard();
         });
     },
 
-    /**
-     * Aborts active keyframe playback immediately when global Emergency Stop is triggered.
-     *
-     * Sets `st.abort = true` so the playback loop exits and resets the Playback button.
-     */
+    // Aborts active keyframe playback when global emergency stop is triggered.
     onEmergencyStop(w, cardElement) {
         const st = stateMap.get(w.id);
         if (st && st.playing) {

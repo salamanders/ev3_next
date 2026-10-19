@@ -13,49 +13,52 @@
 
 const MOTOR_PORTS = ["A", "B", "C", "D"];
 const SENSOR_PORTS = ["1", "2", "3", "4"];
+const STORAGE_KEY = "ev3_dashboard_widgets";
 
+// Strips the ApiResponse wrapper so callers receive raw payload data.
+const unwrap = json => json?.data ?? json;
+
+// Fetches a GET endpoint with a timeout and returns the unwrapped JSON body.
+async function getJson(url, timeoutMs) {
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return unwrap(await res.json());
+}
+
+// Toggles inline element visibility without losing stylesheet layout rules.
+const setVisible = (el, visible) => {
+    if (el) el.style.display = visible ? "" : "none";
+};
+
+// Formats motor status flags for card footers and the diagnostics table.
+const motorStateText = m =>
+    !m?.connected ? "Disconnected" : (m.state?.length ? m.state.join(", ") : "Ready");
+
+// Clears both timers on a throttle entry and drops pending callbacks.
+function disarm(entry) {
+    clearTimeout(entry.timer);
+    clearTimeout(entry.holdTimer);
+    Object.assign(entry, { timer: null, holdTimer: null, nextFn: null, holdFn: null, holdCount: 0 });
+}
+
+// Caches dynamically imported widget ES modules separately from DOM state.
 class WidgetRegistry {
-    /**
-     * Creates a widget registry to cache dynamically imported ES modules.
-     *
-     * Initializes internal module map and list of discovered widget names on disk.
-     *
-     * Isolates dynamic module importing from DOM rendering.
-     */
     constructor() {
         this.modules = new Map();
         this.availableTypes = [];
     }
 
-    /**
-     * Fetches the list of available widget scripts on disk from `/api/widgets`.
-     *
-     * Sends a GET request to `/api/widgets` and stores the returned array of widget names.
-     *
-     * Called during application boot and after an on-demand GitHub widget update.
-     */
+    // Queries the backend for widget script names present on disk.
     async init() {
         try {
-            const res = await fetch("/api/widgets", {
-                signal: AbortSignal.timeout(1500)
-            });
-            if (res.ok) {
-                const json = await res.json();
-                const list = json?.data ?? json;
-                if (Array.isArray(list)) {
-                    this.availableTypes = list;
-                }
-            }
-        } catch (_) {}
+            const list = await getJson("/api/widgets", 1500);
+            if (Array.isArray(list)) this.availableTypes = list;
+        } catch (err) {
+            console.error("Widget discovery failed:", err);
+        }
     }
 
-    /**
-     * Dynamically imports a widget module script using native ES import.
-     *
-     * Imports `/widgets/${type}.js` and caches the exported module object.
-     *
-     * Loads widget code on demand, keeping initial page load fast and lightweight.
-     */
+    // Imports a widget module on demand and caches its default export.
     async load(type, bustCache = false) {
         if (!bustCache && this.modules.has(type)) {
             return this.modules.get(type);
@@ -72,23 +75,7 @@ class WidgetRegistry {
         }
     }
 
-    /**
-     * Preloads all widget types present in the active user dashboard layout.
-     *
-     * Deduplicates widget types from the configuration array and loads them concurrently.
-     *
-     * Avoids render delays by pre-fetching scripts before building DOM cards.
-     */
-    async loadActive(types) {
-        const unique = [...new Set(types)];
-        await Promise.all(unique.map(t => this.load(t)));
-    }
-
-    /**
-     * Preloads all available widget types discovered on disk for Design View.
-     *
-     * Loads every widget returned by `/api/widgets` so the Design View dropdown can display their labels.
-     */
+    // Preloads every discovered widget module so Design View can read labels.
     async loadAll(bustCache = false) {
         if (bustCache) {
             this.modules.clear();
@@ -96,31 +83,19 @@ class WidgetRegistry {
         await Promise.all(this.availableTypes.map(t => this.load(t, bustCache)));
     }
 
-    /**
-     * Returns a cached widget definition.
-     *
-     * Looks up `type` in the internal Map and returns the exported widget object.
-     *
-     * Provides synchronous lookups during template rendering.
-     */
+    // Looks up an already-loaded widget module synchronously during rendering.
     get(type) {
         return this.modules.get(type);
     }
 }
 
+// Coordinates hardware telemetry, layout storage, and command dispatch.
 class EV3App {
-    /**
-     * Initializes the client application and triggers startup sequence.
-     *
-     * Initializes state arrays, loads saved widgets from localStorage, binds DOM elements,
-     * starts telemetry polling, and boots widget modules.
-     *
-     * Top-level state coordinator holding active hardware status and dashboard configuration.
-     */
     constructor() {
         this.widgets = [];
         this.hardwareMotors = [];
         this.hardwareSensors = [];
+        this.motorPorts = MOTOR_PORTS;
         this.throttleMap = new Map();
         this.stopBurstMap = new Map();
         this.isOnline = false;
@@ -135,35 +110,22 @@ class EV3App {
         this.boot();
     }
 
-    /**
-     * Asynchronously loads widget modules and triggers initial rendering pass.
-     *
-     * 1. Fetches available widget list via `registry.init()`.
-     * 2. Preloads all available widgets.
-     * 3. Populates missing default properties from widget module definitions.
-     * 4. Applies initial view state (Design View or Run View).
-     *
-     * Coordinates asynchronous module loading before attaching DOM event listeners.
-     */
+    // Discovers widget modules, fills default properties, and renders the view.
     async boot() {
         await this.registry.init();
         await this.registry.loadAll();
 
-        // Ensure default properties are populated from widget module definitions
         this.widgets = this.widgets.map(w => {
             const def = this.registry.get(w.type);
             return def?.createDefault ? { ...def.createDefault(w.id), ...w } : w;
         });
+        this.saveWidgets();
 
         this.renderWidgetSelect();
         this.applyViewMode(this.isDesignView, false);
     }
 
-    /**
-     * Switches between Design View and Run View in place without reloading the page.
-     *
-     * Toggles panel visibility, navigation tab active states, and header/footer action buttons.
-     */
+    // Switches between Design and Run panels without a full page reload.
     applyViewMode(designMode, pushHistory = true) {
         this.isDesignView = designMode;
         if (pushHistory) {
@@ -173,12 +135,10 @@ class EV3App {
             }
         }
 
-        if (this.dom.designView) this.dom.designView.style.display = designMode ? "" : "none";
-        if (this.dom.runView) this.dom.runView.style.display = designMode ? "none" : "";
+        [this.dom.designView, this.dom.btnRescan, this.dom.btnUpdate].forEach(el => setVisible(el, designMode));
+        setVisible(this.dom.runView, !designMode);
         this.dom.navDesign?.classList.toggle("active", designMode);
         this.dom.navRun?.classList.toggle("active", !designMode);
-        if (this.dom.btnRescan) this.dom.btnRescan.style.display = designMode ? "" : "none";
-        if (this.dom.btnUpdate) this.dom.btnUpdate.style.display = designMode ? "" : "none";
 
         if (designMode) {
             this.renderWidgetSelect();
@@ -190,176 +150,130 @@ class EV3App {
         }
     }
 
-    /**
-     * Populates the Design View widget `<select>` dropdown from all loaded widget modules.
-     *
-     * Maps each available widget type to an `<option>` tag using its module's `label`.
-     * Automatically includes any newly added or downloaded widgets without hardcoding HTML.
-     */
+    // Populates the widget type selector from all discovered modules.
     renderWidgetSelect() {
         if (!this.dom.widgetSelect) return;
-        const prev = this.dom.widgetSelect.value;
-        this.dom.widgetSelect.innerHTML = this.registry.availableTypes
-            .map(type => {
-                const def = this.registry.get(type);
-                if (!def) return "";
-                const label = def.label ?? type;
-                return `<option value="${type}" ${type === prev ? "selected" : ""}>${label}</option>`;
-            })
-            .join("");
+        const pairs = this.registry.availableTypes
+            .filter(type => this.registry.get(type))
+            .map(type => [type, this.registry.get(type).label ?? type]);
+        this.dom.widgetSelect.innerHTML = this.selectOptions(pairs, this.dom.widgetSelect.value);
     }
 
-    /**
-     * Triggers an on-demand GitHub widget CRUD sync (`POST /update`) and refreshes Design View.
-     *
-     * Calls `POST /update`, reloads the available widget list and modules, and updates the dropdown.
-     */
-    async updateWidgetsFromGithub() {
-        const btn = this.dom.btnUpdate;
+    // Disables a button with a status caption until an async operation completes.
+    async withBusyButton(btn, busyLabel, task) {
+        const idleLabel = btn?.textContent;
         if (btn) {
             btn.disabled = true;
-            btn.textContent = "Updating...";
+            btn.textContent = busyLabel;
         }
         try {
-            const res = await this.apiPost("/update", {});
-            await this.registry.init();
-            await this.registry.loadAll(true);
-            this.renderWidgetSelect();
-            this.renderDesignWidgets();
-            const msg = `Widgets synced (+${res.created ?? 0} new, ~${res.updated ?? 0} updated, -${res.deleted ?? 0} removed).`;
-            this.log(msg, "info");
-            alert(msg);
-        } catch (e) {
-            this.log(`Widget update failed: ${e.message}`, "error");
-            alert(`Widget update failed: ${e.message}`);
+            return await task();
         } finally {
             if (btn) {
                 btn.disabled = false;
-                btn.textContent = "Update";
+                btn.textContent = idleLabel;
             }
         }
     }
 
-    /**
-     * Reads saved widget configuration from browser localStorage.
-     *
-     * Parses `ev3_dashboard_widgets` from `localStorage`. If empty or corrupt, loads defaults.
-     *
-     * Preserves user customized dashboard layouts across page refreshes.
-     */
+    // Syncs widget scripts from GitHub via POST /update and reloads modules.
+    async updateWidgetsFromGithub() {
+        await this.withBusyButton(this.dom.btnUpdate, "Updating...", async () => {
+            try {
+                const res = await this.apiPost("/update", {});
+                await this.registry.init();
+                await this.registry.loadAll(true);
+                this.renderWidgetSelect();
+                this.renderDesignWidgets();
+                const msg = `Widgets synced (+${res.created ?? 0} new, ~${res.updated ?? 0} updated, -${res.deleted ?? 0} removed).`;
+                this.log(msg, "info");
+                alert(msg);
+            } catch (e) {
+                this.log(`Widget update failed: ${e.message}`, "error");
+                alert(`Widget update failed: ${e.message}`);
+            }
+        });
+    }
+
+    // Restores the saved widget layout from localStorage or falls back to defaults.
     initStorage() {
         try {
-            const raw = localStorage.getItem("ev3_dashboard_widgets");
-            if (raw) {
-                const parsed = JSON.parse(raw);
-                if (Array.isArray(parsed) && parsed.length > 0) {
-                    this.widgets = parsed.filter(w => w && w.id && w.type);
-                    if (this.widgets.length > 0) return;
-                }
+            const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]");
+            if (Array.isArray(parsed)) {
+                this.widgets = parsed.filter(w => w?.id && w.type);
+                if (this.widgets.length > 0) return;
             }
-        } catch (_) {}
+        } catch (err) {
+            console.error("Saved layout is corrupt; loading defaults:", err);
+        }
         this.loadDefaultWidgets();
     }
 
-    /**
-     * Populates default dashboard layout with a joystick and a slider.
-     *
-     * Sets `this.widgets` to a dual-motor joystick on ports B/C and a speed slider on port A.
-     *
-     * Provides an out-of-the-box working interface on the first browser visit.
-     */
+    // Seeds a starter layout; boot() populates full defaults from each module.
     loadDefaultWidgets() {
         this.widgets = [
-            {
-                id: "joy",
-                type: "joystick",
-                xPort: "B",
-                yPort: "C",
-                stopAction: "brake",
-                multiMotor: false,
-                xMotors: [{ port: "B", invert: false }],
-                yMotors: [{ port: "C", invert: false }]
-            },
-            { id: "slider", type: "slider", port: "A" }
+            { id: "joy", type: "joystick" },
+            { id: "slider", type: "slider" }
         ];
         this.saveWidgets();
     }
 
-    /**
-     * Saves active widget layout to browser localStorage.
-     *
-     * Serializes `this.widgets` to JSON and writes to key `ev3_dashboard_widgets`.
-     *
-     * Called whenever widgets are added, removed, or reconfigured.
-     */
+    // Persists the current widget array to browser localStorage.
     saveWidgets() {
         try {
-            localStorage.setItem("ev3_dashboard_widgets", JSON.stringify(this.widgets));
-        } catch (_) {}
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(this.widgets));
+        } catch (err) {
+            console.error("Could not save layout:", err);
+        }
     }
 
-    /**
-     * Caches frequently queried DOM elements.
-     *
-     * Stores references to header badges, buttons, lists, and diagnostic tables in `this.dom`.
-     *
-     * Avoids running expensive `document.getElementById` queries during 4 Hz polling updates.
-     */
+    // Caches static DOM nodes once at startup to avoid queries during 4 Hz polls.
     initDOMElements() {
-        this.dom = {
-            runView: document.getElementById("run-view"),
-            designView: document.getElementById("design-view"),
-            navDesign: document.getElementById("btn-nav-design"),
-            navRun: document.getElementById("btn-nav-run"),
-            btnOpenDesign: document.getElementById("btn-open-design"),
-            designList: document.getElementById("design-widget-list"),
-            runList: document.getElementById("run-widget-list"),
-            emptyNotice: document.getElementById("run-empty-notice"),
-            hardwareList: document.getElementById("hardware-list"),
-            hwCountBadge: document.getElementById("hw-count-badge"),
-            widgetSelect: document.getElementById("widget-type-select"),
-            btnAdd: document.getElementById("btn-add-widget"),
-            btnRescan: document.getElementById("btn-rescan"),
-            batteryVal: document.getElementById("battery-val"),
-            connBadge: document.getElementById("conn-badge"),
-            connText: document.getElementById("conn-text"),
-            latencyVal: document.getElementById("latency-val"),
-            btnEstop: document.getElementById("btn-estop-header"),
-            btnShutdown: document.getElementById("btn-shutdown-header"),
-            btnUpdate: document.getElementById("btn-update-header"),
-            diagDetails: document.getElementById("diagnostics-details"),
-            telemetryBody: document.getElementById("telemetry-table-body"),
-            logBox: document.getElementById("log-box"),
-            btnClearLog: document.getElementById("btn-clear-log")
+        const ids = {
+            runView: "run-view",
+            designView: "design-view",
+            navDesign: "btn-nav-design",
+            navRun: "btn-nav-run",
+            btnOpenDesign: "btn-open-design",
+            designList: "design-widget-list",
+            runList: "run-widget-list",
+            emptyNotice: "run-empty-notice",
+            hardwareList: "hardware-list",
+            hwCountBadge: "hw-count-badge",
+            widgetCount: "widget-count-label",
+            widgetSelect: "widget-type-select",
+            btnAdd: "btn-add-widget",
+            btnRescan: "btn-rescan",
+            batteryVal: "battery-val",
+            connBadge: "conn-badge",
+            connText: "conn-text",
+            latencyVal: "latency-val",
+            btnEstop: "btn-estop-header",
+            btnShutdown: "btn-shutdown-header",
+            btnUpdate: "btn-update-header",
+            diagDetails: "diagnostics-details",
+            telemetryBody: "telemetry-table-body",
+            logBox: "log-box",
+            btnClearLog: "btn-clear-log"
         };
+        this.dom = Object.fromEntries(
+            Object.entries(ids).map(([key, id]) => [key, document.getElementById(id)])
+        );
     }
 
-    /**
-     * Attaches keyboard, tab navigation, and global button event listeners.
-     *
-     * 1. Binds Spacebar key to `emergencyStop()`.
-     * 2. Binds in-place Design / Run tab switching.
-     * 3. Binds Header/Footer E-Stop, Shutdown, Update, Add Widget, Rescan, and Clear Log buttons.
-     *
-     * Central event binding function called during application setup.
-     */
+    // Binds Spacebar E-stop, view navigation, and global toolbar buttons.
     attachGlobalListeners() {
         this.dom.btnEstop?.addEventListener("click", () => this.emergencyStop());
         this.dom.btnShutdown?.addEventListener("click", () => this.powerOff());
         this.dom.btnUpdate?.addEventListener("click", () => this.updateWidgetsFromGithub());
 
-        this.dom.navDesign?.addEventListener("click", (e) => {
+        const navTo = designMode => e => {
             e.preventDefault();
-            this.applyViewMode(true);
-        });
-        this.dom.navRun?.addEventListener("click", (e) => {
-            e.preventDefault();
-            this.applyViewMode(false);
-        });
-        this.dom.btnOpenDesign?.addEventListener("click", (e) => {
-            e.preventDefault();
-            this.applyViewMode(true);
-        });
+            this.applyViewMode(designMode);
+        };
+        this.dom.navDesign?.addEventListener("click", navTo(true));
+        this.dom.btnOpenDesign?.addEventListener("click", navTo(true));
+        this.dom.navRun?.addEventListener("click", navTo(false));
         window.addEventListener("popstate", () => {
             this.applyViewMode(window.location.pathname === "/design", false);
         });
@@ -376,41 +290,30 @@ class EV3App {
             if (document.hidden) this.emergencyStop();
         });
 
-        this.dom.btnAdd?.addEventListener("click", async () => {
-            const type = this.dom.widgetSelect?.value ?? "joystick";
-            await this.addWidget(type);
-        });
+        this.dom.btnAdd?.addEventListener("click", () => this.addWidget(this.dom.widgetSelect?.value ?? "joystick"));
         this.dom.btnRescan?.addEventListener("click", () => this.rescanHardware(true));
         this.dom.btnClearLog?.addEventListener("click", () => {
             if (this.dom.logBox) this.dom.logBox.innerHTML = "";
         });
     }
 
-    /**
-     * Limits the frequency of rapid function invocations while guaranteeing the final call runs,
-     * and repeats the latest held command every `repeatMs` (default 250 ms) while active.
-     *
-     * Executes `fn` immediately if `intervalMs` has elapsed since the last run.
-     * Schedules a stationary hold timer so holding a finger still on a 2D joystick or slider
-     * keeps refreshing the motor command until `clearThrottle(key)` is called on release.
-     *
-     * Prevents pointermove events (60 Hz) from flooding the 300 MHz EV3 CPU with HTTP requests.
-     */
+    // Rate-limits 60 Hz pointer moves and repeats held commands for the watchdog.
     throttle(key, intervalMs, fn, repeatMs = 250) {
         this.cancelStopBurst(key);
         const now = Date.now();
         const entry = this.throttleMap.get(key) ?? { last: 0, timer: null, holdTimer: null, nextFn: null, holdFn: null, holdCount: 0 };
+        this.throttleMap.set(key, entry);
         entry.nextFn = fn;
         entry.holdFn = fn;
         entry.holdCount = 0;
 
         const scheduleHold = () => {
-            if (entry.holdTimer) clearTimeout(entry.holdTimer);
+            clearTimeout(entry.holdTimer);
+            entry.holdTimer = null;
             if (!repeatMs || repeatMs <= 0) return;
             entry.holdTimer = setTimeout(() => {
                 entry.holdTimer = null;
-                // Cap stationary hold repeats to 40 (~10 seconds without any finger movement)
-                // so a missed release event cannot keep a motor running forever.
+                // Cap stationary hold repeats at 40 (~10 s) so a missed release stops.
                 if (entry.holdFn && entry.holdCount < 40) {
                     entry.holdCount += 1;
                     entry.last = Date.now();
@@ -422,106 +325,47 @@ class EV3App {
 
         if (now - entry.last >= intervalMs) {
             entry.last = now;
-            if (entry.timer) {
-                clearTimeout(entry.timer);
-                entry.timer = null;
-            }
-            this.throttleMap.set(key, entry);
+            clearTimeout(entry.timer);
+            entry.timer = null;
             fn();
             scheduleHold();
         } else if (!entry.timer) {
-            if (entry.holdTimer) {
-                clearTimeout(entry.holdTimer);
-                entry.holdTimer = null;
-            }
+            clearTimeout(entry.holdTimer);
+            entry.holdTimer = null;
             entry.timer = setTimeout(() => {
                 entry.last = Date.now();
                 entry.timer = null;
                 const toRun = entry.nextFn;
                 entry.nextFn = null;
-                if (toRun) toRun();
+                toRun?.();
                 scheduleHold();
             }, intervalMs - (now - entry.last));
-            this.throttleMap.set(key, entry);
         }
     }
 
-    /**
-     * Cancels any pending scheduled timer for a throttle key.
-     *
-     * Clears timeout handle and discards pending closure.
-     *
-     * Called when a control is released or stopped.
-     */
+    // Disarms pending move and hold timers for a single control key.
     clearThrottle(key) {
         const entry = this.throttleMap.get(key);
-        if (entry) {
-            if (entry.timer) {
-                clearTimeout(entry.timer);
-                entry.timer = null;
-            }
-            if (entry.holdTimer) {
-                clearTimeout(entry.holdTimer);
-                entry.holdTimer = null;
-            }
-            entry.nextFn = null;
-            entry.holdFn = null;
-            entry.holdCount = 0;
-        }
+        if (entry) disarm(entry);
     }
 
-    /**
-     * Cancels all pending throttled actions across the application.
-     *
-     * Iterates over all keys in `throttleMap` and clears timers.
-     *
-     * Called by `emergencyStop` to prevent queued move commands from firing after an emergency stop.
-     */
+    // Disarms all throttled move commands and active stop bursts on E-stop.
     clearAllThrottles() {
-        this.throttleMap.forEach(entry => {
-            if (entry.timer) {
-                clearTimeout(entry.timer);
-                entry.timer = null;
-            }
-            if (entry.holdTimer) {
-                clearTimeout(entry.holdTimer);
-                entry.holdTimer = null;
-            }
-            entry.nextFn = null;
-            entry.holdFn = null;
-            entry.holdCount = 0;
-        });
-        this.stopBurstMap.forEach(state => {
-            state.cancelled = true;
-            if (state.timer) clearTimeout(state.timer);
-        });
-        this.stopBurstMap.clear();
+        this.throttleMap.forEach(disarm);
+        [...this.stopBurstMap.keys()].forEach(key => this.cancelStopBurst(key));
     }
 
-    /**
-     * Cancels an active stop-command burst for a control key.
-     *
-     * Marks the burst state as cancelled and clears any pending timer.
-     *
-     * Called as soon as the user touches or moves the control again so old stop retries do not fight new movement.
-     */
+    // Aborts an in-flight stop retry burst when the user touches a control again.
     cancelStopBurst(key) {
         const prev = this.stopBurstMap.get(key);
         if (prev) {
             prev.cancelled = true;
-            if (prev.timer) clearTimeout(prev.timer);
+            clearTimeout(prev.timer);
             this.stopBurstMap.delete(key);
         }
     }
 
-    /**
-     * Sends a reliable burst of stop commands on finger release.
-     *
-     * Fires `actionFn()` immediately, then up to `maxCount - 1` additional times with `gapMs` (66 ms)
-     * after each request finishes (bounded to 500 ms total), aborting immediately if the control is touched again.
-     *
-     * Guarantees motor stop delivery over lossy Wi-Fi or right after an in-flight move request.
-     */
+    // Repeats a stop command up to maxCount times across 500 ms on release.
     stopBurst(key, actionFn, maxCount = 5, gapMs = 66) {
         this.clearThrottle(key);
         this.cancelStopBurst(key);
@@ -536,7 +380,9 @@ class EV3App {
             sent += 1;
             try {
                 await actionFn();
-            } catch (_) {}
+            } catch (err) {
+                console.warn(`Stop retry ${sent} for '${key}' failed:`, err);
+            }
             if (state.cancelled) return;
             if (sent < maxCount && (Date.now() - startTime) < 500) {
                 state.timer = setTimeout(step, gapMs);
@@ -548,13 +394,7 @@ class EV3App {
         step();
     }
 
-    /**
-     * Transmits a JSON POST request to a backend API endpoint.
-     *
-     * Sends `fetch` request with 3-second timeout and unwraps `data` from the `ApiResponse` envelope.
-     *
-     * Core network transport helper shared by all API calls.
-     */
+    // Sends a JSON POST request with a 3 s timeout and unwraps the response.
     async apiPost(endpoint, payload) {
         const res = await fetch(endpoint, {
             method: "POST",
@@ -563,17 +403,10 @@ class EV3App {
             signal: AbortSignal.timeout(3000)
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = await res.json().catch(() => ({}));
-        return json?.data !== undefined ? json.data : json;
+        return unwrap(await res.json().catch(() => ({})));
     }
 
-    /**
-     * Sends a batch motor command payload to `/api/batch`.
-     *
-     * Calls `apiPost("/api/batch", { heartbeat_ms, commands })`.
-     *
-     * Used by multi-motor controls (joystick, tank) to synchronize dual-motor actuation.
-     */
+    // Dispatches a multi-port command batch with a watchdog heartbeat timeout.
     async apiBatch(commands, heartbeatMs = 5000) {
         return this.apiPost("/api/batch", {
             heartbeat_ms: heartbeatMs,
@@ -581,40 +414,28 @@ class EV3App {
         });
     }
 
-    /**
-     * Immediately stops all robot motors.
-     *
-     * 1. Calls `POST /api/estop`.
-     * 2. Clears all queued throttled commands via `clearAllThrottles()`.
-     * 3. Invokes `onEmergencyStop()` on all active widget definitions to reset UI controls.
-     *
-     * Safety action triggered by the header button or the Spacebar key.
-     */
+    // Invokes a named lifecycle hook on every widget with a mounted card.
+    callWidgetHook(hook, idPrefix, ...args) {
+        this.widgets.forEach(w => {
+            const def = this.registry.get(w.type);
+            const card = document.getElementById(`${idPrefix}${w.id}`);
+            if (card && def?.[hook]) def[hook](w, card, ...args);
+        });
+    }
+
+    // Halts all motors immediately, clears throttles, and resets widget UIs.
     async emergencyStop() {
         try {
             await this.apiPost("/api/estop", {});
             this.clearAllThrottles();
-
-            this.widgets.forEach(w => {
-                const def = this.registry.get(w.type);
-                const el = document.getElementById(`run-card-${w.id}`);
-                if (def?.onEmergencyStop && el) {
-                    def.onEmergencyStop(w, el);
-                }
-            });
+            this.callWidgetHook("onEmergencyStop", "run-card-");
             this.log("Emergency stop dispatched.", "warn");
         } catch (e) {
             this.log(`Emergency stop failed: ${e.message}`, "error");
         }
     }
 
-    /**
-     * Requests clean operating system shutdown of the EV3 brick.
-     *
-     * Prompts for confirmation and sends `POST /api/shutdown`.
-     *
-     * Allows safe headless shutdown from the browser without needing an SSH shell.
-     */
+    // Confirms with the operator and requests a clean OS poweroff.
     async powerOff() {
         if (!confirm("Safely shut down the EV3 brick?")) return;
         try {
@@ -625,110 +446,102 @@ class EV3App {
         }
     }
 
-    /**
-     * Triggers a hardware port rescan on the EV3 brick.
-     *
-     * Calls `POST /api/rescan`, updates connected motor/sensor arrays, and re-renders hardware panels.
-     *
-     * Invoked when new cables are plugged in or when the user clicks "Rescan".
-     */
+    // Re-enumerates sysfs motor and sensor ports and refreshes Design View.
     async rescanHardware(interactive = false) {
-        if (this.dom.btnRescan) {
-            this.dom.btnRescan.disabled = true;
-            this.dom.btnRescan.textContent = "Scanning...";
-        }
-        try {
-            const res = await this.apiPost("/api/rescan", {});
-            const data = res?.data ?? res;
-            this.hardwareMotors = data.motors ?? [];
-            this.hardwareSensors = data.sensors ?? [];
-            this.renderHardwarePanel();
-            this.renderDesignWidgets();
-            if (interactive) this.log("Hardware scan complete.", "info");
-        } catch (e) {
-            this.log(`Rescan failed: ${e.message}`, "error");
-        } finally {
-            if (this.dom.btnRescan) {
-                this.dom.btnRescan.disabled = false;
-                this.dom.btnRescan.textContent = "Rescan";
+        await this.withBusyButton(this.dom.btnRescan, "Scanning...", async () => {
+            try {
+                const data = await this.apiPost("/api/rescan", {});
+                this.hardwareMotors = data.motors ?? [];
+                this.hardwareSensors = data.sensors ?? [];
+                this.renderHardwarePanel();
+                this.renderDesignWidgets();
+                if (interactive) this.log("Hardware scan complete.", "info");
+            } catch (e) {
+                this.log(`Rescan failed: ${e.message}`, "error");
             }
-        }
+        });
     }
 
-    /**
-     * Renders connected hardware badges in Design View.
-     *
-     * Maps ports A..D and 1..4 to green/gray status badges indicating driver name and connection.
-     *
-     * Visual hardware status display in the Design View sidebar.
-     */
+    // Renders connection status cards for all 8 motor and sensor ports.
     renderHardwarePanel() {
         if (!this.dom.hardwareList) return;
-        const portMap = new Map([
-            ...MOTOR_PORTS.map(p => [p, { type: "motor", name: `Port ${p}`, desc: "Disconnected", connected: false }]),
-            ...SENSOR_PORTS.map(p => [p, { type: "sensor", name: `Port ${p}`, desc: "Disconnected", connected: false }])
-        ]);
+        const slots = [
+            ...MOTOR_PORTS.map(port => this.hardwareMotors.find(m => m.port === port) ?? { port }),
+            ...SENSOR_PORTS.map(port => this.hardwareSensors.find(s => s.port === port) ?? { port })
+        ];
 
-        this.hardwareMotors.forEach(m => {
-            if (portMap.has(m.port)) {
-                portMap.set(m.port, { type: "motor", name: `Port ${m.port}`, desc: m.driver_name || "Motor", connected: m.connected });
-            }
-        });
-        this.hardwareSensors.forEach(s => {
-            if (portMap.has(s.port)) {
-                portMap.set(s.port, { type: "sensor", name: `Port ${s.port}`, desc: s.driver_name || "Sensor", mode: s.mode, connected: s.connected });
-            }
-        });
-
-        let connectedCount = 0;
-        let html = "";
-        for (const [, item] of portMap) {
-            if (item.connected) connectedCount++;
-            const badgeClass = item.connected ? "badge-connected" : "badge-disconnected";
-            const badgeLabel = item.connected ? (item.mode || "Connected") : "None";
-            html += `
-                <div class="hw-item ${item.connected ? 'active' : ''}">
-                    <div class="hw-item-header">
-                        <span class="hw-port-label">${item.name}</span>
-                        <span class="badge ${badgeClass}">${badgeLabel}</span>
-                    </div>
-                    <div class="hw-driver-name">${item.desc}</div>
+        this.dom.hardwareList.innerHTML = slots.map(({ port, connected, driver_name, mode }) => `
+            <div class="hw-item ${connected ? "active" : ""}">
+                <div class="hw-item-header">
+                    <span class="hw-port-label">Port ${port}</span>
+                    <span class="badge ${connected ? "badge-connected" : "badge-disconnected"}">${connected ? (mode || "Connected") : "None"}</span>
                 </div>
-            `;
-        }
-        this.dom.hardwareList.innerHTML = html;
+                <div class="hw-driver-name">${connected ? driver_name : "Disconnected"}</div>
+            </div>
+        `).join("");
         if (this.dom.hwCountBadge) {
-            this.dom.hwCountBadge.textContent = `${connectedCount} / 8 Connected`;
+            this.dom.hwCountBadge.textContent = `${slots.filter(s => s.connected).length} / ${slots.length} Connected`;
         }
     }
 
-    /**
-     * Builds `<option>` tags for port dropdown selectors.
-     *
-     * Formats option tags for motor ports (A..D) or sensor ports (1..4) with driver names if connected.
-     *
-     * Helper used by widget `renderDesign` functions to generate port select dropdowns.
-     */
-    portOptions(selected, isSensor = false) {
-        const ports = isSensor ? SENSOR_PORTS : MOTOR_PORTS;
-        const list = isSensor ? this.hardwareSensors : this.hardwareMotors;
-        return ports.map(p => {
-            const hw = list.find(x => x.port === p);
-            const label = hw?.connected ? `Port ${p} (${hw.driver_name})` : `Port ${p}`;
-            return `<option value="${p}" ${selected === p ? "selected" : ""}>${label}</option>`;
-        }).join("");
+    // Builds <option> tags from [value, label] pairs with selection state.
+    selectOptions(pairs, selected) {
+        return pairs.map(([value, label = value]) =>
+            `<option value="${value}" ${value === selected ? "selected" : ""}>${label}</option>`
+        ).join("");
     }
 
-    /**
-     * Adds a new widget to the dashboard layout.
-     *
-     * Loads widget module, calls its `createDefault(id)` factory, appends to `this.widgets`, and saves.
-     *
-     * Triggered by the "Add Widget" button in Design View.
-     */
+    // Builds <option> tags for motor (A..D) or sensor (1..4) port selectors.
+    portOptions(selected, isSensor = false) {
+        const [ports, list] = isSensor
+            ? [SENSOR_PORTS, this.hardwareSensors]
+            : [MOTOR_PORTS, this.hardwareMotors];
+        return this.selectOptions(ports.map(p => {
+            const hw = list.find(x => x.port === p);
+            return [p, hw?.connected ? `Port ${p} (${hw.driver_name})` : `Port ${p}`];
+        }), selected);
+    }
+
+    // Wraps a label and form control in a standard Design View grid cell.
+    field(label, control, fullWidth = false) {
+        return `
+            <div class="widget-config-field${fullWidth ? " full-width" : ""}">
+                <label>${label}</label>
+                ${control}
+            </div>
+        `;
+    }
+
+    // Renders a labelled port selector dropdown for motor or sensor widgets.
+    portField(label, cssClass, selected, fullWidth = false, isSensor = false) {
+        return this.field(label, `<select class="${cssClass}">${this.portOptions(selected, isSensor)}</select>`, fullWidth);
+    }
+
+    // Renders the shared Brake / Coast release selector for drive widgets.
+    stopActionField(w) {
+        const options = this.selectOptions([
+            ["brake", "Brake (Hold Position)"],
+            ["coast", "Coast (Free Spin)"]
+        ], w.stopAction);
+        return this.field("Release Action", `<select class="field-stop-action">${options}</select>`, true);
+    }
+
+    // Binds change listeners from a selector-to-property specification map.
+    bindFields(card, w, spec) {
+        Object.entries(spec).forEach(([selector, opt]) => {
+            const { key, parse = v => v, rerender = false, after } = typeof opt === "string" ? { key: opt } : opt;
+            card.querySelector(selector)?.addEventListener("change", e => {
+                const val = parse(e.target.value);
+                this.updateWidget(w.id, { [key]: val });
+                if (rerender) this.renderDesignWidgets();
+                after?.(val);
+            });
+        });
+    }
+
+    // Instantiates a new widget from its module default factory and saves it.
     async addWidget(type) {
-        await this.registry.load(type);
-        const def = this.registry.get(type);
+        const def = await this.registry.load(type);
         const id = `w_${Date.now()}`;
         const item = def?.createDefault ? def.createDefault(id) : { id, type, port: "A" };
 
@@ -737,26 +550,14 @@ class EV3App {
         this.renderDesignWidgets();
     }
 
-    /**
-     * Deletes a widget from the dashboard layout.
-     *
-     * Filters out the widget with matching `id`, updates localStorage, and re-renders cards.
-     *
-     * Triggered by the "Remove" button on widget design cards.
-     */
+    // Deletes a widget by ID and re-renders the Design View card list.
     removeWidget(id) {
         this.widgets = this.widgets.filter(w => w.id !== id);
         this.saveWidgets();
         this.renderDesignWidgets();
     }
 
-    /**
-     * Updates properties on an existing widget configuration.
-     *
-     * Merges `patch` into the widget matching `id` and saves to localStorage.
-     *
-     * Called when users modify port assignments or settings in Design View.
-     */
+    // Merges a property patch into a widget configuration and persists it.
     updateWidget(id, patch) {
         const w = this.widgets.find(x => x.id === id);
         if (w) {
@@ -765,29 +566,19 @@ class EV3App {
         }
     }
 
-    /**
-     * Renders all widget configuration cards in Design View.
-     *
-     * Maps widgets to HTML cards using `renderDesignCard` and attaches change listeners.
-     *
-     * Top-level layout rendering method for Design View.
-     */
+    // Renders all Design View configuration cards and wires their inputs.
     renderDesignWidgets() {
         if (!this.dom.designList) return;
-        const countLabel = document.getElementById("widget-count-label");
-        if (countLabel) countLabel.textContent = `${this.widgets.length} active`;
+        if (this.dom.widgetCount) this.dom.widgetCount.textContent = `${this.widgets.length} active`;
 
         this.dom.designList.innerHTML = this.widgets.map(w => this.renderDesignCard(w)).join("");
-        this.attachDesignCardListeners();
+        this.dom.designList.querySelectorAll(".btn-remove").forEach(b => {
+            b.addEventListener("click", () => this.removeWidget(b.dataset.id));
+        });
+        this.callWidgetHook("attachDesign", "card-", this);
     }
 
-    /**
-     * Formats HTML markup for a single widget configuration card.
-     *
-     * Calls the widget definition's `renderDesign(w, this)` hook to generate input fields.
-     *
-     * Isolates HTML template construction for design cards.
-     */
+    // Builds the outer Design View card shell around a widget's form fields.
     renderDesignCard(w) {
         const def = this.registry.get(w.type);
         const title = def?.label ?? w.type;
@@ -808,54 +599,15 @@ class EV3App {
         `;
     }
 
-    /**
-     * Attaches change listeners to inputs on design cards.
-     *
-     * Binds Remove buttons and delegates to widget `attachDesign(w, cardElement, this)` hooks.
-     *
-     * Wires interactivity on newly rendered design cards.
-     */
-    attachDesignCardListeners() {
-        this.dom.designList?.querySelectorAll(".btn-remove").forEach(b => {
-            b.addEventListener("click", () => this.removeWidget(b.dataset.id));
-        });
-
-        this.widgets.forEach(w => {
-            const def = this.registry.get(w.type);
-            const cardElement = document.getElementById(`card-${w.id}`);
-            if (def?.attachDesign && cardElement) {
-                def.attachDesign(w, cardElement, this);
-            }
-        });
-    }
-
-    /**
-     * Renders all active control cards in Run View.
-     *
-     * Maps widgets to operational cards using `renderRunCard` and attaches interactive controls.
-     *
-     * Top-level layout rendering method for Run View.
-     */
+    // Renders all active Run View control cards and initializes their handlers.
     renderRunWidgets() {
         if (!this.dom.runList) return;
-        if (this.widgets.length === 0) {
-            if (this.dom.emptyNotice) this.dom.emptyNotice.style.display = "block";
-            this.dom.runList.innerHTML = "";
-            return;
-        }
-
-        if (this.dom.emptyNotice) this.dom.emptyNotice.style.display = "none";
+        setVisible(this.dom.emptyNotice, this.widgets.length === 0);
         this.dom.runList.innerHTML = this.widgets.map(w => this.renderRunCard(w)).join("");
-        this.attachRunCardListeners();
+        this.callWidgetHook("initRun", "run-card-", this);
     }
 
-    /**
-     * Formats HTML markup for a single operational control card.
-     *
-     * Calls the widget definition's `renderRun(w, this)` hook to generate touch/mouse controls.
-     *
-     * Isolates HTML template construction for operational control cards.
-     */
+    // Builds the outer Run View card shell with port badge and status footer.
     renderRunCard(w) {
         const def = this.registry.get(w.type);
         const sizeClass = def?.sizeClass ?? "run-card-2x1";
@@ -876,43 +628,15 @@ class EV3App {
         `;
     }
 
-    /**
-     * Attaches interactive pointer and button listeners to operational control cards.
-     *
-     * Calls widget definition's `initRun(w, card, this)` lifecycle hook.
-     *
-     * Activates joystick touch dragging, slider input events, and button clicks.
-     */
-    attachRunCardListeners() {
-        this.widgets.forEach(w => {
-            const def = this.registry.get(w.type);
-            const card = document.getElementById(`run-card-${w.id}`);
-            if (def?.initRun && card) {
-                def.initRun(w, card, this);
-            }
-        });
-    }
-
-    /**
-     * Starts the periodic 250 ms telemetry polling loop.
-     *
-     * 1. Fetches `GET /api/status` every 250 ms (4 Hz).
-     * 2. Updates online connection badge, round-trip latency, and battery voltage.
-     * 3. Stores latest `hardwareMotors` and `hardwareSensors` snapshots on `this`.
-     * 4. Dispatches `onTelemetry` to all widgets that define it and updates motor card footers.
-     */
+    // Polls GET /api/status at 4 Hz to refresh badges, tables, and widgets.
     startPolling() {
         if (this.pollTimer) clearInterval(this.pollTimer);
         this.pollTimer = setInterval(async () => {
             const t0 = performance.now();
             try {
-                const res = await fetch("/api/status", { signal: AbortSignal.timeout(2000) });
-                if (!res.ok) throw new Error();
-                const json = await res.json();
-                const data = json?.data ?? json;
-                const rtt = Math.round(performance.now() - t0);
+                const data = await getJson("/api/status", 2000);
+                this.setConnectionState(true, Math.round(performance.now() - t0));
 
-                this.setConnectionState(true, rtt);
                 const volt = data.battery?.voltage_v ?? data.battery_voltage;
                 if (this.dom.batteryVal && volt != null) {
                     this.dom.batteryVal.textContent = Number(volt).toFixed(1);
@@ -930,20 +654,14 @@ class EV3App {
                     this.hardwareSensors = data.sensors;
                 }
 
-                this.dispatchTelemetry(data);
+                this.callWidgetHook("onTelemetry", "run-card-", data);
             } catch (_) {
                 this.setConnectionState(false, 0);
             }
         }, 250);
     }
 
-    /**
-     * Updates header online/offline badge and latency display.
-     *
-     * Toggles `badge-connected` / `badge-disconnected` CSS classes and displays round-trip milliseconds.
-     *
-     * Called on every poll response or network error.
-     */
+    // Updates the footer connection badge and round-trip latency readout.
     setConnectionState(online, rtt) {
         this.isOnline = online;
         if (this.dom.connBadge && this.dom.connText) {
@@ -955,24 +673,18 @@ class EV3App {
         }
     }
 
-    /**
-     * Formats motor telemetry records for the diagnostics table in Design View.
-     *
-     * Constructs table rows showing speed, position, duty cycle, and state flags for ports A..D.
-     *
-     * Diagnostic inspector rendered only when the details foldout is open.
-     */
+    // Populates the Design View motor telemetry table when expanded.
     renderDiagnosticsTable(motors) {
         if (!this.dom.telemetryBody) return;
         this.dom.telemetryBody.innerHTML = MOTOR_PORTS.map(port => {
             const m = motors.find(x => x.port === port);
-            if (!m || !m.connected) {
+            if (!m?.connected) {
                 return `<tr><td><strong>${port}</strong></td><td colspan="5" class="text-muted">Disconnected</td></tr>`;
             }
             return `
                 <tr>
                     <td><strong>${port}</strong></td>
-                    <td><span class="badge ${m.state?.length ? "badge-running" : "badge-ready"}">${m.state?.join(", ") || "Ready"}</span></td>
+                    <td><span class="badge ${m.state?.length ? "badge-running" : "badge-ready"}">${motorStateText(m)}</span></td>
                     <td>${m.speed}</td>
                     <td>${m.position}</td>
                     <td>${m.duty_cycle}%</td>
@@ -982,46 +694,17 @@ class EV3App {
         }).join("");
     }
 
-    /**
-     * Dispatches live telemetry snapshots to any active widget that defines `onTelemetry`.
-     *
-     * Calls `def.onTelemetry(w, card, data)` without hardcoding specific widget type names.
-     */
-    dispatchTelemetry(data) {
-        this.widgets.forEach(w => {
-            const card = document.getElementById(`run-card-${w.id}`);
-            const def = this.registry.get(w.type);
-            if (card && def?.onTelemetry) {
-                def.onTelemetry(w, card, data);
-            }
-        });
-    }
-
-    /**
-     * Updates motor card footers with live state text.
-     *
-     * Queries cards with `data-motor-port` and updates footer text ("Ready", "running", "Disconnected").
-     *
-     * Preserves live card status without full HTML re-rendering.
-     */
+    // Updates Run View card footers with live motor state flags.
     updateMotorCardStatus(motors) {
         document.querySelectorAll(".run-card[data-motor-port]").forEach(card => {
-            const port = card.getAttribute("data-motor-port");
-            const m = motors.find(x => x.port === port);
             const footer = card.querySelector(".run-card-footer");
             if (footer) {
-                footer.textContent = (!m || !m.connected) ? "Disconnected" : (m.state?.length ? m.state.join(", ") : "Ready");
+                footer.textContent = motorStateText(motors.find(x => x.port === card.dataset.motorPort));
             }
         });
     }
 
-    /**
-     * Appends a timestamped log entry to the event console box.
-     *
-     * Creates a log `<div>` element, appends to `#log-box`, and auto-scrolls to the bottom.
-     *
-     * Provides visual feedback for API failures and emergency stop events.
-     */
+    // Appends a timestamped diagnostic message to the Design View console.
     log(msg, type = "info") {
         if (!this.dom.logBox) return;
         const entry = document.createElement("div");
@@ -1032,7 +715,6 @@ class EV3App {
     }
 }
 
-// Global initialization when the browser finishes parsing the HTML document
 window.addEventListener("DOMContentLoaded", () => {
     window.ev3App = new EV3App();
 });

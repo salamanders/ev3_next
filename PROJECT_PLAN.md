@@ -38,7 +38,8 @@
 | **Phase 24** | Five-Area Codebase Simplification & Dead Code Elimination | **COMPLETE**. Direct RAM core asset serving, single-file widget pipeline, controller helper deduplication, generic frontend widget processing, and route alias/dead parameter pruning. |
 | **Phase 25** | Codebase Commenting & Function/File Consolidation | **COMPLETE**. Merged `web/` into single `src/web.rs`, moved address parsers to `src/sysfs/mod.rs`, eliminated dead fields/methods, added STE headers and detailed comments across all files. |
 | **Phase 26** | DRY Widget Pipeline, On-Demand GitHub Sync & Keyframe Recorder | **COMPLETE**. Flattened widgets to `web_assets/widgets/<name>.js`, removed `manifest.json` and `BASELINE_*` embeds, unified `index.html` and `design.html`, added `GET /api/widgets` and `POST /api/widgets/update`, and built `record.js`. |
-| **Historical Archive** | Bug Tracking & Historical Remediation Archive | **COMPLETE**. Full historical record of `BUG-01` through `BUG-47` and retired archive directory artifacts preserved in Section 30. |
+| **Phase 27** | JavaScript & Rust DRY Consolidation (`/clean-javascript`) | **COMPLETE**. Consolidated 10 frontend JS duplication areas and 7 Rust backend duplication areas across 16 files (`-1,036` net lines), verified with 39/39 unit tests and host simulation. |
+| **Historical Archive** | Bug Tracking & Historical Remediation Archive | **COMPLETE**. Full historical record of `BUG-01` through `BUG-47` and retired archive directory artifacts preserved in Section 31. |
 
 ---
 
@@ -72,7 +73,8 @@
 27. [Phase 24: Five-Area Codebase Simplification & Dead Code Elimination](#27-phase-24-five-area-codebase-simplification--dead-code-elimination)
 28. [Phase 25: Codebase Commenting & Function/File Consolidation](#28-phase-25-codebase-commenting--functionfile-consolidation)
 29. [Phase 26: DRY Widget Pipeline, On-Demand GitHub Sync & Keyframe Recorder](#29-phase-26-dry-widget-pipeline-on-demand-github-sync--keyframe-recorder)
-30. [Historical Bug & Remediation Archive (BUG-01 to BUG-47)](#30-historical-bug--remediation-archive-bug-01-to-bug-47)
+30. [Phase 27: JavaScript & Rust DRY Consolidation (`/clean-javascript`)](#30-phase-27-javascript--rust-dry-consolidation-clean-javascript)
+31. [Historical Bug & Remediation Archive (BUG-01 to BUG-47)](#31-historical-bug--remediation-archive-bug-01-to-bug-47)
 
 ---
 
@@ -1370,19 +1372,65 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
 
 ---
 
-## 30. Historical Bug & Remediation Archive (BUG-01 to BUG-47)
+## 30. Phase 27: JavaScript & Rust DRY Consolidation (`/clean-javascript`)
 
-### 30.1 Overview & Former `/archive/` Contents
+### 30.1 Context & Objectives
+- **Problem:** A full codebase audit applying the `/clean-javascript` skill across `web_assets/*.js` and `web_assets/widgets/*.js` and a parallel DRY audit across `src/**/*.rs` identified 10 frontend JavaScript duplication areas and 7 backend Rust duplication areas:
+  1. Default widget properties were duplicated between `loadDefaultWidgets()` in `web_assets/app.js` and `createDefault()` in `joystick.js` and `button.js`.
+  2. Single-motor vs. multi-motor X/Y axis loops were duplicated across `calculateJoystickCommands`, `renderRun`, `onEmergencyStop`, and `stopJoystick` in `web_assets/widgets/joystick.js`.
+  3. Left and right track rendering, DOM lookup, pointer handling, and zero-reset logic were duplicated in `web_assets/widgets/tank.js`.
+  4. HTML `<select>` option lists, `.config-field` wrappers, and change event listeners were repeated across all 5 configurable widget modules.
+  5. Identical `getPortBadge: (w) => "Port " + w.port` implementations were duplicated across `button.js`, `slider.js`, and `sensor.js`.
+  6. Keyframe batch command generation (`run_to_rel_pos` at `max_speed`) and playback abort cleanup were duplicated in `web_assets/widgets/record.js`.
+  7. Response envelope unwrapping (`res && res.success === false`), busy-button async wrappers, and widget hook loops were duplicated in `web_assets/app.js`.
+  8. Toggle button state updates (`running ? "⏹ Stop" : "▶ Start"`) and command payloads were duplicated in `web_assets/widgets/button.js`.
+  9. Zero-reset DOM updates (`slider.value = 0`, `valDisplay.textContent = "0"`, `fill.style.height = "0%"`, `fill.style.bottom = "50%"`) were duplicated in `web_assets/widgets/slider.js`.
+  10. Unused `WidgetRegistry.loadActive` and `sensor.js` `initRun` methods remained in the frontend.
+  11. In Rust, `curl` process spawning and `.tmp` atomic file replacement were duplicated in `src/updater.rs`; hardware polling and motor reset loops were duplicated in `src/controller.rs`; sysfs attribute reading/parsing and sensor decimal scaling were duplicated in `src/sysfs/`; `PortCommandPayload::resolve` duplicated speed clamping and relative position lookup in `src/web.rs`; 21 unit tests in `src/web.rs` duplicated raw TCP HTTP request boilerplate; and unused single-caller wrappers remained in `motor.rs`, `wifi.rs`, `display.rs`, and `web.rs`.
+- **Solution:** Consolidate all 10 JavaScript items (`JS-1` through `JS-10`) and all 7 Rust items (`RS-1` through `RS-7`), reducing total codebase size by over 1,000 net lines while preserving all hardware constraints, thread boundaries, and test seams.
+
+### 30.2 Architectural Decision Matrix
+
+| Option / Proposed Change | Status | Technical Rationale & File Links |
+| :--- | :--- | :--- |
+| **Single-Source Widget Defaults (`JS-1`)** | `[IMPLEMENTED]` | `loadDefaultWidgets()` stores `{ id, type }` stubs in [`web_assets/app.js`](web_assets/app.js), which `boot()` populates via each module's `createDefault()`. |
+| **Unified Axis Motor List & Stop Commands (`JS-2`)** | `[IMPLEMENTED]` | Extracted `axisMotors(w, axis)` and reused `calculateJoystickCommands(w, 0, 0)` for stop commands in [`web_assets/widgets/joystick.js`](web_assets/widgets/joystick.js). |
+| **Parameterized Dual-Track Tank Logic (`JS-3`)** | `[IMPLEMENTED]` | Replaced mirrored left/right track functions with parameterized `SIDES`, `tankCommands`, `trackElements`, and `zeroTracks` in [`web_assets/widgets/tank.js`](web_assets/widgets/tank.js). |
+| **Shared Form Field & Binding Helpers (`JS-4`, `JS-5`)** | `[IMPLEMENTED]` | Added `selectOptions`, `field`, `portField`, and `bindFields` to `EV3App` in [`web_assets/app.js`](web_assets/app.js) and defaulted single-port badge rendering when `def.getPortBadge` is omitted. |
+| **Shared Keyframe Batch Builder & Playback Abort (`JS-6`)** | `[IMPLEMENTED]` | Extracted `buildCommands(ports, minDelta)` and `abortPlayback(st, ctx)` in [`web_assets/widgets/record.js`](web_assets/widgets/record.js). |
+| **Shared Fetch, Busy-Button & Hook Helpers (`JS-7`–`JS-10`)** | `[IMPLEMENTED]` | Added `unwrap`, `getJson`, `setVisible`, `motorStateText`, `disarm`, `withBusyButton`, and `callWidgetHook` in [`web_assets/app.js`](web_assets/app.js); consolidated `setToggle` in [`button.js`](web_assets/widgets/button.js) and `zeroSlider` in [`slider.js`](web_assets/widgets/slider.js); removed dead `WidgetRegistry.loadActive` and empty `sensor.js` `initRun`. |
+| **Unified `run_curl` & Atomic `.tmp` Sync (`RS-1`)** | `[IMPLEMENTED]` | Extracted `run_curl(url, timeout_secs, dest_path)` and merged create/update `.tmp` atomic rename paths in [`src/updater.rs`](src/updater.rs). |
+| **Shared Hardware Poll & Motor Reset (`RS-2`)** | `[IMPLEMENTED]` | Extracted `poll_hardware(&self)` and `reset_new_motors` in [`src/controller.rs`](src/controller.rs). |
+| **Shared Sysfs Attribute Readers & Sensor Scaling (`RS-3`, `RS-4`)** | `[IMPLEMENTED]` | Added `read_attr_trimmed` and `read_attr_parsed` in [`src/sysfs/mod.rs`](src/sysfs/mod.rs) and `SensorState::refresh_scale` in [`src/sysfs/sensor.rs`](src/sysfs/sensor.rs). |
+| **Unified Payload Resolution & Dead Wrapper Pruning (`RS-5`, `RS-6`)** | `[IMPLEMENTED]` | Extracted `clamped_speed` and `rel_pos` in [`src/web.rs`](src/web.rs); removed unused wrappers in [`src/sysfs/motor.rs`](src/sysfs/motor.rs), [`src/sysfs/wifi.rs`](src/sysfs/wifi.rs), and [`src/web.rs`](src/web.rs); derived `Clone, Copy` on `DisplayController` in [`src/sysfs/display.rs`](src/sysfs/display.rs). |
+| **Shared HTTP Test Request Helpers (`RS-7`)** | `[IMPLEMENTED]` | Consolidated 21 raw `TcpStream` test blocks into `send_raw_http` and `post_json_http` in [`src/web.rs`](src/web.rs). |
+
+### 30.3 Implementation Checklist
+
+- [x] **Step 27.1: JavaScript Core & Widget Consolidations (`JS-1` to `JS-10`)**
+  - Updated `web_assets/app.js`, `joystick.js`, `tank.js`, `slider.js`, `button.js`, `sensor.js`, and `record.js`.
+  - Verified all 7 JavaScript files pass `node --check` with zero syntax errors.
+- [x] **Step 27.2: Rust Backend & Test Suite Consolidations (`RS-1` to `RS-7`)**
+  - Updated `src/updater.rs`, `src/controller.rs`, `src/sysfs/mod.rs`, `src/sysfs/motor.rs`, `src/sysfs/sensor.rs`, `src/sysfs/wifi.rs`, `src/sysfs/display.rs`, `src/main.rs`, and `src/web.rs`.
+- [x] **Step 27.3: Verification (`cargo test` & Host Simulation)**
+  - Verified all 39 Rust unit tests pass with zero compiler warnings (`cargo test`).
+  - Verified live host mock server on `http://localhost:8080/` (`--mock`).
+
+---
+
+## 31. Historical Bug & Remediation Archive (BUG-01 to BUG-47)
+
+### 31.1 Overview & Former `/archive/` Contents
 
 This section preserves the complete historical bug tracking and remediation records formerly maintained in the `/archive/` directory. The `/archive/` directory contained legacy deployment scripts, post-mortem notes, and review summaries created during early development. Those files were reviewed and removed to maintain a clean workspace:
 
-- `archive/BUGS.md`: Comprehensive log of all identified bugs, risks, and hardware incompatibilities (`BUG-01` through `BUG-47`). Preserved in full in Section 30.2 below.
+- `archive/BUGS.md`: Comprehensive log of all identified bugs, risks, and hardware incompatibilities (`BUG-01` through `BUG-47`). Preserved in full in Section 31.2 below.
 - `archive/REPORT.md`: Architectural feasibility and triage report (2026-10-04). Key hardware determinations (TI Sitara AM1808 300 MHz CPU, 64 MB RAM, native `musleabi` runtime, zero-allocation telemetry polling, and rejection of TLS encryption overhead) are integrated into [`docs/architecture.md`](docs/architecture.md), Phase 8, and Phase 9.
 - `archive/POSSIBLE_FIXES.md`: Post-mortem investigation report analyzing appliance disk image boot failures. All remediations (systemd service paths, Brickman masking, base image extraction, console fonts, and clock synchronization) were implemented in [`tools/bake-image.sh`](tools/bake-image.sh) and documented in Step 9.3.
 - `archive/deploy.ps1` & `archive/deploy.sh`: Legacy direct-SSH/SCP deployment scripts used before appliance image baking. Superseded by appliance image automation (`tools/bake-image.sh`, `tools/flash-image.sh`) and standard atomic deployment steps in [`docs/development.md`](docs/development.md).
 - `archive/zig-lld-arm.cmd`: Windows batch wrapper for Zig cross-compilation. Superseded by standard `.cargo/config.toml` linker configuration.
 
-### 30.2 Historical Bug Register (BUG-01 to BUG-47)
+### 31.2 Historical Bug Register (BUG-01 to BUG-47)
 
 | ID | Title | Severity | Status | Component | Description & Remediation Summary |
 | :--- | :--- | :--- | :--- | :--- | :--- |

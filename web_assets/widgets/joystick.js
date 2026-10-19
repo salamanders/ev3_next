@@ -5,81 +5,53 @@
  * It maps X and Y pointer coordinates to motor speed vectors, supporting both single-motor and multi-motor axes.
  *
  * Implements the modular widget interface (`createDefault`, `renderDesign`, `attachDesign`, `renderRun`, `initRun`).
- * Dynamically loaded by `WidgetRegistry` on demand from `/widgets/joystick/widget.js`.
+ * Dynamically loaded by `WidgetRegistry` on demand from `/widgets/joystick.js`.
  */
 
-// Helper clamping a numeric value within minimum and maximum bounds.
+// Bounds a numeric value between minimum and maximum limits.
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 
-/**
- * Returns an array of unique motor port letters used by the joystick widget.
- *
- * Collects ports from `xPort`/`yPort` or iterates through `xMotors` and `yMotors` arrays.
- *
- * Shared by stop command generation and port query helpers.
- */
-function getJoystickPorts(w) {
-    return !w.multiMotor
-        ? [w.xPort, w.yPort]
-        : [...new Set([...(w.xMotors ?? []).map(m => m.port), ...(w.yMotors ?? []).map(m => m.port)])];
-}
+// Axis metadata shared by single-motor dropdowns and the multi-motor matrix.
+const AXES = [
+    { axis: "x", label: "X Axis (Left / Right)" },
+    { axis: "y", label: "Y Axis (Forward / Reverse)" }
+];
 
-/**
- * Converts normalized joystick coordinates (-1.0 to 1.0) into batch motor speed commands.
- *
- * Multiplies `normX` and `normY` by `maxSpeed` and formats commands for all assigned motors.
- * Supports individual motor inversion flags.
- *
- * Pure calculation function testable without DOM or network dependencies.
- */
+// Formats the X/Y percentage readout string beneath the touch pad.
+const readoutText = (x, y) => `X: ${x}% | Y: ${y}%`;
+
+// Normalizes single-motor and multi-motor axis settings into one list shape.
+const axisMotors = (w, axis) =>
+    w.multiMotor ? (w[`${axis}Motors`] ?? []) : [{ port: w[`${axis}Port`], invert: false }];
+
+// Scales normalized [-1, 1] coordinates into batch motor speed commands.
 function calculateJoystickCommands(w, normX, normY, maxSpeed = 1000) {
-    const stopAction = w.stopAction || "brake";
-    const xSpeed = clamp(Math.round(normX * maxSpeed), -maxSpeed, maxSpeed);
-    const ySpeed = clamp(Math.round(normY * maxSpeed), -maxSpeed, maxSpeed);
-
-    if (!w.multiMotor) {
-        return [
-            { port: w.xPort, speed: xSpeed, stop_action: stopAction },
-            { port: w.yPort, speed: ySpeed, stop_action: stopAction }
-        ];
-    }
-
-    const mapMotors = (motors, speed) => (motors ?? []).map(m => ({
-        port: m.port,
-        speed: m.invert ? -speed : speed,
-        stop_action: stopAction
-    }));
-    return [...mapMotors(w.xMotors, xSpeed), ...mapMotors(w.yMotors, ySpeed)];
+    const stop_action = w.stopAction || "brake";
+    const toSpeed = n => clamp(Math.round(n * maxSpeed), -maxSpeed, maxSpeed);
+    return [["x", toSpeed(normX)], ["y", toSpeed(normY)]].flatMap(([axis, speed]) =>
+        axisMotors(w, axis).map(({ port, invert }) => ({ port, speed: invert ? -speed : speed, stop_action }))
+    );
 }
 
-/**
- * Generates batch zero-speed stop commands for all assigned joystick motors.
- *
- * Maps ports from `getJoystickPorts` to `{ port, speed: 0, stop_action }`.
- *
- * Called when the joystick knob is released or when motion ceases.
- */
-function getJoystickStopCommands(w) {
-    const stopAction = w.stopAction || "brake";
-    return getJoystickPorts(w).map(port => ({ port, speed: 0, stop_action: stopAction }));
+// Returns the movable knob to the center origin and zeroes the text readout.
+function centerKnob(w, cardElement) {
+    const knob = cardElement.querySelector(`#joy-knob-${w.id}`);
+    if (knob) {
+        knob.style.transform = "translate(0px, 0px)";
+        knob.classList.remove("active");
+    }
+    const readout = cardElement.querySelector(`#joy-readout-${w.id}`);
+    if (readout) readout.textContent = readoutText(0, 0);
 }
 
-/**
- * Formats the badge string displaying active joystick ports in the card header.
- *
- * Returns strings like `X: B | Y: C` or lists active multi-motor ports with inversion signs.
- *
- * Used by `getPortBadge` for header card labeling.
- */
-function formatPortBadge(w) {
-    if (!w.multiMotor) {
-        return `X: ${w.xPort} | Y: ${w.yPort}`;
+// Syncs the Invert checkbox state when an Active motor checkbox changes.
+function setRowActive(row, active) {
+    const invert = row?.querySelector(".field-mm-invert");
+    if (invert) {
+        invert.disabled = !active;
+        if (!active) invert.checked = false;
     }
-    const formatAxis = (motors) => {
-        if (!motors || motors.length === 0) return "None";
-        return motors.map(m => m.invert ? `-${m.port}` : m.port).join(", ");
-    };
-    return `X: ${formatAxis(w.xMotors)} | Y: ${formatAxis(w.yMotors)}`;
+    row?.querySelector(".multi-motor-invert-label")?.classList.toggle("disabled", !active);
 }
 
 export default {
@@ -87,13 +59,7 @@ export default {
     label: "2D Joystick",
     sizeClass: "run-card-2x2",
 
-    /**
-     * Creates default configuration schema when adding a joystick widget.
-     *
-     * Returns an object assigning port B to X axis, port C to Y axis, and brake stop action.
-     *
-     * Factory function called by `EV3App::addWidget`.
-     */
+    // Supplies default dual-axis port assignments for new or first-boot cards.
     createDefault(id) {
         return {
             id,
@@ -107,111 +73,70 @@ export default {
         };
     },
 
-    /**
-     * Returns port badge string for the widget card header.
-     *
-     * Delegates to `formatPortBadge(w)`.
-     *
-     * Displays configured motor ports in the card header.
-     */
+    // Summarizes active X and Y motor ports for the Run View card header.
     getPortBadge(w) {
-        return formatPortBadge(w);
+        const formatAxis = axis =>
+            axisMotors(w, axis).map(m => m.invert ? `-${m.port}` : m.port).join(", ") || "None";
+        return `X: ${formatAxis("x")} | Y: ${formatAxis("y")}`;
     },
 
-    /**
-     * Formats HTML markup for the widget settings card in Design View.
-     *
-     * Renders controls for multi-motor toggle, port dropdowns, per-port inversion, and release stop action.
-     *
-     * Provides visual layout configuration in Design View.
-     */
+    // Builds Design View controls for single-axis or multi-motor assignment.
     renderDesign(w, ctx) {
-        const motorCols = ["A", "B", "C", "D"];
-        const axes = [
-            { axis: "x", label: "X Axis (Left / Right)", motors: w.xMotors },
-            { axis: "y", label: "Y Axis (Forward / Reverse)", motors: w.yMotors }
-        ];
+        const singleMotorFields = AXES
+            .map(({ axis, label }) => ctx.portField(label, `field-${axis}-port`, w[`${axis}Port`]))
+            .join("");
+
+        const multiMotorMatrix = `
+            <div class="multi-motor-container full-width">
+                ${AXES.map(({ axis, label }) => `
+                    <div class="multi-motor-section">
+                        <span class="multi-motor-axis-title">${label}</span>
+                        <div class="multi-motor-grid">
+                            ${ctx.motorPorts.map(col => {
+                                const entry = (w[`${axis}Motors`] ?? []).find(m => m.port === col);
+                                const isActive = !!entry;
+                                const data = `data-axis="${axis}" data-port="${col}"`;
+                                return `
+                                    <div class="multi-motor-row">
+                                        <span class="multi-motor-port-tag">${col}</span>
+                                        <label class="multi-motor-toggle-label">
+                                            <input type="checkbox" class="field-mm-active" ${data} ${isActive ? "checked" : ""}>
+                                            <span>Active</span>
+                                        </label>
+                                        <label class="multi-motor-invert-label ${!isActive ? "disabled" : ""}">
+                                            <input type="checkbox" class="field-mm-invert" ${data}
+                                                   ${entry?.invert ? "checked" : ""} ${!isActive ? "disabled" : ""}>
+                                            <span>Invert</span>
+                                        </label>
+                                    </div>
+                                `;
+                            }).join("")}
+                        </div>
+                    </div>
+                `).join("")}
+            </div>
+        `;
 
         return `
             <div class="widget-config-field full-width">
                 <label class="checkbox-label">
-                    <input type="checkbox" class="field-multi-motor" data-id="${w.id}" ${w.multiMotor ? "checked" : ""}>
+                    <input type="checkbox" class="field-multi-motor" ${w.multiMotor ? "checked" : ""}>
                     <span>Multi-Motor Control</span>
                 </label>
             </div>
-            ${!w.multiMotor ? `
-                <div class="widget-config-field">
-                    <label>X Axis (Left / Right)</label>
-                    <select class="field-x-port" data-id="${w.id}">${ctx.portOptions(w.xPort)}</select>
-                </div>
-                <div class="widget-config-field">
-                    <label>Y Axis (Forward / Reverse)</label>
-                    <select class="field-y-port" data-id="${w.id}">${ctx.portOptions(w.yPort)}</select>
-                </div>
-            ` : `
-                <div class="multi-motor-container full-width">
-                    ${axes.map(({ axis, label, motors }) => `
-                        <div class="multi-motor-section">
-                            <span class="multi-motor-axis-title">${label}</span>
-                            <div class="multi-motor-grid">
-                                ${motorCols.map(col => {
-                                    const entry = (motors ?? []).find(m => m.port === col);
-                                    const isActive = !!entry;
-                                    const isInvert = entry?.invert ?? false;
-                                    return `
-                                        <div class="multi-motor-row">
-                                            <span class="multi-motor-port-tag">${col}</span>
-                                            <label class="multi-motor-toggle-label">
-                                                <input type="checkbox" class="field-mm-active"
-                                                       data-id="${w.id}" data-axis="${axis}" data-port="${col}"
-                                                       ${isActive ? "checked" : ""}>
-                                                <span>Active</span>
-                                            </label>
-                                            <label class="multi-motor-invert-label ${!isActive ? "disabled" : ""}">
-                                                <input type="checkbox" class="field-mm-invert"
-                                                       data-id="${w.id}" data-axis="${axis}" data-port="${col}"
-                                                       ${isInvert ? "checked" : ""} ${!isActive ? "disabled" : ""}>
-                                                <span>Invert</span>
-                                            </label>
-                                        </div>
-                                    `;
-                                }).join("")}
-                            </div>
-                        </div>
-                    `).join("")}
-                </div>
-            `}
-            <div class="widget-config-field full-width">
-                <label>Release Action</label>
-                <select class="field-stop-action" data-id="${w.id}">
-                    <option value="brake" ${w.stopAction === "brake" ? "selected" : ""}>Brake (Hold Position)</option>
-                    <option value="coast" ${w.stopAction === "coast" ? "selected" : ""}>Coast (Free Spin)</option>
-                </select>
-            </div>
+            ${w.multiMotor ? multiMotorMatrix : singleMotorFields}
+            ${ctx.stopActionField(w)}
         `;
     },
 
-    /**
-     * Attaches change event listeners to design inputs.
-     *
-     * Binds multi-motor toggle, axis assignments, and inversion checkboxes to update widget configuration.
-     *
-     * Wires interactivity on newly rendered configuration cards.
-     */
+    // Wires Design View inputs to persist port, mode, and inversion changes.
     attachDesign(w, cardElement, ctx) {
-        cardElement.querySelector(".field-stop-action")?.addEventListener("change", (e) => {
-            ctx.updateWidget(w.id, { stopAction: e.target.value });
-        });
+        ctx.bindFields(cardElement, w, { ".field-stop-action": "stopAction" });
 
-        [".field-x-port", ".field-y-port"].forEach(selector => {
-            const axis = selector.includes("x") ? "x" : "y";
-            cardElement.querySelector(selector)?.addEventListener("change", (e) => {
+        AXES.forEach(({ axis }) => {
+            cardElement.querySelector(`.field-${axis}-port`)?.addEventListener("change", (e) => {
                 const port = e.target.value;
-                const patch = { [`${axis}Port`]: port };
-                if (!w.multiMotor) {
-                    patch[`${axis}Motors`] = [{ port, invert: false }];
-                }
-                ctx.updateWidget(w.id, patch);
+                ctx.updateWidget(w.id, { [`${axis}Port`]: port, [`${axis}Motors`]: [{ port, invert: false }] });
             });
         });
 
@@ -229,68 +154,42 @@ export default {
         cardElement.querySelectorAll(".field-mm-active").forEach(el => {
             el.addEventListener("change", (e) => {
                 const { axis, port } = e.target.dataset;
-                const key = axis === "x" ? "xMotors" : "yMotors";
-                const list = [...(w[key] ?? [])];
-                const idx = list.findIndex(m => m.port === port);
+                const other = axis === "x" ? "y" : "x";
                 const isActive = e.target.checked;
-                const patch = {};
+                const current = w[`${axis}Motors`] ?? [];
+                const list = !isActive
+                    ? current.filter(m => m.port !== port)
+                    : current.some(m => m.port === port) ? current : [...current, { port, invert: false }];
+                const patch = { [`${axis}Motors`]: list };
 
                 if (isActive) {
-                    if (idx === -1) list.push({ port, invert: false });
-                    const oppKey = axis === "x" ? "yMotors" : "xMotors";
-                    const oppList = (w[oppKey] ?? []).filter(m => m.port !== port);
-                    patch[oppKey] = oppList;
-
+                    patch[`${other}Motors`] = (w[`${other}Motors`] ?? []).filter(m => m.port !== port);
                     const oppCheckbox = cardElement.querySelector(
-                        `.field-mm-active[data-axis="${axis === "x" ? "y" : "x"}"][data-port="${port}"]`
+                        `.field-mm-active[data-axis="${other}"][data-port="${port}"]`
                     );
-                    if (oppCheckbox && oppCheckbox.checked) {
+                    if (oppCheckbox?.checked) {
                         oppCheckbox.checked = false;
-                        const oppRow = oppCheckbox.closest(".multi-motor-row");
-                        const oppInvert = oppRow?.querySelector(".field-mm-invert");
-                        const oppInvertLabel = oppRow?.querySelector(".multi-motor-invert-label");
-                        if (oppInvert) { oppInvert.checked = false; oppInvert.disabled = true; }
-                        if (oppInvertLabel) oppInvertLabel.classList.add("disabled");
+                        setRowActive(oppCheckbox.closest(".multi-motor-row"), false);
                     }
-                } else {
-                    if (idx !== -1) list.splice(idx, 1);
                 }
 
-                patch[key] = list;
-                if (list.length > 0) {
-                    if (axis === "x") patch.xPort = list[0].port;
-                    else patch.yPort = list[0].port;
-                }
+                if (list.length > 0) patch[`${axis}Port`] = list[0].port;
                 ctx.updateWidget(w.id, patch);
-
-                const row = el.closest(".multi-motor-row");
-                const invertInput = row?.querySelector(".field-mm-invert");
-                const invertLabel = row?.querySelector(".multi-motor-invert-label");
-                if (invertInput && invertLabel) {
-                    invertInput.disabled = !isActive;
-                    if (!isActive) invertInput.checked = false;
-                    invertLabel.classList.toggle("disabled", !isActive);
-                }
+                setRowActive(el.closest(".multi-motor-row"), isActive);
             });
         });
 
         cardElement.querySelectorAll(".field-mm-invert").forEach(el => {
             el.addEventListener("change", (e) => {
                 const { axis, port } = e.target.dataset;
-                const key = axis === "x" ? "xMotors" : "yMotors";
+                const key = `${axis}Motors`;
                 const list = (w[key] ?? []).map(m => m.port === port ? { ...m, invert: e.target.checked } : m);
                 ctx.updateWidget(w.id, { [key]: list });
             });
         });
     },
 
-    /**
-     * Formats HTML markup for the 2D joystick touch pad in Run View.
-     *
-     * Generates a circular boundary with crosshairs, movable knob handle, and live percentage readout.
-     *
-     * Renders the interactive touch control pad for Run View.
-     */
+    // Renders the circular joystick boundary, crosshairs, and percentage readout.
     renderRun(w) {
         return `
             <div class="joystick-container">
@@ -299,27 +198,19 @@ export default {
                     <div class="joystick-crosshair-y"></div>
                     <div class="joystick-knob" id="joy-knob-${w.id}"></div>
                 </div>
-                <div class="joystick-readout" id="joy-readout-${w.id}">X: 0% | Y: 0%</div>
+                <div class="joystick-readout" id="joy-readout-${w.id}">${readoutText(0, 0)}</div>
             </div>
         `;
     },
 
-    /**
-     * Attaches pointer drag handlers to the joystick knob.
-     *
-     * 1. Captures pointer events on the joystick boundary circle.
-     * 2. Calculates clamped displacement from circle center.
-     * 3. Sends throttled `/api/batch` motor commands at 15 Hz (66 ms interval).
-     * 4. On release, snaps knob back to center and sends batch stop command.
-     *
-     * Implements responsive touch and mouse dragging physics.
-     */
+    // Captures pointer drags inside the circle and sends 15 Hz batch commands.
     initRun(w, cardElement, ctx) {
         const boundary = cardElement.querySelector(`#joy-boundary-${w.id}`);
         const knob = cardElement.querySelector(`#joy-knob-${w.id}`);
         const readout = cardElement.querySelector(`#joy-readout-${w.id}`);
         if (!boundary || !knob) return;
 
+        const key = `joy_${w.id}`;
         let dragging = false;
 
         const onPointerMove = (clientX, clientY) => {
@@ -327,9 +218,8 @@ export default {
             const maxRadius = Math.max(30, (rect.width - (knob.offsetWidth || 44)) / 2 || 70);
             const rawX = clientX - (rect.left + rect.width / 2);
             const rawY = clientY - (rect.top + rect.height / 2);
-            const dist = Math.hypot(rawX, rawY);
             const angle = Math.atan2(rawY, rawX);
-            const clampedDist = Math.min(dist, maxRadius);
+            const clampedDist = Math.min(Math.hypot(rawX, rawY), maxRadius);
             const dx = clampedDist * Math.cos(angle);
             const dy = clampedDist * Math.sin(angle);
 
@@ -339,10 +229,10 @@ export default {
             const normY = -dy / maxRadius;
 
             if (readout) {
-                readout.textContent = `X: ${Math.round(normX * 100)}% | Y: ${Math.round(normY * 100)}%`;
+                readout.textContent = readoutText(Math.round(normX * 100), Math.round(normY * 100));
             }
 
-            ctx.throttle(`joy_${w.id}`, 66, () => {
+            ctx.throttle(key, 66, () => {
                 const commands = calculateJoystickCommands(w, normX, normY);
                 if (commands.length > 0) {
                     ctx.apiBatch(commands).catch(() => {});
@@ -353,22 +243,20 @@ export default {
         const stopMotion = () => {
             if (!dragging) return;
             dragging = false;
-            knob.classList.remove("active");
-            knob.style.transform = "translate(0px, 0px)";
-            if (readout) readout.textContent = "X: 0% | Y: 0%";
+            centerKnob(w, cardElement);
 
-            const commands = getJoystickStopCommands(w);
+            const commands = calculateJoystickCommands(w, 0, 0);
             if (commands.length > 0) {
-                ctx.stopBurst(`joy_${w.id}`, () => ctx.apiBatch(commands));
+                ctx.stopBurst(key, () => ctx.apiBatch(commands));
             } else {
-                ctx.clearThrottle(`joy_${w.id}`);
+                ctx.clearThrottle(key);
             }
         };
 
         boundary.addEventListener("pointerdown", (e) => {
             e.preventDefault();
             dragging = true;
-            ctx.cancelStopBurst(`joy_${w.id}`);
+            ctx.cancelStopBurst(key);
             knob.classList.add("active");
             try {
                 boundary.setPointerCapture(e.pointerId);
@@ -389,22 +277,8 @@ export default {
         window.addEventListener("blur", stopMotion);
     },
 
-    /**
-     * Resets joystick knob position and readout when an emergency stop occurs.
-     *
-     * Snaps knob back to center (0, 0) and resets readout text to "X: 0% | Y: 0%".
-     *
-     * Lifecycle hook invoked by `EV3App::emergencyStop`.
-     */
+    // Snaps the knob home when an emergency stop is triggered.
     onEmergencyStop(w, cardElement) {
-        const knob = cardElement.querySelector(`#joy-knob-${w.id}`);
-        if (knob) {
-            knob.style.transform = "translate(0px, 0px)";
-            knob.classList.remove("active");
-        }
-        const readout = cardElement.querySelector(`#joy-readout-${w.id}`);
-        if (readout) {
-            readout.textContent = "X: 0% | Y: 0%";
-        }
+        centerKnob(w, cardElement);
     }
 };
