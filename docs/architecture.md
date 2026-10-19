@@ -31,10 +31,10 @@ Reading Linux sysfs files (`/sys/class/tacho-motor/` and `/sys/class/lego-sensor
          ▲
          │  (HTTP request thread: non-blocking RAM read)
          │
-[ HTTP Router /api/ports ] ───► [ Web Client Browser ]
+[ HTTP Router GET /api/status ] ───► [ Web Client Browser ]
 ```
 
-- **Background Polling Thread:** Queries motor attributes and sensor values every 50 ms, caching results in atomic in-memory structs.
+- **Background Polling Thread:** Queries motor attributes and sensor values every 50 ms, caching results in in-memory structs.
 - **HTTP Request Thread:** Reads cached state directly from RAM and serializes JSON without sysfs I/O.
 - **Motor Writes:** Only active movement commands write directly to sysfs on the request thread.
 
@@ -49,48 +49,44 @@ To prevent runaway robots when network connections drop:
    - Any client communication (such as telemetry polling or motor commands) refreshes the watchdog activity timer.
    - If client communication ceases for more than 2.0 seconds (2000 ms) while motion is active, the supervisor thread automatically stops and coasts all motors (`coast_all_motors`) to eliminate mechanical gear stress.
 2. **Emergency Stop (`POST /api/estop`):**
-   - Immediately dispatches a broadcast reset to all motors and illuminates red status LEDs.
+   - Immediately stops all motors with brake action and sets status LEDs to red.
 
 ---
 
-## 4. Web Asset Delivery & Dynamic Widget Updater
+## 4. Web Asset Delivery & On-Demand Widget Sync
 
-Static assets (`index.html`, `design.html`, `style.css`, `app.js`) are served directly from RAM without disk access or compression overhead. Modular widgets are delivered from disk if present or from embedded RAM baseline.
+Core web files (`index.html`, `style.css`, `app.js`) and modular widgets (`widgets/<name>.js`) are served directly from `web_assets/` on disk (`/home/robot/web_assets` on the EV3 brick, or `./web_assets` in host mock mode).
 
-### Static Asset Serving:
+### Static Asset & Widget Serving:
 ```
 [ HTTP Client Request ]
          │
-         ├─► Core Pages (/, /run, /design, /style.css, /app.js) ──► Serve directly from RAM
-         │
-         └─► Widget Files (/widgets/{widget}/widget.js)
-                 │
-                 ├─► Disk file exists (/home/robot/web_assets/widgets/...) ──► Serve uncompressed file
-                 │
-                 └─► Disk file absent ──► Serve embedded compile-time baseline from RAM
+         ├─► Core App (/, /run, /design) ──► Serve web_assets/index.html
+         ├─► Static Assets (/style.css, /app.js) ──► Serve from web_assets/
+         ├─► Widget Discovery (GET /api/widgets) ──► Scan web_assets/widgets/*.js
+         ├─► Widget Modules (GET /widgets/{name}.js) ──► Serve web_assets/widgets/{name}.js
+         └─► On-Demand Sync (POST /update) ──► Sync web_assets/widgets/*.js from GitHub
 ```
 
-- **RAM Asset Delivery:** Core web assets are compiled into the binary (`include_bytes!`) and served directly from RAM without disk I/O or gzip overhead.
-- **Single-File Widget Architecture:** Each dynamic widget consists of a single `widget.js` file.
-- **Background Widget Updater:** `src/updater.rs` performs a single non-blocking check on startup with a 5-second timeout. If the network is available, it compares remote widget manifests and downloads updated `widget.js` files atomically to `/home/robot/web_assets/widgets/<name>/`.
+- **Single HTML Shell (`index.html`):** Serves `/`, `/run`, and `/design` from one HTML file so switching between Run View and Design View happens in place in memory without losing session state (such as recorded keyframes).
+- **Flat Single-File Widgets:** Each widget is a standalone ES module (`web_assets/widgets/<name>.js`). `GET /api/widgets` scans `web_assets/widgets/*.js` dynamically so new widget files appear in Design View without changing server or core frontend code.
+- **On-Demand GitHub Updater (`POST /update`):** Triggered by the **Update** button in Design View. `src/updater.rs` queries the GitHub Contents API, downloads new or changed `.js` widget files to `.tmp` staging paths, atomically renames them into `web_assets/widgets/`, and deletes widget files removed upstream.
 
 ---
 
 ## 5. Frontend Dashboard Architecture
 
-- **Single Top Tab Navigation:** Compact `Design` and `Run` tabs eliminate duplicate headers and maximize vertical screen space.
+- **Single Top Tab Navigation:** Compact `Design` and `Run` tabs switch views in place without reloading the page.
 - **Responsive 2-Unit Grid System:**
-  - Uses 2 columns on mobile devices and 4 columns on desktop displays (`grid-auto-flow: dense`).
-  - **2x2 Square Widget (`.run-card-2x2`):** 2 columns by 2 rows with 1:1 aspect ratio. Used for the 2D joystick widget.
-  - **2x1 Half-Height Widget (`.run-card-2x1`):** 2 columns by 1 row with 2:1 aspect ratio. Used for sliders, action buttons, and sensor displays.
-  - Sized so a 2x2 joystick with a 2x1 slider forms a 2x3 mobile layout (~560 px height) that fills mobile viewports without vertical scrolling.
-  - On desktop displays, two 2x1 cards stack next to the 2x2 joystick to match its total height.
+   - Uses 2 columns on mobile devices and 4 columns on desktop displays (`grid-auto-flow: dense`).
+   - **2x2 Square Widget (`.run-card-2x2`):** 2 columns by 2 rows with 1:1 aspect ratio. Used for 2D Joystick and Tank Drive widgets.
+   - **2x1 Half-Height Widget (`.run-card-2x1`):** 2 columns by 1 row. Used for Speed Slider, Action Button, Sensor Display, and Keyframe Recorder widgets.
 - **2D Virtual Joystick:**
-  - Pointer capture API isolates touch and mouse input.
-  - `touch-action: none` prevents touch dragging from scrolling the page on mobile devices.
-  - Dynamic radius scaling adapts to element dimensions.
-  - Client-side 15 Hz throttle prevents network queue saturation.
-- **Footer Status Bar:** Passive telemetry (`Battery`, `Online`, `RTT`) and brick safety actions (`STOP ALL`, `Power Off`) live in the footer, keeping primary robot controls above the fold.
+   - Pointer capture API isolates touch and mouse input.
+   - `touch-action: none` prevents touch dragging from scrolling the page on mobile devices.
+   - Supports single-motor per axis or multi-motor axis assignment with per-motor inversion.
+   - Client-side 15 Hz throttle prevents network queue saturation.
+- **Footer Status Bar:** Passive telemetry (`Battery`, `Online`, `RTT`) and system actions (`STOP ALL`, `Power Off`, `Update`, `Rescan`) live in the footer and top bar, keeping primary robot controls above the fold.
 
 ---
 
@@ -100,13 +96,12 @@ Use this guide to place new features in the correct layer:
 
 | Subsystem | File / Directory | What Goes Here | What Does NOT Go Here |
 | :--- | :--- | :--- | :--- |
-| **Hardware sysfs Drivers** | `src/sysfs/` (`motor.rs`, `sensor.rs`, `led.rs`, `display.rs`, `wifi.rs`, `mock.rs`) | Direct Linux `/sys` operations, device discovery, file descriptor caching, hardware mocks. | No HTTP handling, no web routing, no JSON payload parsing. |
+| **Hardware sysfs Drivers** | `src/sysfs/` (`mod.rs`, `motor.rs`, `sensor.rs`, `led.rs`, `display.rs`, `wifi.rs`, `mock.rs`) | Direct Linux `/sys` operations, port address normalization, device discovery, file descriptor caching, hardware mocks. | No HTTP handling, no web routing, no JSON payload parsing. |
 | **System State & Poller** | `src/controller.rs` | Background telemetry polling loop, in-memory status caching, safety watchdogs, emergency stop. | No raw HTTP socket operations, no HTML rendering. |
-| **HTTP Transport & Routing** | `src/web/router.rs` | URL route dispatch, HTTP methods, security headers (Origin/Host validation), static asset delivery. | No direct sysfs file reads, no motor physics math. |
-| **API Payloads & Schemas** | `src/web/handlers.rs` | Request/response structs, command normalization, parameter inference, JSON serialization. | No hardware communication, no thread management. |
+| **HTTP Router & Handlers** | `src/web.rs` | URL route dispatch, Origin/Host CSRF validation, request/response structs, command resolution, static asset and widget delivery. | No direct sysfs file reads, no motor physics math. |
 | **Configuration & CLI** | `src/config.rs` | CLI arguments, port configuration, mock detection flags. | No runtime motor control, no network serving. |
-| **Application Lifecycle** | `src/main.rs` | Program startup, worker thread pool initialization, LCD refresher thread, shutdown handling. | No low-level driver logic, no route definitions. |
-| **Frontend Templates** | `web_assets/index.html`, `design.html` | Semantic HTML structure for Run and Design views. | No business logic, no styling rules. |
-| **Frontend Logic** | `web_assets/app.js` | UI event listeners, pointer capture, client rate limiting (15 Hz), API communication, `WidgetRegistry`. | No direct sysfs references, no individual widget math or DOM layouts. |
-| **Modular Widgets** | `web_assets/widgets/` (`joystick`, `tank`, `slider`, `button`, `sensor`) | Standalone native ES widget modules and baseline `manifest.json`. | No global app orchestration, no server polling loops. |
-| **Catalog Updater** | `src/updater.rs` | Background thread for widget updates via curl, manifest comparisons, atomic on-disk swaps. | No UI event binding, no sysfs driver actuation. |
+| **Application Lifecycle** | `src/main.rs` | Program startup, 4-thread HTTP worker pool initialization, LCD refresher thread, shutdown handling. | No low-level driver logic, no route definitions. |
+| **Frontend Shell & Styles** | `web_assets/index.html`, `web_assets/style.css` | Semantic HTML shell for Run and Design views and responsive layout styling. | No business logic or inline scripts. |
+| **Frontend Controller** | `web_assets/app.js` | Telemetry polling (4 Hz), view switching, client rate limiting, shared form field helpers, `WidgetRegistry`. | No direct sysfs references, no widget-specific control math. |
+| **Modular Widgets** | `web_assets/widgets/*.js` (`button.js`, `joystick.js`, `record.js`, `sensor.js`, `slider.js`, `tank.js`) | Standalone ES widget modules implementing `createDefault`, `renderDesign`, `attachDesign`, `renderRun`, `initRun`, `onTelemetry`, and `onEmergencyStop`. | No global app orchestration, no server polling loops. |
+| **Widget Updater** | `src/updater.rs` | On-demand GitHub Contents API synchronization via `curl`, `.tmp` file staging, and atomic renames. | No UI event binding, no sysfs driver actuation. |

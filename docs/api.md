@@ -153,6 +153,7 @@ curl -X POST http://<ip>/api/batch \
 | `POST` | `/api/rescan` | None | Triggers immediate hardware discovery on all 8 ports and returns updated system status. |
 | `POST` | `/api/estop` | None | **Emergency Stop:** Stops all motors immediately with brake action. |
 | `POST` | `/api/shutdown` | None | Safely powers off the Linux operating system on the EV3 brick. |
+| `POST` | `/update` (`/api/update`) | None | Synchronizes `web_assets/widgets/*.js` with GitHub and returns `{ created, updated, deleted, unchanged }`. |
 
 ---
 
@@ -160,7 +161,7 @@ curl -X POST http://<ip>/api/batch \
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `GET` | `/api/status` | Returns system telemetry (motors, sensors, battery) from in-memory cache. |
+| `GET` | `/api/status` | Returns system telemetry (motors, sensors, battery voltage) from in-memory cache. |
 
 ### Envelope Format
 
@@ -180,52 +181,46 @@ All responses use this standard JSON structure:
     "motors": [
       {
         "port": "A",
-        "name": "motor0",
-        "driver_name": "lego-ev3-l-motor",
         "address": "outA",
-        "speed": 0,
+        "driver_name": "lego-ev3-l-motor",
         "position": 120,
-        "max_speed": 1050,
+        "speed": 0,
         "duty_cycle": 0,
         "state": [],
-        "polarity": "normal",
-        "stop_action": "brake",
-        "connected": true
+        "max_speed": 1050,
+        "count_per_rot": 360,
+        "connected": true,
+        "polarity": "normal"
       }
     ],
     "sensors": [
       {
         "port": "1",
-        "name": "sensor0",
-        "driver_name": "lego-ev3-touch",
         "address": "in1",
+        "driver_name": "lego-ev3-touch",
+        "connected": true,
         "mode": "TOUCH",
         "modes": ["TOUCH"],
-        "units": "",
-        "decimals": 0,
         "value0": 0.0,
-        "connected": true
+        "units": "state"
       }
     ],
-    "battery": {
-      "voltage_v": 7.8,
-      "current_a": 0.12
-    }
+    "battery_voltage": 7.8
   }
 }
 ```
 
 ---
 
-## 5. Modular Widget Endpoints (`/widgets/*`)
+## 5. Modular Widget Endpoints
 
-The HTTP server delivers dynamic widget components directly from local storage or embedded compile-time RAM:
+The HTTP server discovers, serves, and updates modular ES widget scripts stored in `web_assets/widgets/*.js`:
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `GET` / `HEAD` | `/widgets/manifest.json` | Catalog of available widgets, version strings, and timestamps. |
-| `GET` / `HEAD` | `/widgets/{widget}/widget.js` | Modular native ES component implementation. |
+| `GET` | `/api/widgets` | Scans `web_assets/widgets/*.js` and returns a sorted list of widget names (e.g. `["button", "joystick", "record", "sensor", "slider", "tank"]`). |
+| `GET` / `HEAD` | `/widgets/{name}.js` | Serves the ES widget module from `web_assets/widgets/{name}.js`. |
+| `POST` | `/update` (`/api/update`) | Synchronizes local `web_assets/widgets/*.js` files against the GitHub repository using `.tmp` staging and atomic renames. |
 
-- **Plain Delivery:** Serves uncompressed files directly from disk if present; otherwise serves embedded baseline widgets from RAM.
-- **Single-File Architecture:** Each modular widget consists of a single `widget.js` file.
-- **Cache Policy:** Emits `Cache-Control: no-cache` headers on all `/widgets/*` responses.
+- **Flat Single-File Architecture:** Each widget is a single `.js` file in `web_assets/widgets/`.
+- **Cache Policy:** Emits `Cache-Control: no-cache, must-revalidate` on all static and `/widgets/*` responses.

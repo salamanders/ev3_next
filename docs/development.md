@@ -9,8 +9,8 @@ This guide describes how to configure the developer environment, simulate hardwa
 Always test user interface, API routes, and state logic on the host computer before deploying to physical hardware.
 
 ```bash
-# Start simulation on port 8080:
-cargo run -- --mock --port 8080
+# Start simulation on default port 8080:
+cargo run -- --mock
 
 # Open in browser:
 http://localhost:8080/
@@ -30,7 +30,7 @@ The target architecture is `armv5te-unknown-linux-musleabi` targeting the Sitara
 # Add ARM target to Rust:
 rustup target add armv5te-unknown-linux-musleabi
 
-# Install Zig compiler (used as lightweight cross-linker):
+# Install Zig compiler (used as cross-linker):
 # Windows:
 winget install -e --id zig.zig
 # Linux (Debian/Ubuntu):
@@ -86,7 +86,7 @@ Run these commands to reduce boot times to **10–15 seconds** and free 20 MB of
 ```bash
 sudo su
 
-# 1. Disable heavy LCD GUI and reserve /dev/tty1 for console status renderer:
+# 1. Disable LCD GUI and reserve /dev/tty1 for console status renderer:
 systemctl disable --now brickman.service
 systemctl mask getty@tty1.service
 
@@ -104,16 +104,17 @@ exit
 
 ## 5. Deployment Over Network (Zero SD-Card Swapping)
 
-Deploy updates over the network without removing the MicroSD card:
+Deploy binary and web asset updates over the network without removing the MicroSD card:
 
 1. Cross-compile the binary for ARMv5te:
    ```bash
    cargo build --target armv5te-unknown-linux-musleabi --release
    ```
 
-2. Copy the binary to the staging directory on the EV3 brick:
+2. Copy the binary and `web_assets/` to the EV3 brick:
    ```bash
    scp target/armv5te-unknown-linux-musleabi/release/ev3-web-motor robot@192.168.2.2:/tmp/ev3-web-motor.new
+   scp -r web_assets robot@192.168.2.2:/home/robot/
    ```
 
 3. Atomically replace the installed binary and restart the service on the EV3:
@@ -132,8 +133,9 @@ Alternatively, bake an appliance disk image using `tools/bake-image.sh` and flas
 
 ## 6. Running Tests
 
-Run the host test suite:
+Run the host test suite and JavaScript syntax checks:
 ```bash
 cargo test
+node --check web_assets/app.js web_assets/widgets/*.js
 ```
-All 35 unit tests (covering motor clamping, sysfs discovery, router endpoints, and asset self-healing) must pass.
+All 39 Rust unit tests (covering motor clamping, sysfs discovery, sensor scaling, router endpoints, and widget synchronization) must pass.
