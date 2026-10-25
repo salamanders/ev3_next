@@ -10,14 +10,14 @@
 //!    renders the initial splash screen on the LCD console (`/dev/tty1`), spawns background threads,
 //!    and joins HTTP workers until process shutdown.
 //! 2. Background telemetry and watchdog thread (`sysfs-poller`, spawned in `MotorController`):
-//!    Polls motor and sensor sysfs attributes every 50 ms into an in-memory `RwLock` cache.
-//!    Enforces the 2-second communication safety watchdog, automatically coasting motors if client tabs disconnect.
+//!    Polls motor and sensor sysfs attributes every 100 ms into an in-memory `RwLock` cache.
+//!    Enforces the 5-second communication safety watchdog, automatically coasting motors if client tabs disconnect.
 //! 3. Periodic LCD refresher (`display-refresher`):
 //!    Updates the physical LCD screen (`/dev/tty1`) every 5 seconds with current IP address, port, and battery voltage.
 //! 4. Background widget updater (`widget-updater`, spawned in `updater`):
 //!    Runs once on startup. Waits for an active IP address, checks remote GitHub repository for widget updates,
 //!    and writes updated single-file widgets atomically.
-//! 5. HTTP worker threads (`http-worker-0`..`http-worker-3`, 4 threads):
+//! 5. HTTP worker threads (`http-worker-0`..`http-worker-7`, 8 threads):
 //!    Concurrently dequeue incoming HTTP requests from the shared `tiny_http` server queue.
 //!    Serve static web assets and status queries directly from RAM without disk or sysfs I/O.
 //!
@@ -39,11 +39,11 @@ use web::Router;
 ///
 /// 1. Reads CLI arguments and sets up runtime configuration.
 /// 2. Initializes status LEDs to amber and attempts Wi-Fi provisioning if `wifi.txt` exists.
-/// 3. Creates `MotorController`, which starts the background 50 ms hardware telemetry poller.
+/// 3. Creates `MotorController`, which starts the background 100 ms hardware telemetry poller.
 /// 4. Binds the HTTP server socket (port 8080 in mock mode, port 80 on physical hardware).
 /// 5. Shows server status and IP address on `/dev/tty1` and turns status LEDs green.
 /// 6. Launches background threads for LCD screen refresh and widget self-update checks.
-/// 7. Spawns 4 HTTP worker threads to service requests concurrently.
+/// 7. Spawns 8 HTTP worker threads to service requests concurrently without keep-alive starvation.
 ///
 /// Binary entry point required by the Rust runtime.
 fn main() {
@@ -99,18 +99,28 @@ fn main() {
     println!("[INFO] HTTP Server started successfully. Ready for commands.");
 
     let active_ip = sysfs::DisplayController::detect_ip();
+    if active_ip != "No network" {
+        sysfs::WifiManager::disable_power_save(config.mock_mode);
+    }
     let battery_v = controller.get_battery().voltage_v;
     display.show_ready(&active_ip, config.port, battery_v);
 
     // Periodic LCD display refresh thread (every 5 seconds)
     let controller_disp = controller.clone();
     let port = config.port;
+    let mock_mode = config.mock_mode;
     thread::Builder::new()
         .name("display-refresher".into())
+        .stack_size(256 * 1024)
         .spawn(move || {
+            let mut last_ip = active_ip;
             loop {
                 thread::sleep(std::time::Duration::from_secs(5));
                 let ip = sysfs::DisplayController::detect_ip();
+                if ip != "No network" && ip != last_ip {
+                    sysfs::WifiManager::disable_power_save(mock_mode);
+                }
+                last_ip = ip.clone();
                 let bat = controller_disp.get_battery().voltage_v;
                 display.show_ready(&ip, port, bat);
             }
@@ -119,8 +129,8 @@ fn main() {
 
     println!("[WIDGETS] On-demand updater ready via POST /update.");
 
-    // Worker pool servicing requests concurrently on ARM/Host
-    let num_workers = 4;
+    // Worker pool servicing requests concurrently on ARM/Host (8 workers cover 6 browser keep-alive sockets + commands)
+    let num_workers = 8;
     let mut handles = Vec::new();
 
     for worker_id in 0..num_workers {
@@ -129,6 +139,7 @@ fn main() {
 
         let handle = thread::Builder::new()
             .name(format!("http-worker-{}", worker_id))
+            .stack_size(256 * 1024)
             .spawn(move || {
                 loop {
                     match server_clone.recv() {

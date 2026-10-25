@@ -129,6 +129,7 @@ impl WifiManager {
                 "[WIFI] ConnMan config already provisioned and matches credentials for SSID '{}'",
                 ssid
             );
+            Self::disable_power_save(mock_mode);
             return WifiProvisionResult::Provisioned { ssid, path };
         }
 
@@ -143,12 +144,34 @@ impl WifiManager {
                 if let Err(e) = Command::new("connmanctl").args(["scan", "wifi"]).status() {
                     eprintln!("[WIFI WARN] Failed executing connmanctl scan wifi: {}", e);
                 }
+                Self::disable_power_save(mock_mode);
 
                 WifiProvisionResult::Provisioned { ssid, path }
             }
             Err(e) => {
                 eprintln!("[WIFI ERROR] Failed writing ConnMan config: {}", e);
                 WifiProvisionResult::Error(e.to_string())
+            }
+        }
+    }
+
+    /// Disables 802.11 Wi-Fi radio power saving on `wlan0` so USB Wi-Fi dongles do not sleep between commands.
+    ///
+    /// Attempts `iw dev wlan0 set power_save off` and falls back to `iwconfig wlan0 power off`.
+    ///
+    /// Called during Wi-Fi provisioning and when the display refresher detects a newly active IP address.
+    /// Turning off 802.11 power save prevents 150-400 ms wakeup delays when moving a slider after a brief idle pause.
+    pub fn disable_power_save(mock_mode: bool) {
+        if mock_mode {
+            return;
+        }
+        let iw_ok = match Command::new("iw").args(["dev", "wlan0", "set", "power_save", "off"]).status() {
+            Ok(s) => s.success(),
+            Err(_) => false,
+        };
+        if !iw_ok {
+            if let Err(e) = Command::new("iwconfig").args(["wlan0", "power", "off"]).status() {
+                eprintln!("[WIFI INFO] Could not disable wlan0 power save (iw/iwconfig unavailable): {}", e);
             }
         }
     }

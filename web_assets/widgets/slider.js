@@ -8,14 +8,12 @@
  * Dynamically loaded by `WidgetRegistry` on demand from `/widgets/slider.js`.
  */
 
-const BRAKE = { command: "stop", stop_action: "brake" };
-
 // Resets the range thumb and numeric readout to zero.
 function zeroSlider(w, cardElement) {
     const slider = cardElement.querySelector(`#slider-input-${w.id}`);
     const readout = cardElement.querySelector(`#slider-val-${w.id}`);
     if (slider) slider.value = "0";
-    if (readout) readout.textContent = "0";
+    if (readout) readout.textContent = "0%";
 }
 
 export default {
@@ -23,19 +21,24 @@ export default {
     label: "Speed Slider",
     sizeClass: "run-card-2x1",
 
-    // Assigns motor port A by default when adding a slider widget.
+    // Assigns motor port A, normal polarity, and brake release by default.
     createDefault(id) {
-        return { id, type: "slider", port: "A" };
+        return { id, type: "slider", port: "A", invert: false, stopAction: "brake" };
     },
 
-    // Renders the single motor port dropdown for Design View.
+    // Renders motor port, direction inversion, and release action controls.
     renderDesign(w, ctx) {
-        return ctx.portField("Motor", "field-port", w.port, true);
+        return ctx.motorField("Motor", "field-port", w.port, "field-invert", w.invert, true)
+            + ctx.stopActionField(w);
     },
 
-    // Binds the motor port dropdown to persist selection changes.
+    // Binds motor port, direction inversion, and release action inputs.
     attachDesign(w, cardElement, ctx) {
-        ctx.bindFields(cardElement, w, { ".field-port": "port" });
+        ctx.bindFields(cardElement, w, {
+            ".field-port": "port",
+            ".field-invert": "invert",
+            ".field-stop-action": "stopAction"
+        });
     },
 
     // Renders the horizontal speed slider and Zero button for Run View.
@@ -43,10 +46,10 @@ export default {
         return `
             <div class="run-slider-box">
                 <div class="slider-val-row">
-                    <span>Speed: <strong class="slider-val-readout" id="slider-val-${w.id}">0</strong> ticks/s</span>
+                    <span>Power: <strong class="slider-val-readout" id="slider-val-${w.id}">0%</strong></span>
                 </div>
                 <input type="range" class="run-range-slider" id="slider-input-${w.id}"
-                       min="-1000" max="1000" value="0" step="25">
+                       min="-100" max="100" value="0" step="1">
                 <div class="slider-actions">
                     <button class="btn btn-sm btn-secondary btn-slider-zero">Zero (Stop)</button>
                 </div>
@@ -54,7 +57,7 @@ export default {
         `;
     },
 
-    // Streams 15 Hz speed updates while dragging and brakes on release.
+    // Streams 10 Hz speed updates with outer 25% full-power zones while dragging and stops on release.
     initRun(w, cardElement, ctx) {
         const slider = cardElement.querySelector(`#slider-input-${w.id}`);
         const readout = cardElement.querySelector(`#slider-val-${w.id}`);
@@ -67,7 +70,7 @@ export default {
         const stopAndCenter = () => {
             active = false;
             zeroSlider(w, cardElement);
-            ctx.stopBurst(key, () => send(BRAKE));
+            ctx.stopBurst(key, () => send(ctx.stopPayload(w)));
         };
 
         const grab = () => {
@@ -78,10 +81,12 @@ export default {
         slider.addEventListener("touchstart", grab, { passive: true });
 
         slider.addEventListener("input", (e) => {
-            const speed = parseInt(e.target.value, 10);
-            if (readout) readout.textContent = speed;
-            ctx.throttle(key, 66, () => {
-                send(speed === 0 ? BRAKE : { speed }).catch(() => {});
+            const norm = parseInt(e.target.value, 10) / 100;
+            const pct = ctx.scalePct(norm, w.invert);
+            const speed = ctx.scaleSpeed(w.port, norm, w.invert);
+            if (readout) readout.textContent = `${pct}%`;
+            ctx.throttle(key, 100, () => {
+                send(speed === 0 ? ctx.stopPayload(w) : { speed }).catch(() => {});
             });
         });
 

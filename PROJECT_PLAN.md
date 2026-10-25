@@ -39,7 +39,8 @@
 | **Phase 25** | Codebase Commenting & Function/File Consolidation | **COMPLETE**. Merged `web/` into single `src/web.rs`, moved address parsers to `src/sysfs/mod.rs`, eliminated dead fields/methods, added STE headers and detailed comments across all files. |
 | **Phase 26** | DRY Widget Pipeline, On-Demand GitHub Sync & Keyframe Recorder | **COMPLETE**. Flattened widgets to `web_assets/widgets/<name>.js`, removed `manifest.json` and `BASELINE_*` embeds, unified `index.html` and `design.html`, added `GET /api/widgets` and `POST /api/widgets/update`, and built `record.js`. |
 | **Phase 27** | JavaScript & Rust DRY Consolidation (`/clean-javascript`) | **COMPLETE**. Consolidated 10 frontend JS duplication areas and 7 Rust backend duplication areas across 16 files (`-1,036` net lines), verified with 39/39 unit tests and host simulation. |
-| **Historical Archive** | Bug Tracking & Historical Remediation Archive | **COMPLETE**. Full historical record of `BUG-01` through `BUG-47` and retired archive directory artifacts preserved in Section 31. |
+| **Phase 28** | Wi-Fi Stall Prevention, Write FD Caching & Polling Rate Optimization | **COMPLETE**. Sequential 500 ms `/api/status` polling, 100 ms `sysfs-poller` default, cached motor write FDs (`MotorWriteFiles`), Wi-Fi power-save disable, 8 HTTP workers, and 10 Hz / 1 Hz command throttling. |
+| **Historical Archive** | Bug Tracking & Historical Remediation Archive | **COMPLETE**. Full historical record of `BUG-01` through `BUG-47` and retired archive directory artifacts preserved in Section 32. |
 
 ---
 
@@ -74,7 +75,8 @@
 28. [Phase 25: Codebase Commenting & Function/File Consolidation](#28-phase-25-codebase-commenting--functionfile-consolidation)
 29. [Phase 26: DRY Widget Pipeline, On-Demand GitHub Sync & Keyframe Recorder](#29-phase-26-dry-widget-pipeline-on-demand-github-sync--keyframe-recorder)
 30. [Phase 27: JavaScript & Rust DRY Consolidation (`/clean-javascript`)](#30-phase-27-javascript--rust-dry-consolidation-clean-javascript)
-31. [Historical Bug & Remediation Archive (BUG-01 to BUG-47)](#31-historical-bug--remediation-archive-bug-01-to-bug-47)
+31. [Phase 28: Wi-Fi Stall Prevention, Write FD Caching & Polling Rate Optimization](#31-phase-28-wi-fi-stall-prevention-write-fd-caching--polling-rate-optimization)
+32. [Historical Bug & Remediation Archive (BUG-01 to BUG-47)](#32-historical-bug--remediation-archive-bug-01-to-bug-47)
 
 ---
 
@@ -1418,9 +1420,30 @@ Any agent implementing Phase 7, Phase 8, and `BUG-14` through `BUG-47` must foll
 
 ---
 
-## 31. Historical Bug & Remediation Archive (BUG-01 to BUG-47)
+## 31. Phase 28: Wi-Fi Stall Prevention, Write FD Caching & Polling Rate Optimization
 
-### 31.1 Overview & Former `/archive/` Contents
+### 31.1 Architectural Decisions
+
+| Area | Status | Implementation & Rationale |
+| :--- | :--- | :--- |
+| **Sequential Non-Overlapping Telemetry Poll (`3a`)** | `[IMPLEMENTED]` | Replaced `setInterval(..., 250)` in [`web_assets/app.js`](web_assets/app.js) with a self-scheduling `setTimeout(..., 500)` after each `/api/status` response completes, and required 2 consecutive failures before marking the connection `Offline`. |
+| **100 ms Sysfs Poller & Cached Motor Write Descriptors (`3b`)** | `[IMPLEMENTED]` | Updated default `poll_interval_ms` from `50` ms to `100` ms in [`src/config.rs`](src/config.rs) and [`ev3-web.service`](ev3-web.service). Added [`write_sysfs_cached`](src/sysfs/mod.rs) and isolated [`MotorWriteFiles`](src/sysfs/motor.rs) mutex on `Motor` so command writes reuse open file handles without contending with telemetry reads or running `stat()` on every command in [`src/controller.rs`](src/controller.rs). |
+| **Wi-Fi Power-Save Disable & 8 HTTP Workers (`3c`)** | `[IMPLEMENTED]` | Added [`WifiManager::disable_power_save`](src/sysfs/wifi.rs) (`iw dev wlan0 set power_save off` / `iwconfig wlan0 power off`) called on Wi-Fi provisioning, in [`ev3-web.service`](ev3-web.service), and on IP detection in [`src/main.rs`](src/main.rs). Increased HTTP worker pool to 8 threads (`256 KB` stack) so browser keep-alive sockets never starve incoming commands. |
+| **10 Hz Drive Throttle, 1 Hz Hold Repeat & 2x Stop Burst (`3d`)** | `[IMPLEMENTED]` | Relaxed pointer move throttle to `100 ms` (10 Hz) in [`slider.js`](web_assets/widgets/slider.js), [`joystick.js`](web_assets/widgets/joystick.js), and [`tank.js`](web_assets/widgets/tank.js); relaxed stationary hold repeat to `1000 ms` (1 Hz) and `stopBurst` to `2` packets in [`web_assets/app.js`](web_assets/app.js). |
+| **Unified Motor Field (`Invert` + `Lock / Coast` Across All Motor Widgets)** | `[IMPLEMENTED]` | Added shared `motorField`, `stopPayload`, and checkbox support in `bindFields` in [`web_assets/app.js`](web_assets/app.js); added per-motor direction inversion and `Lock / Brake` vs `Coast` release selectors across [`slider.js`](web_assets/widgets/slider.js), [`button.js`](web_assets/widgets/button.js), [`tank.js`](web_assets/widgets/tank.js), and single-motor [`joystick.js`](web_assets/widgets/joystick.js). |
+
+### 31.2 Implementation Checklist
+
+- [x] **Step 28.1: Frontend Sequential Polling & Command Throttling (`web_assets/app.js`, `slider.js`, `joystick.js`, `tank.js`)**
+- [x] **Step 28.2: Backend Sysfs Write Caching & 100 ms Poller (`src/config.rs`, `src/sysfs/mod.rs`, `src/sysfs/motor.rs`, `src/controller.rs`)**
+- [x] **Step 28.3: Wi-Fi Power-Save Disable & 8-Worker Pool (`src/sysfs/wifi.rs`, `src/main.rs`, `ev3-web.service`)**
+- [x] **Step 28.4: Verification (`cargo test`, Host Simulation on Port 8080, ARMv5te Release Build)**
+
+---
+
+## 32. Historical Bug & Remediation Archive (BUG-01 to BUG-47)
+
+### 32.1 Overview & Former `/archive/` Contents
 
 This section preserves the complete historical bug tracking and remediation records formerly maintained in the `/archive/` directory. The `/archive/` directory contained legacy deployment scripts, post-mortem notes, and review summaries created during early development. Those files were reviewed and removed to maintain a clean workspace:
 

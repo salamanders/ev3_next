@@ -6,7 +6,7 @@
  * 1. Run View (`/` and `/run`): Live operator dashboard displaying interactive control widgets.
  * 2. Design View (`/design`): Visual layout editor for adding widgets, assigning ports, and monitoring diagnostics.
  *
- * `app.js` serves as the central frontend controller. It runs the 250 ms telemetry polling loop,
+ * `app.js` serves as the central frontend controller. It runs the non-overlapping 500 ms telemetry polling loop,
  * dynamically imports modular widget ES scripts, persists dashboard configuration to localStorage,
  * and transmits command payloads to the backend REST API.
  */
@@ -17,6 +17,17 @@ const STORAGE_KEY = "ev3_dashboard_widgets";
 
 // Strips the ApiResponse wrapper so callers receive raw payload data.
 const unwrap = json => json?.data ?? json;
+
+// Builds a single-port stop payload using the widget's configured release action.
+const stopPayload = w => ({ command: "stop", stop_action: w?.stopAction || "brake" });
+
+// Maps [-1, 1] input so the outer 25% of travel (|v| >= 0.75) saturates at 100% speed.
+function saturateNorm(v, deadzone = 0.05, fullAt = 0.75) {
+    const abs = Math.abs(v);
+    if (abs <= deadzone) return 0;
+    if (abs >= fullAt) return Math.sign(v);
+    return Math.sign(v) * ((abs - deadzone) / (fullAt - deadzone));
+}
 
 // Fetches a GET endpoint with a timeout and returns the unwrapped JSON body.
 async function getJson(url, timeoutMs) {
@@ -99,6 +110,7 @@ class EV3App {
         this.throttleMap = new Map();
         this.stopBurstMap = new Map();
         this.isOnline = false;
+        this.failCount = 0;
         this.pollTimer = null;
         this.isDesignView = window.location.pathname === "/design";
         this.registry = new WidgetRegistry();
@@ -297,8 +309,8 @@ class EV3App {
         });
     }
 
-    // Rate-limits 60 Hz pointer moves and repeats held commands for the watchdog.
-    throttle(key, intervalMs, fn, repeatMs = 250) {
+    // Rate-limits pointer moves and repeats held commands at 1 Hz for the 5 s watchdog.
+    throttle(key, intervalMs, fn, repeatMs = 1000) {
         this.cancelStopBurst(key);
         const now = Date.now();
         const entry = this.throttleMap.get(key) ?? { last: 0, timer: null, holdTimer: null, nextFn: null, holdFn: null, holdCount: 0 };
@@ -313,8 +325,8 @@ class EV3App {
             if (!repeatMs || repeatMs <= 0) return;
             entry.holdTimer = setTimeout(() => {
                 entry.holdTimer = null;
-                // Cap stationary hold repeats at 40 (~10 s) so a missed release stops.
-                if (entry.holdFn && entry.holdCount < 40) {
+                // Cap stationary hold repeats at 60 (~60 s) so a missed release eventually stops.
+                if (entry.holdFn && entry.holdCount < 60) {
                     entry.holdCount += 1;
                     entry.last = Date.now();
                     entry.holdFn();
@@ -365,8 +377,8 @@ class EV3App {
         }
     }
 
-    // Repeats a stop command up to maxCount times across 500 ms on release.
-    stopBurst(key, actionFn, maxCount = 5, gapMs = 66) {
+    // Sends an immediate stop command plus one confirmation retry on release.
+    stopBurst(key, actionFn, maxCount = 2, gapMs = 120) {
         this.clearThrottle(key);
         this.cancelStopBurst(key);
 
@@ -517,13 +529,48 @@ class EV3App {
         return this.field(label, `<select class="${cssClass}">${this.portOptions(selected, isSensor)}</select>`, fullWidth);
     }
 
+    // Renders a motor port selector paired with an inline Invert direction checkbox.
+    motorField(label, portClass, selectedPort, invertClass, inverted = false, fullWidth = false) {
+        const control = `
+            <div class="motor-port-row">
+                <select class="${portClass}">${this.portOptions(selectedPort)}</select>
+                <label class="multi-motor-invert-label">
+                    <input type="checkbox" class="${invertClass}" ${inverted ? "checked" : ""}>
+                    <span>Invert</span>
+                </label>
+            </div>
+        `;
+        return this.field(label, control, fullWidth);
+    }
+
     // Renders the shared Brake / Coast release selector for drive widgets.
     stopActionField(w) {
         const options = this.selectOptions([
-            ["brake", "Brake (Hold Position)"],
+            ["brake", "Lock / Brake (Hold Position)"],
             ["coast", "Coast (Free Spin)"]
-        ], w.stopAction);
+        ], w.stopAction || "brake");
         return this.field("Release Action", `<select class="field-stop-action">${options}</select>`, true);
+    }
+
+    // Builds a single-port stop payload using the widget's configured release action.
+    stopPayload(w) {
+        return stopPayload(w);
+    }
+
+    // Looks up a motor port's hardware max_speed (1050 Large, 1560 Medium; fallback 1560 clamped by backend).
+    maxSpeed(port) {
+        return this.hardwareMotors?.find(m => m.port === port && m.connected)?.max_speed || 1560;
+    }
+
+    // Scales a normalized [-1, 1] control position with outer-edge 100% saturation into motor speed ticks/s.
+    scaleSpeed(port, norm, invert = false) {
+        const sat = saturateNorm(invert ? -norm : norm);
+        return Math.round(sat * this.maxSpeed(port));
+    }
+
+    // Converts a normalized [-1, 1] input into a saturated [-100, 100] percentage for UI readouts.
+    scalePct(norm, invert = false) {
+        return Math.round(saturateNorm(invert ? -norm : norm) * 100);
     }
 
     // Binds change listeners from a selector-to-property specification map.
@@ -531,7 +578,8 @@ class EV3App {
         Object.entries(spec).forEach(([selector, opt]) => {
             const { key, parse = v => v, rerender = false, after } = typeof opt === "string" ? { key: opt } : opt;
             card.querySelector(selector)?.addEventListener("change", e => {
-                const val = parse(e.target.value);
+                const raw = e.target.type === "checkbox" ? e.target.checked : e.target.value;
+                const val = parse(raw);
                 this.updateWidget(w.id, { [key]: val });
                 if (rerender) this.renderDesignWidgets();
                 after?.(val);
@@ -611,7 +659,8 @@ class EV3App {
     renderRunCard(w) {
         const def = this.registry.get(w.type);
         const sizeClass = def?.sizeClass ?? "run-card-2x1";
-        const portBadge = def?.getPortBadge ? def.getPortBadge(w) : (w.port ? `Port ${w.port}` : "");
+        const defaultBadge = w.port ? `Port ${w.invert ? "-" : ""}${w.port}` : "";
+        const portBadge = def?.getPortBadge ? def.getPortBadge(w) : defaultBadge;
         const cardTitle = def?.label ?? w.type;
         const portAttr = MOTOR_PORTS.includes(w.port) ? `data-motor-port="${w.port}"` : "";
         const body = def?.renderRun ? def.renderRun(w, this) : "";
@@ -628,13 +677,14 @@ class EV3App {
         `;
     }
 
-    // Polls GET /api/status at 4 Hz to refresh badges, tables, and widgets.
+    // Sequentially polls GET /api/status with a 500 ms gap so requests never overlap.
     startPolling() {
-        if (this.pollTimer) clearInterval(this.pollTimer);
-        this.pollTimer = setInterval(async () => {
+        clearTimeout(this.pollTimer);
+        const tick = async () => {
             const t0 = performance.now();
             try {
                 const data = await getJson("/api/status", 2000);
+                this.failCount = 0;
                 this.setConnectionState(true, Math.round(performance.now() - t0));
 
                 const volt = data.battery?.voltage_v ?? data.battery_voltage;
@@ -656,9 +706,15 @@ class EV3App {
 
                 this.callWidgetHook("onTelemetry", "run-card-", data);
             } catch (_) {
-                this.setConnectionState(false, 0);
+                this.failCount += 1;
+                if (this.failCount >= 2) {
+                    this.setConnectionState(false, 0);
+                }
+            } finally {
+                this.pollTimer = setTimeout(tick, 500);
             }
-        }, 250);
+        };
+        tick();
     }
 
     // Updates the footer connection badge and round-trip latency readout.

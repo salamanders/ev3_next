@@ -387,6 +387,22 @@ body {
     text-transform: uppercase;
 }
 
+.motor-port-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.motor-port-row select {
+    flex: 1;
+}
+
+.motor-port-row .multi-motor-invert-label {
+    text-transform: none;
+    white-space: nowrap;
+}
+
 .multi-motor-toggle {
     display: inline-flex;
     align-items: center;

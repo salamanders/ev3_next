@@ -31,7 +31,7 @@ impl Config {
     /// 1. Iterates over argument strings, matching `--host`, `-p`/`--port`, `-m`/`--mock`, and `--poll-interval`.
     /// 2. Automatically enables `mock_mode` if `/sys/class/tacho-motor` does not exist on disk.
     /// 3. Defaults port to 8080 when running in mock simulation mode, or port 80 on physical hardware (Rule 13).
-    /// 4. Clamps the background telemetry polling interval between 10 ms and 1000 ms.
+    /// 4. Clamps the background telemetry polling interval between 10 ms and 1000 ms (default: 100 ms).
     ///
     /// Allows unit tests to verify flag combinations with arbitrary argument slices
     /// without mutating global process environment state.
@@ -40,7 +40,7 @@ impl Config {
         let mut port: u16 = 80;
         let mut port_explicit = false;
         let mut mock_mode = false;
-        let mut poll_interval_ms = 50;
+        let mut poll_interval_ms = 100;
 
         let mut i = 1;
         while i < args.len() {
@@ -79,7 +79,7 @@ impl Config {
                     println!("  --host <HOST>           Bind host address (default: 0.0.0.0)");
                     println!("  -p, --port <PORT>       Bind port (default: 8080 in mock mode, 80 on hardware)");
                     println!("  -m, --mock              Force mock hardware simulation mode");
-                    println!("  --poll-interval <MS>    Sysfs background polling interval in ms (default: 50)");
+                    println!("  --poll-interval <MS>    Sysfs background polling interval in ms (default: 100)");
                     println!("  -h, --help              Print help information");
                     std::process::exit(0);
                 }

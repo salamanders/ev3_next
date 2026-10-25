@@ -293,6 +293,6 @@ ev3-web-motor-ready.img.xz
 *.img.tmp*
 *.img.xz.tmp*
 build_image/
-web_assets/*.gz
-
 # End of https://www.toptal.com/developers/gitignore/api/windows,linux,java,rust,go,macos,osx,intellij,visualstudiocode
+web_assets/*.gz
+chrome/

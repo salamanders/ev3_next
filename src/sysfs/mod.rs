@@ -8,8 +8,8 @@
 //! Storing shared file handle caching and port address parsers here prevents code duplication
 //! between `motor.rs` and `sensor.rs`, and prevents hardware drivers from importing from the web layer.
 
-use std::fs::{self, File};
-use std::io::{self, Read, Seek, SeekFrom};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::str::FromStr;
 
@@ -133,6 +133,38 @@ pub(crate) fn read_sysfs_cached(
     } else {
         Err(io::Error::other("File not available"))
     }
+}
+
+/// Writes a Linux sysfs attribute using a cached file descriptor.
+///
+/// 1. Opens the target sysfs file for writing on the first call and stores the open `File` handle in `file_opt`.
+/// 2. On every call, rewinds the file cursor to byte 0 using `seek(SeekFrom::Start(0))`, writes `val`,
+///    and truncates to `val.len()` so shorter values cleanly replace longer ones in regular test files.
+/// 3. If `seek` or `write_all` fails (for example, when a motor cable is unplugged), it clears `file_opt` to `None`,
+///    retries once with a freshly opened handle, and returns any error.
+///
+/// Reusing open write handles avoids running `open()` and `close()` kernel syscalls on every motor command tick
+/// on the 300 MHz ARM9 processor, reducing command latency after idle gaps and during continuous slider drags.
+pub(crate) fn write_sysfs_cached(
+    file_opt: &mut Option<File>,
+    path: &Path,
+    val: &[u8],
+) -> io::Result<()> {
+    if let Some(file) = file_opt.as_mut() {
+        if file.seek(SeekFrom::Start(0)).is_ok() && file.write_all(val).is_ok() {
+            #[cfg(test)]
+            let _ = file.set_len(val.len() as u64);
+            return Ok(());
+        }
+        *file_opt = None;
+    }
+
+    let mut file = OpenOptions::new().write(true).open(path)?;
+    file.write_all(val)?;
+    #[cfg(test)]
+    let _ = file.set_len(val.len() as u64);
+    *file_opt = Some(file);
+    Ok(())
 }
 
 #[cfg(test)]

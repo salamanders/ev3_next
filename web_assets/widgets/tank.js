@@ -10,13 +10,17 @@
 
 // Track definitions shared across design inputs, run columns, and commands.
 const SIDES = [
-    { side: "left", label: "Left", key: "leftPort" },
-    { side: "right", label: "Right", key: "rightPort" }
+    { side: "left", label: "Left", key: "leftPort", invKey: "leftInvert" },
+    { side: "right", label: "Right", key: "rightPort", invKey: "rightInvert" }
 ];
 
-// Formats a synchronized batch payload for both tracks from a speed pair.
-const tankCommands = (w, speeds) =>
-    SIDES.map(({ key }, i) => ({ port: w[key], speed: speeds[i], stop_action: w.stopAction || "brake" }));
+// Formats a synchronized batch payload for both tracks from normalized [-1, 1] inputs.
+const tankCommands = (w, norms, ctx) =>
+    SIDES.map(({ key, invKey }, i) => ({
+        port: w[key],
+        speed: ctx.scaleSpeed(w[key], norms[i], w[invKey]),
+        stop_action: w.stopAction || "brake"
+    }));
 
 // Resolves the range input and readout elements for both tracks on a card.
 const trackElements = (w, cardElement) => SIDES.map(({ side }) => ({
@@ -28,7 +32,7 @@ const trackElements = (w, cardElement) => SIDES.map(({ side }) => ({
 function zeroTracks(tracks) {
     tracks.forEach(({ slider, readout }) => {
         if (slider) slider.value = "0";
-        if (readout) readout.textContent = "0";
+        if (readout) readout.textContent = "0%";
     });
 }
 
@@ -37,32 +41,39 @@ export default {
     label: "Tank Controls",
     sizeClass: "run-card-2x2",
 
-    // Assigns ports B and C with brake action for newly added tank cards.
+    // Assigns ports B and C with normal polarity and brake release for newly added tank cards.
     createDefault(id) {
         return {
             id,
             type: "tank",
             leftPort: "B",
             rightPort: "C",
+            leftInvert: false,
+            rightInvert: false,
             stopAction: "brake"
         };
     },
 
     // Formats the left/right track port badge for the card header.
     getPortBadge(w) {
-        return `L: ${w.leftPort} | R: ${w.rightPort}`;
+        const fmt = ({ key, invKey }) => `${w[invKey] ? "-" : ""}${w[key]}`;
+        return `L: ${fmt(SIDES[0])} | R: ${fmt(SIDES[1])}`;
     },
 
-    // Renders left track, right track, and release action dropdowns.
+    // Renders left track, right track, direction invert checkboxes, and release action dropdown.
     renderDesign(w, ctx) {
-        return SIDES.map(({ side, label, key }) => ctx.portField(`${label} Track`, `field-${side}-port`, w[key])).join("")
-            + ctx.stopActionField(w);
+        return SIDES.map(({ side, label, key, invKey }) =>
+            ctx.motorField(`${label} Track`, `field-${side}-port`, w[key], `field-${side}-invert`, w[invKey])
+        ).join("") + ctx.stopActionField(w);
     },
 
-    // Binds track port and release action dropdowns to widget state.
+    // Binds track ports, direction invert checkboxes, and release action dropdown to widget state.
     attachDesign(w, cardElement, ctx) {
         ctx.bindFields(cardElement, w, {
-            ...Object.fromEntries(SIDES.map(({ side, key }) => [`.field-${side}-port`, key])),
+            ...Object.fromEntries(SIDES.flatMap(({ side, key, invKey }) => [
+                [`.field-${side}-port`, key],
+                [`.field-${side}-invert`, invKey]
+            ])),
             ".field-stop-action": "stopAction"
         });
     },
@@ -74,9 +85,9 @@ export default {
                 <span class="tank-track-title">${label} (${w[key]})</span>
                 <div class="tank-slider-wrapper">
                     <input type="range" class="run-tank-slider" id="tank-${side}-${w.id}"
-                           min="-1000" max="1000" value="0" step="25" orient="vertical">
+                           min="-100" max="100" value="0" step="1" orient="vertical">
                 </div>
-                <span class="tank-speed-readout" id="tank-${side}-val-${w.id}">0</span>
+                <span class="tank-speed-readout" id="tank-${side}-val-${w.id}">0%</span>
             </div>
         `);
         return `
@@ -89,20 +100,21 @@ export default {
         `;
     },
 
-    // Streams 15 Hz dual-track batch commands on slider input or Stop Both.
+    // Streams 10 Hz dual-track batch commands on slider input or Stop Both.
     initRun(w, cardElement, ctx) {
         const tracks = trackElements(w, cardElement);
         if (tracks.some(t => !t.slider)) return;
         const key = `tank_${w.id}`;
-        const send = speeds => ctx.apiBatch(tankCommands(w, speeds)).catch(() => {});
+        const send = norms => ctx.apiBatch(tankCommands(w, norms, ctx)).catch(() => {});
 
         const updateSpeeds = () => {
-            const speeds = tracks.map(({ slider, readout }) => {
-                const speed = parseInt(slider.value, 10);
-                if (readout) readout.textContent = speed;
-                return speed;
+            const norms = tracks.map(({ slider, readout }, i) => {
+                const norm = parseInt(slider.value, 10) / 100;
+                const pct = ctx.scalePct(norm, w[SIDES[i].invKey]);
+                if (readout) readout.textContent = `${pct}%`;
+                return norm;
             });
-            ctx.throttle(key, 66, () => send(speeds));
+            ctx.throttle(key, 100, () => send(norms));
         };
 
         tracks.forEach(({ slider }) => slider.addEventListener("input", updateSpeeds));

@@ -136,6 +136,21 @@ impl MotorController {
         }
     }
 
+    /// Merges newly scanned motors with existing motor handles to preserve open file descriptors
+    /// for ports whose kernel `sysfs_path` has not changed (`BUG-36`).
+    fn merge_motors(existing: &[Motor], scanned: Vec<Motor>) -> Vec<Motor> {
+        scanned
+            .into_iter()
+            .map(|new_m| {
+                existing
+                    .iter()
+                    .find(|old_m| old_m.port == new_m.port && old_m.sysfs_path == new_m.sysfs_path)
+                    .cloned()
+                    .unwrap_or(new_m)
+            })
+            .collect()
+    }
+
     /// Samples all motors and sensors from the active backend and updates in-memory caches.
     ///
     /// Shared by `MotorController::new`, `run_poller_loop`, and mock `rescan` so backend dispatch
@@ -244,7 +259,7 @@ impl MotorController {
                         };
                         Self::reset_new_motors(&scanned, &existing_ports);
                         if let Ok(mut w) = self.motors.write() {
-                            *w = scanned;
+                            *w = Self::merge_motors(&w, scanned);
                         }
                         if let Ok(mut w) = self.sensors.write() {
                             *w = Sensor::find_all();
@@ -310,32 +325,44 @@ impl MotorController {
         }
     }
 
-    /// Looks up a physical motor instance by port letter, auto-rescanning if a cable reconnected.
+    /// Looks up a physical motor instance by port letter, rescanning only when missing or requested.
     ///
-    /// Acquires read lock on `motors` and returns a cloned `Motor` handle if its sysfs directory exists.
-    /// If missing or re-enumerated by the kernel, automatically rescans `Motor::find_all()`.
+    /// Returns the cached `Motor` handle immediately on the fast path without calling `stat()` (`exists()`).
+    /// When `force_rescan` is true or the port is not in the cache, rescans `Motor::find_all()`.
     ///
-    /// Shared helper for all real motor command executions.
-    fn get_real_motor(&self, port: &str) -> Result<Motor, String> {
-        {
+    /// Shared helper for `with_real_motor` so normal commands execute with zero directory/stat syscalls.
+    fn get_real_motor(&self, port: &str, force_rescan: bool) -> Result<Motor, String> {
+        if !force_rescan {
             let guard = self.motors.read().unwrap_or_else(|e| e.into_inner());
             if let Some(m) = guard.iter().find(|m| m.port.eq_ignore_ascii_case(port)) {
-                if m.sysfs_path.exists() {
-                    return Ok(m.clone());
-                }
+                return Ok(m.clone());
             }
         }
 
         let scanned = Motor::find_all();
-        let found = scanned
-            .iter()
-            .find(|m| m.port.eq_ignore_ascii_case(port))
-            .cloned();
+        let mut w = self.motors.write().unwrap_or_else(|e| e.into_inner());
         if !scanned.is_empty() {
-            let mut w = self.motors.write().unwrap_or_else(|e| e.into_inner());
-            *w = scanned;
+            *w = Self::merge_motors(&w, scanned);
         }
-        found.ok_or_else(|| format!("Motor on Port {} is not connected", port))
+        w.iter()
+            .find(|m| m.port.eq_ignore_ascii_case(port))
+            .cloned()
+            .ok_or_else(|| format!("Motor on Port {} is not connected", port))
+    }
+
+    /// Executes an operation on a physical motor, automatically rescanning once if the sysfs node was re-enumerated.
+    ///
+    /// Runs `op` against the cached `Motor` without a `stat()` check; if `op` returns an `io::Error`
+    /// (for example, after a cable is unplugged and plugged back in), rescans sysfs and retries once.
+    ///
+    /// Shared by `raw_run_forever`, `run_to_rel_pos`, `stop`, and `reset` to eliminate duplicate error conversion and retry code.
+    fn with_real_motor(&self, port: &str, mut op: impl FnMut(&Motor) -> std::io::Result<()>) -> Result<(), String> {
+        let motor = self.get_real_motor(port, false)?;
+        if op(&motor).is_ok() {
+            return Ok(());
+        }
+        let rescanned = self.get_real_motor(port, true)?;
+        op(&rescanned).map_err(|e| e.to_string())
     }
 
     /// Arms or refreshes the 5-second motor idle watchdog timer.
@@ -507,12 +534,10 @@ impl MotorController {
                 mock.run_forever(port, speed);
                 Ok(())
             }
-            HardwareBackend::Real => {
-                let motor = self.get_real_motor(port)?;
-                motor.set_speed_sp(speed).map_err(|e| e.to_string())?;
-                motor.send_command("run-forever").map_err(|e| e.to_string())?;
-                Ok(())
-            }
+            HardwareBackend::Real => self.with_real_motor(port, |motor| {
+                motor.set_speed_sp(speed)?;
+                motor.send_command("run-forever")
+            }),
         }
     }
 
@@ -545,14 +570,12 @@ impl MotorController {
                 mock.run_to_rel_pos(port, speed, rel_pos, Some(action));
                 Ok(())
             }
-            HardwareBackend::Real => {
-                let motor = self.get_real_motor(port)?;
-                motor.set_stop_action(&action).map_err(|e| e.to_string())?;
-                motor.set_speed_sp(speed).map_err(|e| e.to_string())?;
-                motor.set_position_sp(rel_pos).map_err(|e| e.to_string())?;
-                motor.send_command("run-to-rel-pos").map_err(|e| e.to_string())?;
-                Ok(())
-            }
+            HardwareBackend::Real => self.with_real_motor(port, |motor| {
+                motor.set_stop_action(&action)?;
+                motor.set_speed_sp(speed)?;
+                motor.set_position_sp(rel_pos)?;
+                motor.send_command("run-to-rel-pos")
+            }),
         }
     }
 
@@ -588,9 +611,10 @@ impl MotorController {
                 Ok(())
             }
             HardwareBackend::Real => {
-                let motor = self.get_real_motor(port)?;
-                motor.set_stop_action(&action_str).map_err(|e| e.to_string())?;
-                motor.send_command("stop").map_err(|e| e.to_string())?;
+                self.with_real_motor(port, |motor| {
+                    motor.set_stop_action(&action_str)?;
+                    motor.send_command("stop")
+                })?;
                 self.mark_motor_stopped(port);
                 Ok(())
             }
@@ -610,8 +634,7 @@ impl MotorController {
                 Ok(())
             }
             HardwareBackend::Real => {
-                let motor = self.get_real_motor(port)?;
-                motor.send_command("reset").map_err(|e| e.to_string())?;
+                self.with_real_motor(port, |motor| motor.send_command("reset"))?;
                 self.mark_motor_stopped(port);
                 Ok(())
             }

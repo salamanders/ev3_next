@@ -6,8 +6,8 @@
 //! Motors have active command files (`command`, `speed_sp`, `stop_action`) and dual status metrics (speed, position).
 //! Keeping motor logic in `motor.rs` separates motor control from read-only sensor input in `sensor.rs`.
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::fs::{self, File};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
@@ -61,6 +61,17 @@ struct MotorState {
     state_file: Option<File>,
 }
 
+/// Internal cached file handles for motor command writes, isolated from `MotorState`
+/// so HTTP command threads never contend with the background telemetry poller lock.
+#[derive(Default)]
+struct MotorWriteFiles {
+    speed_sp: Option<File>,
+    position_sp: Option<File>,
+    stop_action: Option<File>,
+    command: Option<File>,
+    last_stop_action: String,
+}
+
 /// Handle to a physical EV3 motor discovered in sysfs.
 #[derive(Clone)]
 pub struct Motor {
@@ -71,6 +82,7 @@ pub struct Motor {
     pub max_speed: i32,
     pub count_per_rot: i32,
     state: Arc<Mutex<MotorState>>,
+    writes: Arc<Mutex<MotorWriteFiles>>,
 }
 
 impl Motor {
@@ -123,6 +135,7 @@ impl Motor {
                             polarity,
                             ..Default::default()
                         })),
+                        writes: Arc::new(Mutex::new(MotorWriteFiles::default())),
                     });
                 }
             }
@@ -140,7 +153,8 @@ impl Motor {
     /// Clamping avoids kernel `EINVAL` errors from out-of-range speed values.
     pub fn set_speed_sp(&self, speed: i32) -> io::Result<()> {
         let clamped = speed.clamp(-self.max_speed, self.max_speed);
-        self.write_attr("speed_sp", &clamped.to_string())
+        let val = format!("{}\n", clamped);
+        self.write_cached_attr("speed_sp", &val, |w| &mut w.speed_sp)
     }
 
     /// Sets the target relative position attribute in sysfs.
@@ -149,16 +163,33 @@ impl Motor {
     ///
     /// Called by `MotorController::run_to_rel_pos` before dispatching `run-to-rel-pos` command.
     pub fn set_position_sp(&self, pos: i32) -> io::Result<()> {
-        self.write_attr("position_sp", &pos.to_string())
+        let val = format!("{}\n", pos);
+        self.write_cached_attr("position_sp", &val, |w| &mut w.position_sp)
     }
 
     /// Sets the stopping mode attribute in sysfs.
     ///
-    /// Writes "coast", "brake", or "hold" to `/sys/class/tacho-motor/motorN/stop_action`.
+    /// Writes "coast", "brake", or "hold" to `/sys/class/tacho-motor/motorN/stop_action`
+    /// only when the requested action differs from the last written stop action.
     ///
-    /// Called before issuing stop or movement commands to select braking behavior.
+    /// Skipping unchanged `stop_action` writes cuts sysfs syscalls in half during repeated stops.
     pub fn set_stop_action(&self, action: &str) -> io::Result<()> {
-        self.write_attr("stop_action", action)
+        let mut w = match self.writes.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if w.last_stop_action == action && w.stop_action.is_some() {
+            return Ok(());
+        }
+        let path = self.sysfs_path.join("stop_action");
+        let val = format!("{}\n", action);
+        crate::sysfs::write_sysfs_cached(&mut w.stop_action, &path, val.as_bytes()).map_err(|e| {
+            w.last_stop_action.clear();
+            io::Error::new(e.kind(), format!("Port {}: failed to write '{}' to stop_action: {}", self.port, action, e))
+        })?;
+        w.last_stop_action.clear();
+        w.last_stop_action.push_str(action);
+        Ok(())
     }
 
     /// Writes an operational command to trigger motor execution.
@@ -168,7 +199,13 @@ impl Motor {
     ///
     /// Serves as the motor driver trigger interface called by controller action methods.
     pub fn send_command(&self, cmd: &str) -> io::Result<()> {
-        self.write_attr("command", cmd)
+        if cmd == "reset" {
+            if let Ok(mut w) = self.writes.lock() {
+                w.last_stop_action.clear();
+            }
+        }
+        let val = format!("{}\n", cmd);
+        self.write_cached_attr("command", &val, |w| &mut w.command)
     }
 
     /// Reads and parses a 32-bit signed integer from a cached sysfs attribute.
@@ -239,19 +276,27 @@ impl Motor {
         }
     }
 
-    /// Writes an attribute value to a motor sysfs file.
+    /// Writes an attribute value to a motor sysfs file using a cached file descriptor.
     ///
-    /// Opens the specified attribute file for writing, writes the text value, and adds port context on error.
+    /// Reuses the open `File` handle selected by `select_slot`, writes `val`, and adds port context on error.
     ///
-    /// Shared by `set_speed_sp`, `set_position_sp`, `set_stop_action`, and `send_command`.
-    /// Adding port and attribute context prevents bare Linux kernel `os error 22 (EINVAL)` messages.
-    fn write_attr(&self, attr: &str, val: &str) -> io::Result<()> {
+    /// Shared by `set_speed_sp`, `set_position_sp`, and `send_command` to avoid `open()`/`close()` syscalls on every command.
+    fn write_cached_attr(
+        &self,
+        attr: &str,
+        val: &str,
+        select_slot: impl FnOnce(&mut MotorWriteFiles) -> &mut Option<File>,
+    ) -> io::Result<()> {
         let path = self.sysfs_path.join(attr);
-        let mut file = OpenOptions::new().write(true).open(&path).map_err(|e| {
-            io::Error::new(e.kind(), format!("Port {}: failed to open {}: {}", self.port, attr, e))
-        })?;
-        file.write_all(val.as_bytes()).map_err(|e| {
-            io::Error::new(e.kind(), format!("Port {}: failed to write '{}' to {}: {}", self.port, val, attr, e))
+        let mut w = match self.writes.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        crate::sysfs::write_sysfs_cached(select_slot(&mut w), &path, val.as_bytes()).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("Port {}: failed to write '{}' to {}: {}", self.port, val.trim(), attr, e),
+            )
         })
     }
 }
@@ -338,15 +383,26 @@ mod tests {
         let speed_sp_neg = fs::read_to_string(m.join("speed_sp")).unwrap();
         assert_eq!(speed_sp_neg.trim(), "-1000");
 
+        // Shorter speed value overwrites longer cached write value cleanly
+        motor.set_speed_sp(5).unwrap();
+        let speed_sp_short = fs::read_to_string(m.join("speed_sp")).unwrap();
+        assert_eq!(speed_sp_short.trim(), "5");
+
         // Position setpoint write
         motor.set_position_sp(360).unwrap();
         let pos_sp = fs::read_to_string(m.join("position_sp")).unwrap();
         assert_eq!(pos_sp.trim(), "360");
 
-        // Command write
+        // Command write and stop_action write caching
+        fs::write(m.join("stop_action"), "coast\n").unwrap();
+        motor.set_stop_action("brake").unwrap();
+        assert_eq!(fs::read_to_string(m.join("stop_action")).unwrap().trim(), "brake");
+        motor.set_stop_action("brake").unwrap();
         motor.send_command("run-forever").unwrap();
         let cmd = fs::read_to_string(m.join("command")).unwrap();
         assert_eq!(cmd.trim(), "run-forever");
+        motor.send_command("stop").unwrap();
+        assert_eq!(fs::read_to_string(m.join("command")).unwrap().trim(), "stop");
 
         let _ = fs::remove_dir_all(&root);
     }

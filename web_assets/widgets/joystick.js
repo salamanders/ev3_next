@@ -22,14 +22,17 @@ const readoutText = (x, y) => `X: ${x}% | Y: ${y}%`;
 
 // Normalizes single-motor and multi-motor axis settings into one list shape.
 const axisMotors = (w, axis) =>
-    w.multiMotor ? (w[`${axis}Motors`] ?? []) : [{ port: w[`${axis}Port`], invert: false }];
+    w.multiMotor ? (w[`${axis}Motors`] ?? []) : [{ port: w[`${axis}Port`], invert: !!w[`${axis}Invert`] }];
 
-// Scales normalized [-1, 1] coordinates into batch motor speed commands.
-function calculateJoystickCommands(w, normX, normY, maxSpeed = 1000) {
+// Scales normalized [-1, 1] coordinates into full-power batch motor speed commands.
+function calculateJoystickCommands(w, normX, normY, ctx) {
     const stop_action = w.stopAction || "brake";
-    const toSpeed = n => clamp(Math.round(n * maxSpeed), -maxSpeed, maxSpeed);
-    return [["x", toSpeed(normX)], ["y", toSpeed(normY)]].flatMap(([axis, speed]) =>
-        axisMotors(w, axis).map(({ port, invert }) => ({ port, speed: invert ? -speed : speed, stop_action }))
+    return [["x", normX], ["y", normY]].flatMap(([axis, norm]) =>
+        axisMotors(w, axis).map(({ port, invert }) => ({
+            port,
+            speed: ctx.scaleSpeed(port, norm, invert),
+            stop_action
+        }))
     );
 }
 
@@ -66,6 +69,8 @@ export default {
             type: "joystick",
             xPort: "B",
             yPort: "C",
+            xInvert: false,
+            yInvert: false,
             stopAction: "brake",
             multiMotor: false,
             xMotors: [{ port: "B", invert: false }],
@@ -83,7 +88,7 @@ export default {
     // Builds Design View controls for single-axis or multi-motor assignment.
     renderDesign(w, ctx) {
         const singleMotorFields = AXES
-            .map(({ axis, label }) => ctx.portField(label, `field-${axis}-port`, w[`${axis}Port`]))
+            .map(({ axis, label }) => ctx.motorField(label, `field-${axis}-port`, w[`${axis}Port`], `field-${axis}-invert`, w[`${axis}Invert`]))
             .join("");
 
         const multiMotorMatrix = `
@@ -131,24 +136,30 @@ export default {
 
     // Wires Design View inputs to persist port, mode, and inversion changes.
     attachDesign(w, cardElement, ctx) {
-        ctx.bindFields(cardElement, w, { ".field-stop-action": "stopAction" });
+        const syncSingleAxis = axis => () => {
+            const port = w[`${axis}Port`] ?? "B";
+            const invert = !!w[`${axis}Invert`];
+            ctx.updateWidget(w.id, { [`${axis}Motors`]: [{ port, invert }] });
+        };
 
-        AXES.forEach(({ axis }) => {
-            cardElement.querySelector(`.field-${axis}-port`)?.addEventListener("change", (e) => {
-                const port = e.target.value;
-                ctx.updateWidget(w.id, { [`${axis}Port`]: port, [`${axis}Motors`]: [{ port, invert: false }] });
-            });
-        });
-
-        cardElement.querySelector(".field-multi-motor")?.addEventListener("change", (e) => {
-            const enabled = e.target.checked;
-            const patch = { multiMotor: enabled };
-            if (enabled) {
-                patch.xMotors = w.xMotors?.length ? w.xMotors : [{ port: w.xPort ?? "B", invert: false }];
-                patch.yMotors = w.yMotors?.length ? w.yMotors : [{ port: w.yPort ?? "C", invert: false }];
+        ctx.bindFields(cardElement, w, {
+            ...Object.fromEntries(AXES.flatMap(({ axis }) => [
+                [`.field-${axis}-port`, { key: `${axis}Port`, after: syncSingleAxis(axis) }],
+                [`.field-${axis}-invert`, { key: `${axis}Invert`, after: syncSingleAxis(axis) }]
+            ])),
+            ".field-stop-action": "stopAction",
+            ".field-multi-motor": {
+                key: "multiMotor",
+                rerender: true,
+                after: enabled => {
+                    if (enabled) {
+                        ctx.updateWidget(w.id, {
+                            xMotors: w.xMotors?.length ? w.xMotors : [{ port: w.xPort ?? "B", invert: !!w.xInvert }],
+                            yMotors: w.yMotors?.length ? w.yMotors : [{ port: w.yPort ?? "C", invert: !!w.yInvert }]
+                        });
+                    }
+                }
             }
-            ctx.updateWidget(w.id, patch);
-            ctx.renderDesignWidgets();
         });
 
         cardElement.querySelectorAll(".field-mm-active").forEach(el => {
@@ -203,7 +214,7 @@ export default {
         `;
     },
 
-    // Captures pointer drags inside the circle and sends 15 Hz batch commands.
+    // Captures pointer drags inside the circle and sends 10 Hz batch commands.
     initRun(w, cardElement, ctx) {
         const boundary = cardElement.querySelector(`#joy-boundary-${w.id}`);
         const knob = cardElement.querySelector(`#joy-knob-${w.id}`);
@@ -225,15 +236,16 @@ export default {
 
             knob.style.transform = `translate(${dx}px, ${dy}px)`;
 
-            const normX = dx / maxRadius;
-            const normY = -dy / maxRadius;
+            // Normalize rawX/rawY against maxRadius; ctx.scaleSpeed saturates the outer 25% (>= 0.75) to 100%
+            const normX = clamp(rawX / maxRadius, -1, 1);
+            const normY = clamp(-rawY / maxRadius, -1, 1);
 
             if (readout) {
-                readout.textContent = readoutText(Math.round(normX * 100), Math.round(normY * 100));
+                readout.textContent = readoutText(ctx.scalePct(normX), ctx.scalePct(normY));
             }
 
-            ctx.throttle(key, 66, () => {
-                const commands = calculateJoystickCommands(w, normX, normY);
+            ctx.throttle(key, 100, () => {
+                const commands = calculateJoystickCommands(w, normX, normY, ctx);
                 if (commands.length > 0) {
                     ctx.apiBatch(commands).catch(() => {});
                 }
@@ -245,7 +257,7 @@ export default {
             dragging = false;
             centerKnob(w, cardElement);
 
-            const commands = calculateJoystickCommands(w, 0, 0);
+            const commands = calculateJoystickCommands(w, 0, 0, ctx);
             if (commands.length > 0) {
                 ctx.stopBurst(key, () => ctx.apiBatch(commands));
             } else {
