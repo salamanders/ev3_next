@@ -73,6 +73,11 @@ export default {
             ctx.stopBurst(key, () => send(ctx.stopPayload(w)));
         };
 
+        const onRelease = () => {
+            if (!active && slider.value === "0") return;
+            stopAndCenter();
+        };
+
         const grab = () => {
             active = true;
             ctx.cancelStopBurst(key);
@@ -81,6 +86,7 @@ export default {
         slider.addEventListener("touchstart", grab, { passive: true });
 
         slider.addEventListener("input", (e) => {
+            active = true;
             const norm = parseInt(e.target.value, 10) / 100;
             const pct = ctx.scalePct(norm, w.invert);
             const speed = ctx.scaleSpeed(w.port, norm, w.invert);
@@ -91,11 +97,9 @@ export default {
         });
 
         ["pointerup", "pointercancel", "lostpointercapture", "touchend", "touchcancel", "change"].forEach(evt => {
-            slider.addEventListener(evt, stopAndCenter);
+            slider.addEventListener(evt, onRelease);
         });
-        window.addEventListener("blur", () => {
-            if (active || slider.value !== "0") stopAndCenter();
-        });
+        window.addEventListener("blur", onRelease);
 
         cardElement.querySelector(".btn-slider-zero")?.addEventListener("click", stopAndCenter);
     },
