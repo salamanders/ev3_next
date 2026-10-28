@@ -431,12 +431,12 @@ class EV3App {
 
         const state = { cancelled: false, timer: null, inFlight: false, abort: null, onSettled: null };
         this.stopBurstMap.set(key, state);
-        const startTime = Date.now();
         let sent = 0;
 
         const step = async () => {
             if (state.cancelled) return;
             sent += 1;
+            let failed = false;
             try {
                 this.activeEntry = state;
                 let p;
@@ -447,11 +447,12 @@ class EV3App {
                 }
                 await p;
             } catch (err) {
+                failed = true;
                 console.warn(`Stop retry ${sent} for '${key}' failed:`, err);
             }
             if (state.cancelled) return;
-            if (sent < maxCount && (Date.now() - startTime) < 500) {
-                state.timer = setTimeout(step, gapMs);
+            if (sent < maxCount) {
+                state.timer = setTimeout(step, failed ? 0 : gapMs);
             } else if (this.stopBurstMap.get(key) === state) {
                 this.stopBurstMap.delete(key);
             }
@@ -460,10 +461,11 @@ class EV3App {
         step();
     }
 
-    // Sends a JSON POST request with sequence numbering, abort tracking, and a 3 s timeout.
-    async apiPost(endpoint, payload) {
+    // Sends a JSON POST request with sequence numbering, abort tracking, and an 800 ms motor timeout.
+    async apiPost(endpoint, payload, timeoutMs) {
         const entry = this.activeEntry;
         const isMotorCmd = endpoint === "/api/batch" || endpoint.startsWith("/api/port/");
+        const isFastCmd = isMotorCmd || endpoint === "/api/estop";
         const bodyObj = isMotorCmd ? { ...payload, seq: ++this.cmdSeq } : payload;
 
         const ctrl = new AbortController();
@@ -471,7 +473,7 @@ class EV3App {
             entry.inFlight = true;
             entry.abort = ctrl;
         }
-        const timer = setTimeout(() => ctrl.abort(), 3000);
+        const timer = setTimeout(() => ctrl.abort(), timeoutMs ?? (isFastCmd ? 800 : 3000));
         try {
             const res = await fetch(endpoint, {
                 method: "POST",
