@@ -62,7 +62,7 @@ pub struct MotorController {
     cached_battery: Arc<RwLock<BatteryStatus>>,
     poll_interval_ms: u64,
     watchdog: Mutex<WatchdogState>,
-    cmd_lock: Mutex<()>,
+    cmd_lock: Mutex<[u64; 4]>,
     rescan_signal: Arc<(Mutex<bool>, Condvar)>,
 }
 
@@ -105,7 +105,7 @@ impl MotorController {
                 timeout: Duration::from_millis(DEFAULT_WATCHDOG_TIMEOUT_MS),
                 active: false,
             }),
-            cmd_lock: Mutex::new(()),
+            cmd_lock: Mutex::new([0; 4]),
             rescan_signal: Arc::new((Mutex::new(false), Condvar::new())),
         });
         controller.poll_hardware();
@@ -460,17 +460,44 @@ impl MotorController {
             .ok_or_else(|| format!("Sensor on Port {} is not connected", port))
     }
 
+    /// Checks and updates the last-seen sequence number for motor ports `A` through `D`.
+    ///
+    /// Returns `false` when `seq` is lower than the highest sequence number already executed
+    /// on that motor port, or `true` after recording the new sequence number. Shared by
+    /// `execute_port_command` and `execute_batch` under `cmd_lock`.
+    fn accept_motor_seq(seqs: &mut [u64; 4], port: &str, seq: Option<u64>) -> bool {
+        let idx = match port {
+            "A" => 0,
+            "B" => 1,
+            "C" => 2,
+            "D" => 3,
+            _ => return true,
+        };
+        if let Some(s) = seq {
+            if s < seqs[idx] {
+                return false;
+            }
+            seqs[idx] = s;
+        }
+        true
+    }
+
     /// Dispatches a resolved port command to motor or sensor handlers.
     ///
-    /// Serializes hardware access with `cmd_lock` and routes the command.
+    /// Serializes hardware access and per-port sequence validation with `cmd_lock` so stale
+    /// out-of-order HTTP requests do not overwrite a newer motor command.
     ///
     /// Main command dispatch entry point called by `POST /api/port/{port}`.
     pub fn execute_port_command(
         &self,
         port: &str,
         cmd: &ResolvedPortCommand,
+        seq: Option<u64>,
     ) -> Result<String, String> {
-        let _guard = self.cmd_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut seqs = self.cmd_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if !Self::accept_motor_seq(&mut seqs, port, seq) {
+            return Ok(format!("Ignored stale command on Port {}", port));
+        }
         self.execute_port_command_inner(port, cmd)
     }
 
@@ -648,7 +675,7 @@ impl MotorController {
     ///
     /// Called by `POST /api/batch` for multi-motor synchronization.
     pub fn execute_batch(&self, batch: &BatchCommandPayload) -> Result<Vec<String>, String> {
-        let _guard = self.cmd_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut seqs = self.cmd_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut results = Vec::new();
         let mut errors = Vec::new();
         let mut touched_motor = false;
@@ -666,6 +693,12 @@ impl MotorController {
                     continue;
                 }
             };
+
+            let item_seq = item.payload.seq.or(batch.seq);
+            if !Self::accept_motor_seq(&mut seqs, &norm_port, item_seq) {
+                results.push(format!("Ignored stale command on Port {}", norm_port));
+                continue;
+            }
 
             match self.execute_port_command_inner(&norm_port, &resolved) {
                 Ok(msg) => {
@@ -697,7 +730,9 @@ impl MotorController {
     ///
     /// Shared helper deduplicating `coast_all_motors` and `emergency_stop`.
     fn stop_all_motors(&self, stop_action: &str) -> Result<(), String> {
+        let mut seqs = self.cmd_lock.lock().unwrap_or_else(|e| e.into_inner());
         if stop_action == "coast" {
+            *seqs = [0; 4];
             if let Ok(mut wd) = self.watchdog.lock() {
                 wd.active = false;
             }
@@ -795,6 +830,7 @@ mod tests {
     fn drive_dual(c: &MotorController, b_spd: i32, c_spd: i32, stop: &str) {
         let batch = BatchCommandPayload {
             heartbeat_ms: Some(250),
+            seq: None,
             commands: vec![
                 BatchItemPayload {
                     port: "B".into(),
@@ -874,6 +910,7 @@ mod tests {
         let controller = MotorController::new(true, 15);
         let batch = BatchCommandPayload {
             heartbeat_ms: Some(250),
+            seq: None,
             commands: vec![
                 BatchItemPayload {
                     port: "Z".into(),
@@ -894,5 +931,57 @@ mod tests {
 
         thread::sleep(Duration::from_millis(320));
         assert_eq!(controller.get_mock_stop_action("B"), Some("coast".into()));
+    }
+
+    #[test]
+    fn test_stale_sequence_numbers_are_ignored() {
+        let controller = MotorController::new(true, 15);
+
+        // 1. Newer RUN (seq 11) arrives before stale STOP (seq 10) on Port A.
+        controller
+            .execute_port_command("A", &ResolvedPortCommand::RunForever { speed: 600 }, Some(11))
+            .unwrap();
+        let msg = controller
+            .execute_port_command(
+                "A",
+                &ResolvedPortCommand::Stop { stop_action: "brake".into() },
+                Some(10),
+            )
+            .unwrap();
+        assert!(msg.contains("Ignored stale command"));
+        thread::sleep(Duration::from_millis(30));
+        let st1 = controller.get_system_status();
+        assert_eq!(st1.motors.iter().find(|m| m.port == "A").unwrap().speed, 600);
+
+        // 2. Newer STOP batch (seq 21) arrives before stale RUN batch (seq 20) on Port B.
+        let stop_batch = BatchCommandPayload {
+            heartbeat_ms: Some(5000),
+            seq: Some(21),
+            commands: vec![BatchItemPayload {
+                port: "B".into(),
+                payload: PortCommandPayload {
+                    speed: Some(0),
+                    stop_action: Some("brake".into()),
+                    ..Default::default()
+                },
+            }],
+        };
+        let stale_run_batch = BatchCommandPayload {
+            heartbeat_ms: Some(5000),
+            seq: Some(20),
+            commands: vec![BatchItemPayload {
+                port: "B".into(),
+                payload: PortCommandPayload {
+                    speed: Some(800),
+                    ..Default::default()
+                },
+            }],
+        };
+        controller.execute_batch(&stop_batch).unwrap();
+        let res = controller.execute_batch(&stale_run_batch).unwrap();
+        assert!(res[0].contains("Ignored stale command"));
+        thread::sleep(Duration::from_millis(30));
+        let st2 = controller.get_system_status();
+        assert_eq!(st2.motors.iter().find(|m| m.port == "B").unwrap().speed, 0);
     }
 }

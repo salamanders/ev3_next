@@ -45,11 +45,21 @@ const setVisible = (el, visible) => {
 const motorStateText = m =>
     !m?.connected ? "Disconnected" : (m.state?.length ? m.state.join(", ") : "Ready");
 
-// Clears both timers on a throttle entry and drops pending callbacks.
+// Clears timers, aborts any in-flight request, and drops pending callbacks on a throttle entry.
 function disarm(entry) {
     clearTimeout(entry.timer);
     clearTimeout(entry.holdTimer);
-    Object.assign(entry, { timer: null, holdTimer: null, nextFn: null, holdFn: null, holdCount: 0 });
+    entry.abort?.abort();
+    Object.assign(entry, {
+        timer: null,
+        holdTimer: null,
+        nextFn: null,
+        holdFn: null,
+        holdCount: 0,
+        inFlight: false,
+        abort: null,
+        onSettled: null
+    });
 }
 
 // Caches dynamically imported widget ES modules separately from DOM state.
@@ -109,6 +119,8 @@ class EV3App {
         this.motorPorts = MOTOR_PORTS;
         this.throttleMap = new Map();
         this.stopBurstMap = new Map();
+        this.cmdSeq = Date.now() * 100;
+        this.activeEntry = null;
         this.isOnline = false;
         this.failCount = 0;
         this.pollTimer = null;
@@ -309,15 +321,55 @@ class EV3App {
         });
     }
 
-    // Rate-limits pointer moves and repeats held commands at 1 Hz for the 5 s watchdog.
+    // Rate-limits pointer moves, coalesces to one in-flight request per key, and repeats held commands at 1 Hz.
     throttle(key, intervalMs, fn, repeatMs = 1000) {
         this.cancelStopBurst(key);
         const now = Date.now();
-        const entry = this.throttleMap.get(key) ?? { last: 0, timer: null, holdTimer: null, nextFn: null, holdFn: null, holdCount: 0 };
+        const entry = this.throttleMap.get(key) ?? {
+            last: 0,
+            timer: null,
+            holdTimer: null,
+            nextFn: null,
+            holdFn: null,
+            holdCount: 0,
+            inFlight: false,
+            abort: null,
+            onSettled: null
+        };
         this.throttleMap.set(key, entry);
         entry.nextFn = fn;
         entry.holdFn = fn;
         entry.holdCount = 0;
+
+        const run = toRun => {
+            if (!toRun) return;
+            entry.last = Date.now();
+            this.activeEntry = entry;
+            try {
+                toRun();
+            } finally {
+                this.activeEntry = null;
+            }
+            scheduleHold();
+        };
+
+        const flushNext = () => {
+            entry.timer = null;
+            if (entry.inFlight || !entry.nextFn) return;
+            const toRun = entry.nextFn;
+            entry.nextFn = null;
+            run(toRun);
+        };
+
+        entry.onSettled = () => {
+            if (!entry.nextFn || entry.timer) return;
+            const wait = Math.max(0, intervalMs - (Date.now() - entry.last));
+            if (wait === 0) {
+                flushNext();
+            } else {
+                entry.timer = setTimeout(flushNext, wait);
+            }
+        };
 
         const scheduleHold = () => {
             clearTimeout(entry.holdTimer);
@@ -325,33 +377,27 @@ class EV3App {
             if (!repeatMs || repeatMs <= 0) return;
             entry.holdTimer = setTimeout(() => {
                 entry.holdTimer = null;
+                if (entry.inFlight) {
+                    scheduleHold();
+                    return;
+                }
                 // Cap stationary hold repeats at 60 (~60 s) so a missed release eventually stops.
                 if (entry.holdFn && entry.holdCount < 60) {
                     entry.holdCount += 1;
-                    entry.last = Date.now();
-                    entry.holdFn();
-                    scheduleHold();
+                    run(entry.holdFn);
                 }
             }, repeatMs);
         };
 
-        if (now - entry.last >= intervalMs) {
-            entry.last = now;
+        if (!entry.inFlight && now - entry.last >= intervalMs) {
             clearTimeout(entry.timer);
             entry.timer = null;
-            fn();
-            scheduleHold();
-        } else if (!entry.timer) {
+            entry.nextFn = null;
+            run(fn);
+        } else if (!entry.inFlight && !entry.timer) {
             clearTimeout(entry.holdTimer);
             entry.holdTimer = null;
-            entry.timer = setTimeout(() => {
-                entry.last = Date.now();
-                entry.timer = null;
-                const toRun = entry.nextFn;
-                entry.nextFn = null;
-                toRun?.();
-                scheduleHold();
-            }, intervalMs - (now - entry.last));
+            entry.timer = setTimeout(flushNext, intervalMs - (now - entry.last));
         }
     }
 
@@ -373,6 +419,7 @@ class EV3App {
         if (prev) {
             prev.cancelled = true;
             clearTimeout(prev.timer);
+            prev.abort?.abort();
             this.stopBurstMap.delete(key);
         }
     }
@@ -382,7 +429,7 @@ class EV3App {
         this.clearThrottle(key);
         this.cancelStopBurst(key);
 
-        const state = { cancelled: false, timer: null };
+        const state = { cancelled: false, timer: null, inFlight: false, abort: null, onSettled: null };
         this.stopBurstMap.set(key, state);
         const startTime = Date.now();
         let sent = 0;
@@ -391,7 +438,14 @@ class EV3App {
             if (state.cancelled) return;
             sent += 1;
             try {
-                await actionFn();
+                this.activeEntry = state;
+                let p;
+                try {
+                    p = actionFn();
+                } finally {
+                    this.activeEntry = null;
+                }
+                await p;
             } catch (err) {
                 console.warn(`Stop retry ${sent} for '${key}' failed:`, err);
             }
@@ -406,16 +460,35 @@ class EV3App {
         step();
     }
 
-    // Sends a JSON POST request with a 3 s timeout and unwraps the response.
+    // Sends a JSON POST request with sequence numbering, abort tracking, and a 3 s timeout.
     async apiPost(endpoint, payload) {
-        const res = await fetch(endpoint, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-            signal: AbortSignal.timeout(3000)
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return unwrap(await res.json().catch(() => ({})));
+        const entry = this.activeEntry;
+        const isMotorCmd = endpoint === "/api/batch" || endpoint.startsWith("/api/port/");
+        const bodyObj = isMotorCmd ? { ...payload, seq: ++this.cmdSeq } : payload;
+
+        const ctrl = new AbortController();
+        if (entry) {
+            entry.inFlight = true;
+            entry.abort = ctrl;
+        }
+        const timer = setTimeout(() => ctrl.abort(), 3000);
+        try {
+            const res = await fetch(endpoint, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(bodyObj),
+                signal: ctrl.signal
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return unwrap(await res.json().catch(() => ({})));
+        } finally {
+            clearTimeout(timer);
+            if (entry) {
+                if (entry.abort === ctrl) entry.abort = null;
+                entry.inFlight = false;
+                entry.onSettled?.();
+            }
+        }
     }
 
     // Dispatches a multi-port command batch with a watchdog heartbeat timeout.
@@ -437,10 +510,10 @@ class EV3App {
 
     // Halts all motors immediately, clears throttles, and resets widget UIs.
     async emergencyStop() {
+        this.clearAllThrottles();
+        this.callWidgetHook("onEmergencyStop", "run-card-");
         try {
             await this.apiPost("/api/estop", {});
-            this.clearAllThrottles();
-            this.callWidgetHook("onEmergencyStop", "run-card-");
             this.log("Emergency stop dispatched.", "warn");
         } catch (e) {
             this.log(`Emergency stop failed: ${e.message}`, "error");

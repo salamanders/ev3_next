@@ -25,6 +25,7 @@ pub struct PortCommandPayload {
     pub degrees: Option<i32>,
     pub stop_action: Option<String>,
     pub mode: Option<String>,
+    pub seq: Option<u64>,
 }
 
 /// Single item within a multi-port batch command payload.
@@ -39,6 +40,7 @@ pub struct BatchItemPayload {
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct BatchCommandPayload {
     pub heartbeat_ms: Option<u64>,
+    pub seq: Option<u64>,
     pub commands: Vec<BatchItemPayload>,
 }
 
@@ -411,7 +413,7 @@ impl Router {
 
         let max_speed = self.controller.resolve_max_speed(&normalized);
         match payload.resolve(max_speed) {
-            Ok(cmd) => match self.controller.execute_port_command(&normalized, &cmd) {
+            Ok(cmd) => match self.controller.execute_port_command(&normalized, &cmd, payload.seq) {
                 Ok(msg) => self.respond_json(request, StatusCode(200), &ApiResponse::ok(msg)),
                 Err(e) => self.respond_json(request, StatusCode(500), &ApiResponse::<()>::err(e)),
             },
